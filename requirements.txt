@@ -3,3 +3,11 @@
 langgraph
 jsonschema
 pytest
+
+# Backend (윤한)
+fastapi
+uvicorn[standard]
+motor
+pydantic-settings
+python-multipart
+python-dotenv

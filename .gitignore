@@ -67,3 +67,5 @@ outputs/
 # 사용자 제출 자료
 data/private/
 data/uploads/
+# SSH 키
+*.pem
