@@ -12,7 +12,27 @@
 
 import json
 
+import pytest
+
 import app.api.routes.documents as documents_route
+
+
+# 가은/Claude(2026-07-24, dev 병합 후 회귀 수정) — application-form-analysis에
+# analysis_version 필드(_APPLICATION_FORM_ANALYSIS_CACHE_VERSION)와 전역 공고문 캐시
+# 조회(notice_cache_repo)가 새로 붙으면서, 이 파일이 지키던 "실제 MongoDB 없이 라우트를
+# 검증한다" 원칙이 notice_cache_repo 쪽에서 깨졌었다 — project_repo/document_repo처럼
+# 자동으로 모든 테스트에 mock을 씌운다(전역 캐시는 항상 미스로 취급, 이 파일의 테스트
+# 관심사가 아니므로).
+@pytest.fixture(autouse=True)
+def _patch_notice_cache(monkeypatch):
+    async def _find_by_cache_key(cache_key, analysis_kind):
+        return None
+
+    async def _upsert(model):
+        return None
+
+    monkeypatch.setattr(documents_route.notice_cache_repo, "find_by_cache_key", _find_by_cache_key)
+    monkeypatch.setattr(documents_route.notice_cache_repo, "upsert", _upsert)
 
 
 class _FakeMessage:
@@ -188,6 +208,11 @@ def test_cached_result_skips_second_llm_call(client, auth_header, monkeypatch):
         "has_application_form": True,
         "items": [{"field_name": "이미 캐시된 항목", "description": "", "char_limit": None}],
         "source_document_names": ["old.hwp"],
+        # 가은/Claude(2026-07-24): analysis_version이 없으면(레거시 캐시) 이제 의도적으로
+        # 재계산한다 — 버전 없는 캐시를 "새 프롬프트로도 검증 안 된 오래된 값"으로 보고
+        # 신뢰하지 않는 게 이번에 고친 버그였다. 이 테스트는 "제대로 캐싱된" 경우를
+        # 검증하는 것이므로 버전을 채워서 캐시 히트 경로를 탄다.
+        "analysis_version": documents_route._APPLICATION_FORM_ANALYSIS_CACHE_VERSION,
     }
     project = _project(cache=cached)
     _patch_project(monkeypatch, project)

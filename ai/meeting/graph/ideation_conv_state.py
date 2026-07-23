@@ -15,6 +15,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Annotated, Literal, TypedDict
 
+from .application_form_draft import initialize_application_form_draft
+
 # 대화 진행 단계. "실패"는 기존 IdeationStage와 통일해 한국어 대신 영문 slug를 쓴다 —
 # 이 phase는 프론트가 직접 분기 렌더링에 쓰는 값이라(요구된 8개 상태 그대로) 계약을
 # 영문으로 고정해 프론트/백엔드 문자열 매칭 실수를 줄인다.
@@ -285,6 +287,9 @@ class IdeationConvState(TypedDict):
     # 참고). 없으면 빈 리스트(양식 미등록) — 구버전 저장 state에는 이 키가 없을 수 있으므로
     # 읽는 쪽은 항상 `.get("application_form_items", [])`로 접근한다(하위 호환).
     application_form_items: list[dict]
+    # 진행자 v02가 매 턴 draft_patch로 갱신하는 신청 양식 초안. 원본 양식 항목은 보존하고
+    # 별도 상태로 관리하므로 구 프롬프트로 롤백해도 application_form_items 계약은 바뀌지 않는다.
+    application_form_draft: list[dict]
     failed_node: str | None
     llm_calls_used: int
     # 용준/Claude(2026-07-20): 같은 쟁점(pending_question)으로 재질문한 횟수. 사용자가
@@ -535,6 +540,7 @@ def initial_conv_state(
         idea_proposal=None,
         idea_canvas=None,
         application_form_items=application_form_items or [],
+        application_form_draft=initialize_application_form_draft(application_form_items),
         failed_node=None,
         llm_calls_used=0,
         answer_retry_count=0,

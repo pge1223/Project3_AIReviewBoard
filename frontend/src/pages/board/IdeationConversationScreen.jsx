@@ -11,6 +11,7 @@ import {
 } from '../../api/ideationConversationApi'
 import { getAnnouncementAnalysis, getApplicationFormAnalysis } from '../../api/documentApi'
 import IdeaCanvasPanel from './IdeaCanvasPanel'
+import ApplicationFormPanel from './ApplicationFormPanel'
 import {
   EXPERT_RECOMMEND_MESSAGE,
   FEASIBILITY_LABEL,
@@ -188,17 +189,38 @@ function EvidenceToggle({ evidence, linkedEvidenceRefs, claims }) {
 // 이미 1~2문장으로 자연스럽게 정리되어 있으므로, 이 카드는 그 문장이 어떤 근거(합의 사항·
 // 남은 쟁점·사용자 결정 필요 여부)에서 나왔는지 보고 싶을 때만 펼쳐보는 보조 정보다.
 function FacilitatorSummaryCard({ structured }) {
+  const [expanded, setExpanded] = useState(false)
   const agreements = structured?.agreements || []
   const disagreements = structured?.disagreements || []
-  if (agreements.length === 0 && disagreements.length === 0) return null
+  const planningInsight = structured?.expert_insight_summary?.planning
+  const developmentInsight = structured?.expert_insight_summary?.development
+  if (agreements.length === 0 && disagreements.length === 0 && !planningInsight && !developmentInsight) return null
   return (
-    <div
-      style={{
-        marginTop: 6, padding: '8px 10px', borderRadius: 10,
-        background: 'var(--bg-0)', border: '1px solid var(--glass-border)', fontSize: 12,
-      }}
-    >
-      {agreements.length > 0 && (
+    <div style={{ marginTop: 6, fontSize: 12 }}>
+      <button
+        type="button"
+        className="btn-ghost"
+        style={{ padding: '3px 6px', fontSize: 11.5, display: 'inline-flex', alignItems: 'center', gap: 3 }}
+        onClick={() => setExpanded((value) => !value)}
+      >
+        {expanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+        {expanded ? '검토 근거 닫기' : '왜?'}
+      </button>
+      {expanded && (
+        <div style={{ marginTop: 5, paddingTop: 7, borderTop: '1px solid var(--glass-border)' }}>
+          {planningInsight && (
+            <div style={{ marginBottom: 5, lineHeight: 1.55 }}>
+              <strong style={{ color: 'var(--text-2)', fontWeight: 600 }}>기획 검토 · </strong>
+              {planningInsight}
+            </div>
+          )}
+          {developmentInsight && (
+            <div style={{ marginBottom: agreements.length > 0 || disagreements.length > 0 ? 7 : 0, lineHeight: 1.55 }}>
+              <strong style={{ color: 'var(--text-2)', fontWeight: 600 }}>구현 검토 · </strong>
+              {developmentInsight}
+            </div>
+          )}
+          {agreements.length > 0 && (
         <div style={{ marginBottom: disagreements.length > 0 ? 6 : 0 }}>
           <strong style={{ color: 'var(--text-2)', fontWeight: 600 }}>합의 사항</strong>
           <ul style={{ margin: '2px 0 0', paddingLeft: 16, lineHeight: 1.6 }}>
@@ -206,12 +228,14 @@ function FacilitatorSummaryCard({ structured }) {
           </ul>
         </div>
       )}
-      {disagreements.length > 0 && (
+          {disagreements.length > 0 && (
         <div>
           <strong style={{ color: 'var(--text-2)', fontWeight: 600 }}>남은 쟁점</strong>
           <ul style={{ margin: '2px 0 0', paddingLeft: 16, lineHeight: 1.6 }}>
             {disagreements.map((d, i) => <li key={i}>{d}</li>)}
           </ul>
+        </div>
+      )}
         </div>
       )}
     </div>
@@ -521,6 +545,13 @@ export function IdeationScreen({
   // 캔버스가 계속 보여줘야 하므로 상태로 유지한다. 세션 재개(resume) 경로에서는 start를
   // 다시 부르지 않으므로 거기서도 별도로 채운다.
   const [announcementAnalysis, setAnnouncementAnalysis] = useState(null)
+  // 가은/Claude(2026-07-23): 신청서 양식 항목(ApplicationFormPanel 렌더용) — runStart()가
+  // 이미 getApplicationFormAnalysis()로 받아오던 값을 이제 화면에도 보여주기 위해 상태로
+  // 유지한다. announcementAnalysis와 동일한 이유(세션 재개 경로에서도 별도로 채워야 함).
+  const [applicationFormItems, setApplicationFormItems] = useState([])
+  // 진행자가 사용자와 직접 대화하는 기본 흐름을 유지한다. 두 전문가의 원문은 사용자가
+  // 명시적으로 열었을 때만 보여주며, 서버 메시지와 회의 상태는 그대로 보존한다.
+  const [showExpertMessages, setShowExpertMessages] = useState(false)
 
   const startedRef = useRef(false)
   const chatEndRef = useRef(null)
@@ -643,6 +674,7 @@ export function IdeationScreen({
           console.warn('[ideation-conv] 신청양식 항목 조회에 실패해 항목 없이 회의를 시작합니다.', err)
         }
       }
+      setApplicationFormItems(applicationFormItems)
 
       const payload = {
         competitionName: competitionNameFrom(analysis),
@@ -713,6 +745,9 @@ export function IdeationScreen({
     setStarting(true)
     if (projectId) {
       getAnnouncementAnalysis(projectId).then(setAnnouncementAnalysis).catch(() => {})
+      getApplicationFormAnalysis(projectId)
+        .then((data) => setApplicationFormItems(data.items || []))
+        .catch(() => {})
     }
     getIdeationConversation(savedSessionId)
       .then((data) => setIdeationConv(data))
@@ -740,7 +775,22 @@ export function IdeationScreen({
       }
     : null
   const canonicalMessages = dedupeMessagesById(ideationConv?.messages)
+  // 가은/Claude(2026-07-24, dev 병합) — dev가 "잠시만" 중단 메시지를 전체 보존
+  // (interruptedMessages, 로컬 상태)에서 가벼운 마커(interruptionMarkers, afterMessageId로
+  // 위치만 표시)로 재설계했다. 로컬 stash가 참조하던 interruptedMessages는 더 이상 존재하지
+  // 않아 그대로 두면 런타임 에러였다 — dev의 마커 방식을 그대로 쓰고, "전문가 의견 보기"
+  // 토글(showExpertMessages)만 그 위에 추가로 얹는다.
   const visibleMessages = [...canonicalMessages, ...streamState.messages]
+  const isExpertMessage = (message) => (
+    message?.speaker_id === 'planning_expert' || message?.speaker_id === 'dev_expert'
+  )
+  const displayCanonicalMessages = canonicalMessages.filter(
+    (message) => showExpertMessages || !isExpertMessage(message),
+  )
+  const displayStreamMessages = streamState.messages.filter(
+    (message) => showExpertMessages || !isExpertMessage(message),
+  )
+  const expertMessageCount = canonicalMessages.filter(isExpertMessage).length
   const busy = starting || sending || finalizing || saving
   // awaiting_user_decision도 입력을 막지 않는다("더 이야기하기") — 백엔드
   // apply_user_answer가 이 경우도 받아 두 전문가 보완 의견으로 이어간다.
@@ -996,6 +1046,17 @@ export function IdeationScreen({
           {ideationConv && (
             <span className="badge purple mono">라운드 {ideationConv.round}/{ideationConv.max_rounds}</span>
           )}
+          {expertMessageCount > 0 && (
+            <button
+              type="button"
+              className="btn-ghost"
+              style={{ padding: '4px 8px', fontSize: 11.5, display: 'inline-flex', alignItems: 'center', gap: 4 }}
+              onClick={() => setShowExpertMessages((value) => !value)}
+            >
+              {showExpertMessages ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+              {showExpertMessages ? '전문가 의견 닫기' : `전문가 의견 보기 (${expertMessageCount})`}
+            </button>
+          )}
         </div>
 
         <ErrorBanner error={phaseFailure || error} onRetry={handleRestart} />
@@ -1010,7 +1071,7 @@ export function IdeationScreen({
           {interruptionMarkers
             .filter((marker) => marker.afterMessageId === null)
             .map((marker) => <InterruptionMarker key={marker.markerId} speakerId={marker.speakerId} />)}
-          {canonicalMessages.map((m) => (
+          {displayCanonicalMessages.map((m) => (
             <Fragment key={m.message_id}>
               <MessageBubble message={m} allMessages={visibleMessages} />
               {interruptionMarkers
@@ -1022,7 +1083,7 @@ export function IdeationScreen({
               델타가 도착하는 대로 안에서 텍스트가 자란다(완성 후 재생하는 효과 아님).
               streamState는 최종 state 이벤트가 오면 즉시 비워지므로, 이 목록과 위
               ideationConv.messages가 같은 내용으로 동시에 남아 중복되는 순간은 없다. */}
-          {streamState.messages.map((m) => (
+          {displayStreamMessages.map((m) => (
             <MessageBubble key={m.message_id} message={m} streaming allMessages={visibleMessages} />
           ))}
           {sending && streamState.messages.length === 0 && (
@@ -1167,6 +1228,11 @@ export function IdeationScreen({
         />
 
         <IdeaCanvasPanel ideationConv={ideationConv} analysis={announcementAnalysis} />
+
+        <ApplicationFormPanel
+          items={applicationFormItems}
+          draft={ideationConv?.application_form_draft}
+        />
 
         {/* 가은/Claude(2026-07-23, 요청: "후보 선택하면 아이디어 선택 패널 없애줘") — 후보
             카드는 대화창 안(선택 질문 버블 아래)에서 보여주고, 선택 후에는 이 자리에

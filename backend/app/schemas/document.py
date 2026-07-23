@@ -62,6 +62,9 @@ class FetchUrlResponse(UrlExtractionResult):
 # "미공개" 문자열로 명시한다(값을 비워두는 대신 근거 없음 자체를 표시).
 class OfficialFacts(BaseModel):
     eligibility: list[str] = []
+    # 가은/Claude(2026-07-23, 요청: 공고문 캐시 제안 카드에 "시작일~마감일" 기간 표시) —
+    # 예전엔 deadline(마감)만 있고 접수 시작일 필드가 없어서 기간을 못 보여줬다.
+    application_start_date: str = "미공개"
     deadline: str = "미공개"
     submission_requirements: list[str] = []
     evaluation_criteria: list[str] = []
