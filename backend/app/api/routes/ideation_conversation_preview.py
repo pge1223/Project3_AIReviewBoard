@@ -748,6 +748,9 @@ class ReplyRequest(BaseModel):
     # /reply, /reply/stream 호출과 하위 호환) — 값이 있으면 지정 위원이 먼저 답하는
     # reply_to_interjection 경로로 라우팅한다(아래 reply_conversation_stream 참고).
     target_speaker_id: Optional[str] = None
+    # 사용자가 누구의 발언에 반응하는지와 누가 먼저 답할지는 의미가 다르므로 별도 보존한다.
+    opinion_target_speaker_id: Optional[str] = None
+    interrupted_speaker_id: Optional[str] = None
     interrupted_request_id: Optional[str] = None
     active_issue_id: Optional[str] = None
 
@@ -830,7 +833,11 @@ async def reply_conversation(session_id: str, request: ReplyRequest):
     try:
         message = _clamp_text(request.message, "message")
         trace_event("IDEATION_REQUEST_STARTED", mode="sync", user_message=sanitize_preview(message))
-        if previous_state.get("phase") in ("expert_discussion", "awaiting_user_decision"):
+        if previous_state.get("phase") in (
+            "expert_discussion",
+            "awaiting_user_decision",
+            "discussion_complete",
+        ):
             trace_event(
                 "IDEATION_USER_INTERJECTION",
                 issue=previous_state.get("active_issue_id"),
@@ -917,6 +924,25 @@ async def reply_conversation_stream(session_id: str, request: ReplyRequest, http
     target_speaker_id = request.target_speaker_id
     if target_speaker_id is not None and target_speaker_id not in ("planning_expert", "dev_expert", "both"):
         raise HTTPException(status_code=400, detail="target_speaker_id는 planning_expert/dev_expert/both 중 하나여야 합니다.")
+    opinion_target_speaker_id = request.opinion_target_speaker_id
+    if opinion_target_speaker_id is not None and opinion_target_speaker_id not in (
+        "planning_expert",
+        "dev_expert",
+        "both",
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="opinion_target_speaker_id는 planning_expert/dev_expert/both 중 하나여야 합니다.",
+        )
+    interrupted_speaker_id = request.interrupted_speaker_id
+    if interrupted_speaker_id is not None and interrupted_speaker_id not in (
+        "planning_expert",
+        "dev_expert",
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="interrupted_speaker_id는 planning_expert/dev_expert 중 하나여야 합니다.",
+        )
 
     try:
         record = _acquire_session_record_or_404(session_id)
@@ -970,16 +996,21 @@ async def reply_conversation_stream(session_id: str, request: ReplyRequest, http
                 "IDEATION_REQUEST_STARTED",
                 mode="stream",
                 target_speaker=target_speaker_id,
+                opinion_target_speaker=opinion_target_speaker_id,
+                interrupted_speaker=interrupted_speaker_id,
                 user_message=sanitize_preview(message),
             )
             is_user_interjection = target_speaker_id is not None or previous_state.get("phase") in (
                 "expert_discussion",
                 "awaiting_user_decision",
+                "discussion_complete",
             )
             if is_user_interjection:
                 trace_event(
                     "IDEATION_USER_INTERJECTION",
                     target_speaker=target_speaker_id,
+                    opinion_target_speaker=opinion_target_speaker_id,
+                    interrupted_speaker=interrupted_speaker_id,
                     issue=previous_state.get("active_issue_id"),
                     interrupted_request_id=None,
                     content_length=len(message),
@@ -996,6 +1027,8 @@ async def reply_conversation_stream(session_id: str, request: ReplyRequest, http
                     previous_state=previous_state,
                     user_message=message,
                     target_speaker_id=target_speaker_id,
+                    opinion_target_speaker_id=opinion_target_speaker_id or target_speaker_id,
+                    interrupted_speaker_id=interrupted_speaker_id,
                     llm_call=llm_call,
                     evidence_lookup=evidence_lookup,
                     ground_claims=ground_claims,

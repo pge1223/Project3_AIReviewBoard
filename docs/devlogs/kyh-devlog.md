@@ -1,3 +1,31 @@
+### 7/23 — Playwright 브라우저 설치 + DOCX 페이지 수 버그 수정 + run_meeting() 연동 확인
+
+- **NCP 서버 Playwright 브라우저 바이너리 설치**
+  - 원인: `pip install playwright`만 돼있고 실제 브라우저 실행 파일(chromium)이 없어서 SPA 렌더링 크롤링 실패
+  - `venv/bin/playwright install chromium` 실행으로 해결
+  - 이후 소통24 같은 JS 렌더링 페이지도 정상 크롤링 확인 (텍스트 349자 → 8021자로 개선)
+  - 첨부 PDF까지 자동 추출 확인 (62페이지, 1285블록)
+
+- **문서 업로드 타임아웃(180s) 이슈 확인**
+  - 62페이지 이미지 PDF 업로드 시 타임아웃 발생하나 백그라운드 색인은 계속 진행되어 최종 완료됨(200초 소요, 197청크)
+  - 직접 업로드 경로와 fetch-url 자동 수집 경로의 타임아웃 정책이 다름을 확인 (추후 정책 통일 검토 필요)
+
+- **DOCXParser 페이지 수 버그 수정 (PR #152)**
+  - 증상: docx 업로드 시 페이지 수가 항상 1로 고정되어 "분량 체크" 기능이 프론트에서 간헐적으로 표시되지 않음
+  - 원인: `DOCXParser.get_page_count()`가 `return 1` 하드코딩 (python-docx는 페이지 개념이 없음)
+  - 해결: 기존 `preview_pdf_converter`(LibreOffice 변환)를 재사용해 PDF로 변환 후 pymupdf(fitz)로 실제 페이지 수 계산
+  - 변환 실패 시 기존처럼 1 반환하는 폴백 유지
+  - Claude Code로 들여쓰기/import 누락 수정 후 커밋 → PR #152 머지 완료
+
+- **run_meeting() 연동 상태 점검**
+  - 경이님 `feature/mky` 코드 리뷰 결과, `run_meeting()`/`rerun_reviewer()` 연동이 이미 완료되어 있음을 확인
+  - `_RECURSION_LIMIT`, `progress_token` 콜백, 위원장 종합 백그라운드 분리(`include_chair=False`), PER-002 동적 rubric 매핑까지 모두 반영된 상태
+  - 백엔드 쪽 추가 연동 작업 불필요 — 정상 동작 로그(`[analyze] LangGraph 실행 시작/완료`) 확인
+
+- **로컬/NCP 서버 화면 불일치 이슈 원인 파악**
+  - 가은님이 API 키(OPENAI) 비용 절감을 위해 로컬 환경에서 별도 테스트 중이었던 것으로 확인
+  - 발표 전 NCP 서버 기준 통합 테스트 필요성 팀 공유
+
 ### 7/22 — HWP/HWPX 파서 연결 버그 수정 + 공고문 크롤링 103건
 
 - **HWP/HWPX 업로드 버그 수정** — PR 머지 + NCP 배포 완료

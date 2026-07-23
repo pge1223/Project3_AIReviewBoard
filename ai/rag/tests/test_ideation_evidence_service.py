@@ -15,6 +15,7 @@ evidence_lookup 호출 시점의 runtime_scope가 lookup 생성 시점의 closur
 """
 
 from ai.rag.orchestration.ideation_evidence_service import (
+    _build_issue_focused_query,
     _compose_by_document_role,
     _scope_target_evidence,
     make_ideation_evidence_lookup,
@@ -102,6 +103,20 @@ def test_no_quota_configured_for_unknown_persona_returns_items_unchanged():
     composed, missing = _compose_by_document_role(items, persona_id="ideation_facilitator", top_k=5)
     assert composed == items
     assert missing == []
+
+
+def test_problem_issue_builds_compact_criteria_query():
+    query = _build_issue_focused_query(
+        "침수 안전 서비스 | 현재 쟁점: 문제 정의 | 검토 관점: 기술 구조와 구현 가능성"
+    )
+    assert query is not None
+    assert query.startswith("문제 정의 ")
+    assert "도시 문제의 설정" in query
+    assert "구현 가능성" not in query
+
+
+def test_unknown_issue_does_not_add_supplemental_search():
+    assert _build_issue_focused_query("아이디어 | 현재 쟁점: 임의 자유 토론") is None
 
 
 # ---------------------------------------------------------------------------

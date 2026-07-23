@@ -76,27 +76,40 @@ export function applyStreamEvent(state, event) {
     case 'phase':
       return { ...state, phaseLabel: event.label || null }
 
-    case 'message_start':
+    case 'message_start': {
       if (state.requestId && event.request_id && event.request_id !== state.requestId) return state
-      return {
-        ...state,
-        phaseLabel: null,
-        messages: [
-          ...state.messages,
-          {
-            message_id: event.message_id,
-            speaker_id: event.speaker_id,
-            speaker_name: event.speaker_name,
-            // content는 서버에서 실제로 받은 전체 텍스트(표시 속도와 무관하게 즉시 갱신).
-            // displayedContent는 advanceDisplay()가 매 프레임 조금씩만 content 쪽으로
-            // 따라잡게 하는 값이다 — 이 둘을 분리해야 "실제 수신"과 "화면 표시"의 속도를
-            // 독립적으로 제어할 수 있다(타이핑 효과의 핵심).
-            content: '',
-            displayedContent: '',
-            done: false,
-          },
-        ],
+      const newMessage = {
+        message_id: event.message_id,
+        speaker_id: event.speaker_id,
+        speaker_name: event.speaker_name,
+        // content는 서버에서 실제로 받은 전체 텍스트(표시 속도와 무관하게 즉시 갱신).
+        // displayedContent는 advanceDisplay()가 매 프레임 조금씩만 content 쪽으로
+        // 따라잡게 하는 값이다 — 이 둘을 분리해야 "실제 수신"과 "화면 표시"의 속도를
+        // 독립적으로 제어할 수 있다(타이핑 효과의 핵심).
+        content: '',
+        displayedContent: '',
+        done: false,
+        // 'streaming'(수신 중) | 'reviewing'(검증 실패로 재검토 대기) — 신규 메시지는
+        // 항상 'streaming'으로 시작한다.
+        status: 'streaming',
       }
+      // 서버가 supersedes_message_id를 실어 보내면, 이 새 스트림이 어떤 검토 중(reviewing)
+      // 말풍선의 재시도인지 명확히 안다(용준/Claude, 2026-07-23, 요청: 스트리밍 UX 버그
+      // 수정 — 검증 실패로 사라졌던 말풍선이 최종 state가 올 때까지 화면에서 통째로
+      // 비었다가 뒤늦게 나타나던 문제). speaker_id만으로 "같은 위원의 다음 발언이니
+      // 재시도겠지"라고 추정하지 않는다 — 다른 위원의 정상적인 다음 발언을 오인해 지우면
+      // 안 되므로, 백엔드가 명시적으로 알려준 경우에만 자리를 그대로 이어받는다.
+      const supersedesId = event.supersedes_message_id
+      if (supersedesId) {
+        const idx = state.messages.findIndex((m) => m.message_id === supersedesId)
+        if (idx !== -1) {
+          const messages = state.messages.slice()
+          messages[idx] = newMessage
+          return { ...state, phaseLabel: null, messages }
+        }
+      }
+      return { ...state, phaseLabel: null, messages: [...state.messages, newMessage] }
+    }
 
     case 'message_delta':
       if (!event.delta) return state
@@ -114,9 +127,30 @@ export function applyStreamEvent(state, event) {
       }
 
     case 'message_reset':
-      // 구조화 응답 검증 실패로 재시도할 때 서버가 보낸다 — 화면에 남아있던 임시(잘못된)
-      // 말풍선을 완전히 지운다. 요청: "같은 답변이 화면에 중복으로 쌓이면 안 됩니다".
-      return { ...state, messages: state.messages.filter((m) => m.message_id !== event.message_id) }
+      // 용준/Claude(2026-07-23, 요청: 스트리밍 UX 버그 수정) — 구조화 응답 검증 실패로
+      // 재시도(또는 grounding 재시도, 또는 재시도 없이 safe fallback 대기)할 때 서버가
+      // 보낸다. 예전에는 말풍선을 배열에서 완전히 지웠는데, 그러면 재시도 스트림이 시작
+      // 되기 전까지(또는 fallback이 담긴 canonical state가 올 때까지) 화면이 통째로 비어
+      // "발언이 사라졌다가 회의 끝에 뒤늦게 나타나는" 것처럼 보였다. 이제는 말풍선을 지우지
+      // 않고 'reviewing' 상태로만 전환해 흐리게 표시하고, displayedContent를 content
+      // 끝까지 스냅해 타이핑 커서가 중간에 멈춘 것처럼 보이지 않게 한다 — 실제 교체(같은
+      // 자리에 재시도 말풍선을 잇는 것, 또는 canonical state로 완전히 대체하는 것)는
+      // message_start의 supersedes_message_id 처리와 호출부의 state 처리가 각각 담당한다.
+      return {
+        ...state,
+        messages: state.messages.map((m) =>
+          m.message_id === event.message_id
+            ? {
+                ...m,
+                status: 'reviewing',
+                reviewReason: event.reason || null,
+                willRetry: event.will_retry !== false,
+                displayedContent: m.content,
+                done: true,
+              }
+            : m,
+        ),
+      }
 
     // 'state'(최종 canonical state)와 'error'는 이 리듀서가 다루지 않는다 — 호출부가
     // 직접 처리해서 ideationConv/오류 배너로 반영하고, 스트리밍 임시 상태는 통째로

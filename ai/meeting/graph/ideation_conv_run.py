@@ -133,6 +133,7 @@ REPLYABLE_PHASES = {
     "awaiting_planning_answer",
     "awaiting_developer_answer",
     "awaiting_user_decision",
+    "discussion_complete",
     "awaiting_candidate_selection",
 }
 
@@ -174,7 +175,7 @@ def _reply_message_type_for(previous_state: IdeationConvState) -> str:
     "answer", 아니면(사용자가 답할 의무 없이 자발적으로 끼어든 것) "interjection"이다.
     다른 phase(awaiting_planning_answer/awaiting_developer_answer/awaiting_candidate_selection
     — 인터뷰·후보 선택 흐름)는 기존 그대로 항상 "answer"다(요청 범위 밖, 동작 변경 없음)."""
-    if previous_state["phase"] == "awaiting_user_decision":
+    if previous_state["phase"] in {"awaiting_user_decision", "discussion_complete"}:
         return "answer" if previous_state.get("pending_question") else "interjection"
     return "answer"
 
@@ -789,6 +790,8 @@ def reply_to_interjection(
     user_message: str,
     target_speaker_id: str,
     llm_call: LLMCall,
+    opinion_target_speaker_id: str | None = None,
+    interrupted_speaker_id: str | None = None,
     evidence_lookup=None,
     ground_claims=None,
     index_target_evidence: IndexTargetEvidenceFn | None = None,
@@ -813,6 +816,13 @@ def reply_to_interjection(
         )
     if target_speaker_id not in ("planning_expert", "dev_expert", "both"):
         raise ValueError(f"target_speaker_id가 올바르지 않습니다: {target_speaker_id!r}")
+    opinion_target_speaker_id = opinion_target_speaker_id or target_speaker_id
+    if opinion_target_speaker_id not in ("planning_expert", "dev_expert", "both"):
+        raise ValueError(
+            f"opinion_target_speaker_id가 올바르지 않습니다: {opinion_target_speaker_id!r}"
+        )
+    if interrupted_speaker_id not in (None, "planning_expert", "dev_expert"):
+        raise ValueError(f"interrupted_speaker_id가 올바르지 않습니다: {interrupted_speaker_id!r}")
 
     if target_speaker_id == "both":
         last_expert_message = None
@@ -827,6 +837,28 @@ def reply_to_interjection(
     else:
         forced_speaker = _TARGET_TO_FORCED_SPEAKER[target_speaker_id]
 
+    opinion_speakers = (
+        {"planning_expert", "dev_expert"}
+        if opinion_target_speaker_id == "both"
+        else {opinion_target_speaker_id}
+    )
+    # 완료되지 않은 중단 발언은 메시지로 저장하지 않으므로 과거의 같은 위원 발언을 잘못
+    # 연결하지 않는다. 나머지 선택 대상은 가장 최근 완료 발언을 명시적으로 참조한다.
+    referenced_message_ids: list[str] = []
+    for speaker_id in opinion_speakers:
+        if speaker_id == interrupted_speaker_id:
+            continue
+        referenced = next(
+            (
+                message
+                for message in reversed(previous_state["messages"])
+                if message.get("speaker_id") == speaker_id
+            ),
+            None,
+        )
+        if referenced and referenced.get("message_id"):
+            referenced_message_ids.append(referenced["message_id"])
+
     interjection_message = ConvMessage(
         message_id=f"MSG-{uuid.uuid4().hex[:10]}",
         speaker_id="user",
@@ -835,11 +867,13 @@ def reply_to_interjection(
         round=previous_state["round"],
         message_type="interjection",
         content=user_message,
-        referenced_message_ids=[],
+        referenced_message_ids=referenced_message_ids,
         evidence=[],
         created_at=datetime.now(timezone.utc).isoformat(),
         structured={
             "target_speaker_id": target_speaker_id,
+            "opinion_target_speaker_id": opinion_target_speaker_id,
+            "interrupted_speaker_id": interrupted_speaker_id,
             "active_issue_id": previous_state.get("active_issue_id"),
         },
     )

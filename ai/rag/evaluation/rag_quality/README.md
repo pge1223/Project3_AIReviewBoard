@@ -92,13 +92,32 @@ Faithfulness/Persona Evidence Fit 판정의 유일한 근거 컨텍스트다(LLM
 3~5개, 프로젝트당 최소 5개 쟁점을 채우고 사람이 청크·주장 유형·지원 여부를 확인한 뒤
 `human_verified=true`로 바꾼다.
 
+운영 trace에서 실제 검색·선택·연결 결과 15건을 검수 대기열로 만들 수 있다. 이 명령은
+정답을 자동 판정하지 않으며 생성 결과는 항상 `human_verified=false`다.
+
+```bash
+python -m ai.rag.evaluation.rag_quality.build_ideation_annotation_queue \
+  logs/app.log logs/app.log.2026-07-22 \
+  --output ai/rag/evaluation/rag_quality/datasets/ideation_multi_document_annotation_queue.json \
+  --project-count 3 \
+  --cases-per-project 5
+```
+
+각 케이스에서 원문을 대조해 `gold_relevant_chunk_ids`, `planner_relevant_selected_chunk_ids`,
+claim 본문·실제/기대 유형·지원 여부,
+`reviewer_id`, `reviewed_at`, `reviewer_notes`를 채워야 한다. 필수 검수값이 비었거나 case ID가
+중복된 상태에서 `human_verified=true`로만 바꾸면 품질 게이트가 해당 케이스를 거부한다.
+`planner_relevant_selected_chunk_ids`에는 선택된 chunk 중 Planner가 뽑은 quote 자체가 현재
+쟁점과 직접 관련된 것만 기록한다. 이 필드가 없으면 구버전 데이터 호환을 위해 chunk 단위
+gold 교집합으로 계산하지만, 큰 평가표 chunk에서는 Planner precision이 과대평가될 수 있다.
+
 ```bash
 python -m ai.rag.evaluation.rag_quality.multi_document_quality \
   reports/ideation_multi_document_observations.json \
   --output reports/ideation_multi_document_quality.json
 ```
 
-기본 통과 기준은 검수된 3개 프로젝트·15케이스, Recall@5 0.80, Planner precision/coverage
+기본 통과 기준은 검수된 3개 프로젝트·프로젝트당 5케이스·총 15케이스, Recall@5 0.80, Planner precision/coverage
 0.80, citation precision 및 claim type accuracy 0.90, unsupported document fact 0.05 이하,
 issue match 0.90, Planner fallback 0.10 이하이다. 미검수 케이스는 참고용으로만 세고 점수에서
 제외한다.

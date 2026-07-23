@@ -384,7 +384,7 @@ def test_discussion_node_retries_then_uses_safe_fallback_when_confirmed_exceeds_
     update = node(_base_state())
     assert update.get("phase") != "failed"
     assert call_count["n"] == 2
-    assert "추가로 확인" in update["messages"][0]["content"]
+    assert "전문가 판단으로 진행" in update["messages"][0]["content"]
 
 
 # ---------------------------------------------------------------------------

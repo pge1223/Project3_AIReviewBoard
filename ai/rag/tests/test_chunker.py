@@ -158,18 +158,16 @@ def test_config_validation():
 
 
 # ---------------------------------------------------------------------------
-# CHUNKING_VERSION (v1 -> v2): PDF 줄바꿈 정규화/whole-line 제목 인식/글머리표 보존 도입으로
-# 청크 내용·chunk_id가 실질적으로 달라지므로 버전을 올렸다 — chunk_id에 버전이 반영되는지,
-# 동일 문서라도 v1/v2가 다른 chunk_id를 갖는지 확인한다.
+# CHUNKING_VERSION (v3): 평가 항목·세부 질문 단위 분리까지 포함한 현재 버전.
 # ---------------------------------------------------------------------------
 
-def test_new_chunks_are_tagged_with_chunking_v2():
+def test_new_chunks_are_tagged_with_chunking_v3():
     blocks = [_doc_block("법령규정을 학습", order=0), _doc_block("하여, 이에 대한 질의응답", order=1)]
     extraction = _extraction(blocks, file_type=FileType.PDF)
     result = chunk_document(extraction, _file_context(file_type="pdf"))
 
-    assert result.chunking_version == "chunking_v2"
-    assert all(c.chunking_version == "chunking_v2" for c in result.chunks)
+    assert result.chunking_version == "chunking_v3"
+    assert all(c.chunking_version == "chunking_v3" for c in result.chunks)
 
 
 def test_same_document_v1_and_v2_config_produce_different_chunk_ids():
@@ -185,6 +183,40 @@ def test_same_document_v1_and_v2_config_produce_different_chunk_ids():
     v1_ids = {c.chunk_id for c in v1_result.chunks}
     v2_ids = {c.chunk_id for c in v2_result.chunks}
     assert v1_ids.isdisjoint(v2_ids)
+
+
+def test_evaluation_criteria_are_split_into_one_question_per_chunk():
+    content = """붙임 WSCE 2026 Awards 평가 기준
+평가 기준 혁신성 (20)
+- 얼마나 혁신적인가?
+- 기존 방식 대비 차별성과 개선효과가 구체적인가?
+확장성 (20)
+- 다양한 도시·산업·환경에 적용 가능한가?
+계획 적정성 (20)
+- 도시 문제의 설정이 구체적인가?
+- 도시 문제 해결 KPI가 설정되었는가?"""
+    extraction = _extraction([_doc_block(content, order=0)], file_type=FileType.PDF)
+    result = chunk_document(extraction, _file_context(file_type="pdf"))
+
+    criteria_chunks = [c for c in result.chunks if c.metadata.get("evaluation_criterion")]
+    assert len(criteria_chunks) == 5
+    assert all(c.content.count("\n-") == 1 for c in criteria_chunks)
+    problem_chunk = next(c for c in criteria_chunks if "도시 문제의 설정" in c.content)
+    assert problem_chunk.content.startswith("계획 적정성 (20)\n")
+    assert "확장성" not in problem_chunk.content
+    assert problem_chunk.metadata["criterion_title"] == "계획 적정성 (20)"
+
+
+def test_ordinary_bullet_list_keeps_legacy_grouping():
+    content = """준비 사항
+- 신분증을 준비합니다.
+- 신청서를 출력합니다.
+- 접수처를 확인합니다."""
+    extraction = _extraction([_doc_block(content, order=0)], file_type=FileType.PDF)
+    result = chunk_document(extraction, _file_context(file_type="pdf"))
+
+    assert not any(c.metadata.get("evaluation_criterion") for c in result.chunks)
+    assert result.chunk_count == 1
 
 
 # ---------------------------------------------------------------------------

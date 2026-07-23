@@ -50,10 +50,10 @@ def _persona(prompt: str) -> str:
 
 def _discussion_payload(speaker: str, *, active_issue_id="target_user", issue_resolved=False,
                          recommended_next_speaker="dev_expert", needs_counterpart_response=True,
-                         new_information="새로 확인된 내용") -> dict:
+                         new_information="새로 확인된 내용", spoken_text=None) -> dict:
     return {
         "stance": "반박",
-        "spoken_text": f"[{speaker}] 발화",
+        "spoken_text": spoken_text or f"[{speaker}] 발화",
         "judgment": "판단",
         "reason": "근거",
         "suggestion": "제안",
@@ -79,6 +79,20 @@ def _discussion_payload(speaker: str, *, active_issue_id="target_user", issue_re
     }
 
 
+def _spoken_text_for_prompt(prompt: str, speaker: str) -> str | None:
+    if "사용자 직접 질문 최우선 규칙" not in prompt:
+        return None
+    if speaker == "planning_expert":
+        return (
+            "대학생 예비 창업자와 목표 사용자 관점에서 개인정보, 기술 범위, 유지보수 질문을 "
+            "운영 비용과 고객 가치 기준으로 직접 검토합니다."
+        )
+    return (
+        "개인정보와 기술 범위, 유지보수 질문을 센서 장애 감지, 예비 부품, 자동 모니터링과 "
+        "배포 구조 관점에서 직접 검토합니다."
+    )
+
+
 def _facilitator_payload() -> dict:
     return {
         "agreements": [],
@@ -102,7 +116,12 @@ class _EndlessDisagreementLLM:
             speaker = _persona(prompt)
             counterpart = "dev_expert" if speaker == "planning_expert" else "planning_expert"
             return json.dumps(
-                _discussion_payload(speaker, recommended_next_speaker=counterpart, issue_resolved=False),
+                _discussion_payload(
+                    speaker,
+                    recommended_next_speaker=counterpart,
+                    issue_resolved=False,
+                    spoken_text=_spoken_text_for_prompt(prompt, speaker),
+                ),
                 ensure_ascii=False,
             )
         if "[진행자 정리 규칙]" in prompt:
@@ -124,23 +143,35 @@ def test_dynamic_routing_keeps_bouncing_between_experts_until_issue_cap():
     )
 
     expert_messages = [m for m in state["messages"] if m["speaker_id"] in ("planning_expert", "dev_expert")]
-    # 캡에 도달할 때까지 실제로 여러 번 주고받아야 한다(2회 고정이 아니라 캡만큼).
-    assert len(expert_messages) == MAX_EXPERT_TURNS_PER_ISSUE
-    # 진행자가 "매 발언 쌍마다" 등장하지 않고, 캡에 도달한 뒤 단 한 번만 정리해야 한다.
+    # 남은 쟁점을 한 번 이월하더라도 각 쟁점 안에서는 캡에 도달할 때까지 실제로
+    # 여러 번 주고받아야 한다(2회 고정이 아니라 쟁점별 캡만큼).
+    issue_message_counts: dict[str, int] = {}
+    for message in expert_messages:
+        issue_id = message["structured"]["active_issue_id"]
+        issue_message_counts[issue_id] = issue_message_counts.get(issue_id, 0) + 1
+    assert len(issue_message_counts) == 2
+    assert all(count == MAX_EXPERT_TURNS_PER_ISSUE for count in issue_message_counts.values())
+    # 진행자가 "매 발언 쌍마다" 등장하지 않고, 각 쟁점의 캡에 도달한 뒤 한 번씩 정리한다.
     facilitator_messages = [m for m in state["messages"] if m["speaker_id"] == "ideation_facilitator"]
-    assert len(facilitator_messages) == 2  # 오프닝 안건 제시(1) + 캡 도달 정리(1).
+    assert len(facilitator_messages) == 3  # 오프닝 안건 제시(1) + 쟁점별 캡 도달 정리(2).
     assert state.get("stop_reason") == "max_turns_reached"
     # 발언자가 planning/dev를 번갈아 오갔는지(고정 순서가 아니라 상대를 지목하는 동적 교대).
     speakers = [m["speaker_id"] for m in expert_messages]
     assert speakers[0] == "planning_expert"
     assert speakers[1] == "dev_expert"
     assert any(speakers[i] != speakers[i - 1] for i in range(1, len(speakers)))
-    # 진행자의 오프닝은 대화 컨텍스트일 뿐 전문가 상호 검토 대상은 아니다.
-    assert expert_messages[0]["structured"]["responding_to_message_id"] is None
+    # 각 쟁점의 첫 발언은 새 논점의 시작이므로 상호 검토 대상이 없고, 그 뒤 발언부터
+    # 직전 상대 전문가 메시지를 정확히 참조한다.
     message_by_id = {message["message_id"]: message for message in state["messages"]}
-    for message in expert_messages[1:]:
+    seen_issue_ids: set[str] = set()
+    for message in expert_messages:
+        issue_id = message["structured"]["active_issue_id"]
         target_id = message["structured"]["responding_to_message_id"]
         target_speaker = message["structured"]["responding_to_speaker_id"]
+        if issue_id not in seen_issue_ids:
+            seen_issue_ids.add(issue_id)
+            assert target_id is None
+            continue
         assert target_id in message_by_id
         assert message_by_id[target_id]["speaker_id"] == target_speaker
         assert target_speaker != message["speaker_id"]
@@ -186,6 +217,42 @@ def test_facilitator_does_not_wait_for_turn_cap_when_issue_resolves_quickly():
     assert state.get("stop_reason") == "consensus_reached"
     assert state["open_issues"] == []
     assert state["resolved_issues"]
+
+
+class _PlanningTriesToSkipDeveloperLLM:
+    """기획 위원이 곧바로 진행자를 추천해도 개발 검토가 보장되는지 재현한다."""
+
+    def __call__(self, prompt: str) -> str:
+        if "[의견 규칙]" in prompt:
+            speaker = _persona(prompt)
+            return json.dumps(
+                _discussion_payload(
+                    speaker,
+                    recommended_next_speaker="ideation_facilitator",
+                    needs_counterpart_response=False,
+                    issue_resolved=speaker == "dev_expert",
+                ),
+                ensure_ascii=False,
+            )
+        if "[진행자 정리 규칙]" in prompt:
+            return json.dumps(_facilitator_payload(), ensure_ascii=False)
+        raise AssertionError(f"예상하지 못한 프롬프트: {prompt[:150]}")
+
+
+def test_each_round_requires_developer_review_when_planning_recommends_facilitator():
+    state = start_ideation_conversation(
+        session_id="DYNAMIC-PLANNING-SKIP",
+        notice_and_criteria=NOTICE_AND_CRITERIA,
+        user_idea=USER_IDEA,
+        llm_call=_PlanningTriesToSkipDeveloperLLM(),
+        max_rounds=1,
+    )
+    expert_speakers = [
+        message["speaker_id"]
+        for message in state["messages"]
+        if message["speaker_id"] in ("planning_expert", "dev_expert")
+    ]
+    assert expert_speakers[:2] == ["planning_expert", "dev_expert"]
 
 
 class _CancelAfterNCallsLLM:
@@ -288,6 +355,12 @@ def test_reply_to_interjection_targets_planning_expert_then_dev_reviews():
         i for i, m in enumerate(result["messages"]) if m["message_type"] == "interjection"
     )
     assert result["messages"][interjection_idx]["structured"]["target_speaker_id"] == "planning_expert"
+    expected_planning_message_id = next(
+        m["message_id"] for m in reversed(state["messages"]) if m["speaker_id"] == "planning_expert"
+    )
+    assert result["messages"][interjection_idx]["referenced_message_ids"] == [
+        expected_planning_message_id
+    ]
     following_experts = [
         m["speaker_id"] for m in result["messages"][interjection_idx + 1 :]
         if m["speaker_id"] in ("planning_expert", "dev_expert")
@@ -295,6 +368,27 @@ def test_reply_to_interjection_targets_planning_expert_then_dev_reviews():
     assert following_experts[0] == "planning_expert"
     # 지정 위원 답변 후 상대(dev_expert)가 반드시 뒤이어 검토해야 한다.
     assert "dev_expert" in following_experts[1:]
+
+
+def test_reply_to_interjection_preserves_opinion_target_and_interrupted_speaker():
+    """중단된 발언자와 사용자가 의견을 제시할 대상은 독립된 문맥으로 저장돼야 한다."""
+    state = _interrupted_state_mid_round()
+    llm = _EndlessDisagreementLLM()
+
+    result = reply_to_interjection(
+        previous_state=state,
+        user_message="개발 위원이 말한 유지보수 문제를 더 구체적으로 설명해 주세요.",
+        target_speaker_id="dev_expert",
+        opinion_target_speaker_id="dev_expert",
+        interrupted_speaker_id="dev_expert",
+        llm_call=llm,
+    )
+
+    interjection = next(m for m in result["messages"] if m["message_type"] == "interjection")
+    assert interjection["structured"]["target_speaker_id"] == "dev_expert"
+    assert interjection["structured"]["opinion_target_speaker_id"] == "dev_expert"
+    assert interjection["structured"]["interrupted_speaker_id"] == "dev_expert"
+    assert interjection["referenced_message_ids"] == []
 
 
 def test_reply_to_interjection_both_picks_speaker_opposite_the_last_one():
@@ -337,12 +431,13 @@ def test_reply_to_interjection_rejects_invalid_target():
 # recommended_next_speaker=facilitator로 회의를 즉시 끝내려는" 더 어려운 상황에서도 상대
 # 위원의 검토가 코드로 강제되는지를 검증한다 — 이 override가 없으면 라우터가 곧장
 # facilitator로 가서 상대가 한 번도 검토하지 못한다.
-def _immediate_resolve_payload(speaker: str) -> dict:
+def _immediate_resolve_payload(speaker: str, prompt: str = "") -> dict:
     return _discussion_payload(
         speaker,
         recommended_next_speaker="ideation_facilitator",
         issue_resolved=True,
         needs_counterpart_response=False,
+        spoken_text=_spoken_text_for_prompt(prompt, speaker),
     )
 
 
@@ -353,7 +448,7 @@ class _FirstResponseResolvesImmediatelyLLM:
 
     def __call__(self, prompt: str) -> str:
         if "[의견 규칙]" in prompt:
-            return json.dumps(_immediate_resolve_payload(_persona(prompt)), ensure_ascii=False)
+            return json.dumps(_immediate_resolve_payload(_persona(prompt), prompt), ensure_ascii=False)
         if "[진행자 정리 규칙]" in prompt:
             return json.dumps(_facilitator_payload(), ensure_ascii=False)
         raise AssertionError(f"예상하지 못한 프롬프트: {prompt[:150]}")
@@ -602,6 +697,7 @@ class _ResumeWithFreshIssueLLM:
                 _discussion_payload(
                     speaker, active_issue_id="counterpart_review_check",
                     recommended_next_speaker=counterpart, issue_resolved=False,
+                    spoken_text=_spoken_text_for_prompt(prompt, speaker),
                 ),
                 ensure_ascii=False,
             )

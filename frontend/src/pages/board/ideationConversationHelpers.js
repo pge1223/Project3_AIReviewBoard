@@ -136,6 +136,7 @@ const PHASE_LABEL_KO = {
   awaiting_planning_answer: '기획 위원 답변 대기',
   awaiting_developer_answer: '개발 위원 답변 대기',
   awaiting_user_decision: '위원 논의 완료 · 의견은 선택 사항',
+  discussion_complete: '위원 논의 완료',
   finalized: '완료',
   failed: '실패',
 }

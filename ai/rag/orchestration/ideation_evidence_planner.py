@@ -33,13 +33,16 @@ from typing import Any, Optional
 from ai.rag.evidence_linking.config import EvidenceLinkingConfig
 from ai.rag.evidence_linking.relevance import calculate_relevance_score, extract_keywords, is_relevant_candidate
 
-POLICY_VERSION = "ideation-planner-v3"
+POLICY_VERSION = "ideation-planner-v9"
 
 # 이 값 미만이면 "이번 쟁점의 실제 질의문과 무관하다"고 보고 제외한다 — calculate_relevance_score는
 # 0~1 근사치이고, claim_grounding의 EvidenceLinkingConfig.min_relevance_score(0.1, 사후 검증용
 # 느슨한 값)와는 별개로 planner 전용 임계값을 둔다(요청: 기존 threshold를 임의로 낮추지 않고
 # 새 임계값은 상수로 명시).
 MIN_ISSUE_RELEVANCE_SCORE: float = 0.15
+# 공모전 criteria는 대체로 "AI 활용 여부"처럼 범용 문장이라 target보다 구체적인 주장에
+# 오용되기 쉽다. 현재 쟁점과의 직접 겹침이 더 강할 때만 주입한다.
+MIN_CRITERIA_ISSUE_RELEVANCE_SCORE: float = 0.25
 
 # 역할별로 selected_evidence에 담을 최대 개수(공통 정책 — 요청 9번: "역할이 다르더라도 동일
 # target을 보는 것은 정상"이므로 role별로 독립적으로 계산한다).
@@ -89,7 +92,103 @@ _CLAIM_TYPE_BY_ROLE: dict[str, str] = {"target": "user_provided_fact", "criteria
 _SHADOW_HISTORY_KEEP = 20
 
 _SENTENCE_END_RE = re.compile(r"[.?!]")
+_CLAUSE_BOUNDARY_RE = re.compile(r"[,;；]")
 _BULLET_PREFIX_RE = re.compile(r"^\s*[-*•·]\s+")
+_TARGET_FIELD_LABEL_RE = re.compile(
+    r"^\s*(?:[-*•·]\s+)?(?P<label>"
+    r"제목|문제|대상\s*사용자|해결\s*방식|주요\s*기능|차별점|기대\s*효과|필요\s*데이터|"
+    r"기술\s*접근\s*방식|MVP\s*범위|현재까지\s*확인된\s*제약사항|질문|사용자\s*답변"
+    r")\s*[:：]\s*",
+    re.IGNORECASE,
+)
+
+_ISSUE_QUOTE_FOCUS_MARKERS: dict[str, tuple[str, ...]] = {
+    "problem": ("문제", "불편", "위험", "피해", "원인", "영향", "비효율", "오염", "어려움", "부족"),
+    "target_user": ("사용자", "이용자", "고객", "시민", "주민", "대상", "상황"),
+    "core_value": ("가치", "효과", "개선", "절감", "편의", "안전", "혜택"),
+    "contest_fit": ("공모", "평가", "심사", "기준", "주제", "적합"),
+    "differentiation": ("차별", "기존", "대비", "독창", "혁신", "경쟁"),
+    "mvp": ("MVP", "최소", "우선", "범위", "초기", "핵심 기능"),
+    "data": ("데이터", "수집", "확보", "품질", "센서", "연동"),
+    "ai_role": ("AI", "모델", "알고리즘", "예측", "분석", "자동화"),
+    "roadmap": ("확장", "단계", "로드맵", "향후", "도입", "고도화"),
+}
+
+_ISSUE_QUOTE_FORBIDDEN_MARKERS: dict[str, tuple[str, ...]] = {
+    # 문제 정의 단계에서 평가표의 확장성·적용성 문장이나 구현 계획을 근거로 고르는 것을 차단한다.
+    "problem": (
+        "확장성",
+        "확장 가능",
+        "적용 가능",
+        "혁신성",
+        "차별성",
+        "MVP",
+        "구현",
+        "데이터 확보",
+        "데이터 수집",
+        "운영 비용",
+        "보안",
+        "KPI",
+        "정량적 성과",
+    ),
+    "target_user": ("MVP", "구현", "확장성", "데이터 수집", "보안"),
+    "core_value": ("MVP", "구현", "데이터 수집", "보안"),
+    "differentiation": ("MVP", "데이터 수집", "보안", "로드맵"),
+}
+
+_ISSUE_ID_ALIASES = {
+    "problem_definition": "problem",
+    "user": "target_user",
+    "customer": "target_user",
+    "value": "core_value",
+    "competition_fit": "contest_fit",
+    "feasibility": "mvp",
+    "data_integration": "data",
+}
+
+_TARGET_FIELD_ISSUES: dict[str, frozenset[str]] = {
+    "문제": frozenset({"problem"}),
+    "대상사용자": frozenset({"target_user"}),
+    "해결방식": frozenset({"ai_role"}),
+    "주요기능": frozenset({"ai_role", "mvp"}),
+    "차별점": frozenset({"differentiation"}),
+    "기대효과": frozenset({"core_value"}),
+    "필요데이터": frozenset({"data"}),
+    "기술접근방식": frozenset({"ai_role", "mvp"}),
+    "MVP범위": frozenset({"mvp"}),
+    "현재까지확인된제약사항": frozenset({"mvp", "data", "roadmap"}),
+}
+
+_META_INSTRUCTION_MARKERS = (
+    "검토해주세요",
+    "검토해 주세요",
+    "논의해주세요",
+    "논의해 주세요",
+    "판단해주세요",
+    "판단해 주세요",
+    "구체화하고",
+    "구체화해",
+    "유지하면서",
+    "한 차례 더",
+    "문서 근거와 구분",
+)
+_SCORE_ONLY_HEADING_RE = re.compile(
+    r"^\s*(?:평가\s*기준\s*)?[가-힣A-Za-z][가-힣A-Za-z\s·/&-]{1,30}\s*"
+    r"\(\s*\d+(?:\.\d+)?\s*(?:점)?\s*\)\s*$"
+)
+
+
+def _is_low_information_quote(quote: str) -> bool:
+    """배점이 붙은 평가항목 제목만으로는 주장 근거가 될 수 없으므로 quote 후보에서 제외한다."""
+    normalized = (quote or "").strip()
+    return bool(_SCORE_ONLY_HEADING_RE.fullmatch(normalized))
+
+
+def _is_meta_instruction_quote(item: dict, quote: str) -> bool:
+    """사용자 답변 저장 청크 중 회의 진행 지시만 있는 문장을 사실 근거에서 제외한다."""
+    if item.get("ideation_source_type") != "user_session_answer":
+        return False
+    return any(marker in quote for marker in _META_INSTRUCTION_MARKERS)
 
 
 def _role_allows_criteria_for_issue(persona_id: str, issue_title: str) -> bool:
@@ -193,7 +292,31 @@ def evaluate_evidence_eligibility(
         document_title=item.get("document_name"),
         config=cfg,
     )
-    issue_relevance_pass = issue_relevance_score >= MIN_ISSUE_RELEVANCE_SCORE
+    issue_relevance_threshold = (
+        MIN_CRITERIA_ISSUE_RELEVANCE_SCORE
+        if document_role == "criteria"
+        else MIN_ISSUE_RELEVANCE_SCORE
+    )
+    # v3 평가표 청크는 "항목 + 질문 1개"라 짧아서 어휘 비율 기반 점수가 0.25보다 낮을 수
+    # 있다. 400자 이하의 criteria 세부 문항이 쟁점 marker/금지 marker 검사를 직접 통과하면
+    # 이를 별도 신호로 인정한다. 대형 범용 청크에는 적용하지 않아 기존 과대 매칭을 막는다.
+    direct_issue_focus_pass = False
+    if document_role == "criteria" and len(text) <= 400:
+        # 하나의 criteria 청크에 제목과 여러 세부 문항이 함께 있을 수 있다. 청크 전체에
+        # 다른 쟁점의 금지어가 하나 있다는 이유로 현재 쟁점과 정확히 맞는 세부 문항까지
+        # 버리지 않고, 실제 quote 후보 중 하나가 직접 통과하는지를 본다.
+        direct_issue_focus_pass = any(
+            not _is_low_information_quote(text[start:end])
+            and _quote_issue_focus(
+                text[start:end],
+                effective_issue,
+                field_label=field_label,
+            )[0]
+            for start, end, field_label in _candidate_spans(text)
+        )
+    issue_relevance_pass = (
+        issue_relevance_score >= issue_relevance_threshold or direct_issue_focus_pass
+    )
     if not issue_relevance_pass:
         exclusion_reasons.append("below_issue_relevance")
 
@@ -212,7 +335,9 @@ def evaluate_evidence_eligibility(
         "retrieval_score_pass": retrieval_score_pass,
         "retrieval_score": retrieval_score,
         "issue_relevance_score": issue_relevance_score,
+        "issue_relevance_threshold": issue_relevance_threshold,
         "issue_relevance_pass": issue_relevance_pass,
+        "direct_issue_focus_pass": direct_issue_focus_pass,
         "legacy_relevance_pass": legacy_relevance_pass,
         "role_policy_pass": role_policy_pass,
         "eligible": eligible,
@@ -253,16 +378,73 @@ def _iter_sentence_spans(content: str, line_start: int, line_end: int) -> list[t
     return spans
 
 
-def _candidate_spans(content: str) -> list[tuple[int, int]]:
-    """quote 후보 구간을 줄바꿈/글머리 단위로 먼저 나누고, 각 줄 안에서 문장 단위로 다시
-    나눈다(요청: "마침표/물음표/느낌표뿐 아니라 줄바꿈·bullet 단위도 후보로 분리")."""
+def _iter_clause_spans(content: str, start: int, end: int) -> list[tuple[int, int]]:
+    """긴 문장 안에서 쉼표/세미콜론으로 분리되는 짧은 원문 절을 quote 후보로 추가한다."""
+    text = content[start:end]
+    boundaries = [0, *(match.end() for match in _CLAUSE_BOUNDARY_RE.finditer(text)), len(text)]
     spans: list[tuple[int, int]] = []
-    for line_start, line_end in _iter_line_spans(content):
-        spans.extend(_iter_sentence_spans(content, line_start, line_end))
+    for left, right in zip(boundaries, boundaries[1:]):
+        segment = text[left:right]
+        leading = len(segment) - len(segment.lstrip(" \t,;；"))
+        trailing = len(segment.rstrip(" \t,;；"))
+        clause_start = start + left + leading
+        clause_end = start + left + trailing
+        if clause_end > clause_start:
+            spans.append((clause_start, clause_end))
     return spans
 
 
-def extract_planner_quote(content: str, query: str) -> Optional[tuple[str, int, int]]:
+def _field_value_span(content: str, start: int, end: int) -> tuple[int, int, str | None] | None:
+    """target 합성 문서의 ``문제:`` 같은 필드 라벨을 quote 내용에서 제거한다.
+
+    라벨과 값이 같은 줄이면 값 부분의 원문 span만 반환하고, 라벨만 있는 줄이면 None을
+    반환한다. 값이 다음 줄에 있으면 그 다음 줄은 _iter_line_spans()가 별도 후보로 처리한다.
+    """
+    text = content[start:end]
+    match = _TARGET_FIELD_LABEL_RE.match(text)
+    if not match:
+        return start, end, None
+    value = text[match.end():]
+    leading = len(value) - len(value.lstrip())
+    trailing = len(value.rstrip())
+    value_start = start + match.end() + leading
+    value_end = start + match.end() + trailing
+    if value_end <= value_start:
+        return None
+    return value_start, value_end, match.group("label")
+
+
+def _candidate_spans(content: str) -> list[tuple[int, int, str | None]]:
+    """quote 후보 구간을 줄바꿈/글머리 단위로 먼저 나누고, 각 줄 안에서 문장 단위로 다시
+    나눈다(요청: "마침표/물음표/느낌표뿐 아니라 줄바꿈·bullet 단위도 후보로 분리")."""
+    spans: list[tuple[int, int, str | None]] = []
+    current_field_label: str | None = None
+    for line_start, line_end in _iter_line_spans(content):
+        value_span = _field_value_span(content, line_start, line_end)
+        if value_span is None:
+            label_match = _TARGET_FIELD_LABEL_RE.match(content[line_start:line_end])
+            if label_match:
+                current_field_label = label_match.group("label")
+            continue
+        value_start, value_end, inline_label = value_span
+        if inline_label:
+            current_field_label = inline_label
+        sentence_spans = _iter_sentence_spans(content, value_start, value_end)
+        spans.extend((start, end, current_field_label) for start, end in sentence_spans)
+        for sentence_start, sentence_end in sentence_spans:
+            spans.extend(
+                (start, end, current_field_label)
+                for start, end in _iter_clause_spans(content, sentence_start, sentence_end)
+            )
+    return spans
+
+
+def extract_planner_quote(
+    content: str,
+    query: str,
+    *,
+    issue: dict | None = None,
+) -> Optional[tuple[str, int, int]]:
     """content에서 query와 가장 관련 있는 원문 구간을 그대로 잘라 반환한다(quote, start, end).
     quote_extractor.extract_quote()와 달리 관련 구간을 못 찾으면 청크 앞부분으로 폴백하지
     않는다 — 관련성 없는 fallback quote를 계획에 담지 않기 위해서다(요청 사항 그대로).
@@ -274,10 +456,49 @@ def extract_planner_quote(content: str, query: str) -> Optional[tuple[str, int, 
         return None
 
     best_span: Optional[tuple[int, int]] = None
-    best_score = 0
-    for start, end in _candidate_spans(content):
-        segment_tokens = extract_keywords(content[start:end])
-        score = len(query_tokens & segment_tokens)
+    best_score: tuple[int, int, float] = (0, 0, 0.0)
+    for start, end, field_label in _candidate_spans(content):
+        segment_text = content[start:end]
+        if _is_low_information_quote(segment_text):
+            continue
+        if issue is not None and not _quote_issue_focus(
+            segment_text,
+            issue,
+            field_label=field_label,
+        )[0]:
+            continue
+        segment_tokens = extract_keywords(segment_text)
+        # 한국어 조사/어미가 붙은 "문제의/설정이"도 query의 "문제/설정"과 같은 개념으로
+        # 취급한다. 완전 부분 문자열 비교는 2자 이상 토큰에만 적용해 한 글자 과매칭을 피한다.
+        overlap = sum(
+            1
+            for query_token in query_tokens
+            if any(
+                query_token == segment_token
+                or (
+                    min(len(query_token), len(segment_token)) >= 2
+                    and (query_token in segment_token or segment_token in query_token)
+                )
+                for segment_token in segment_tokens
+            )
+        )
+        label_tokens = extract_keywords(field_label or "")
+        label_overlap = sum(
+            1
+            for query_token in query_tokens
+            if any(
+                query_token == label_token
+                or (
+                    min(len(query_token), len(label_token)) >= 2
+                    and (query_token in label_token or label_token in query_token)
+                )
+                for label_token in label_tokens
+            )
+        )
+        precision = overlap / len(segment_tokens) if segment_tokens else 0.0
+        # target 합성 문서는 필드 구조가 명시적이므로, 현재 query와 맞는 필드의 실제 값을
+        # 다른 섹션의 우연한 단어 일치보다 우선한다. quote 자체에는 라벨을 포함하지 않는다.
+        score = (label_overlap, overlap, precision)
         if score > best_score:
             best_score = score
             best_span = (start, end)
@@ -295,6 +516,67 @@ def extract_planner_quote(content: str, query: str) -> Optional[tuple[str, int, 
     end = start + len(quote)
     assert content[start:end] == quote  # exact substring invariant
     return quote, start, end
+
+
+def _normalized_issue_id(issue: dict) -> str:
+    issue_id = str(issue.get("issue_id") or "").strip()
+    if issue_id.startswith("topic_"):
+        issue_id = issue_id[len("topic_"):]
+    return _ISSUE_ID_ALIASES.get(issue_id, issue_id)
+
+
+def _planner_quote_query(issue: dict) -> str:
+    """아이디어 전체·역할 설명이 아닌 현재 쟁점 어휘만으로 quote를 고른다."""
+    issue_id = _normalized_issue_id(issue)
+    markers = _ISSUE_QUOTE_FOCUS_MARKERS.get(issue_id, ())
+    focused = " ".join((str(issue.get("title") or ""), *markers)).strip()
+    return focused or str(issue.get("query") or "")
+
+
+def _normalized_target_field_label(field_label: str | None) -> str:
+    return re.sub(r"\s+", "", str(field_label or "")).upper()
+
+
+def _field_label_matches_issue(field_label: str | None, issue: dict) -> bool:
+    normalized_label = _normalized_target_field_label(field_label)
+    return _normalized_issue_id(issue) in _TARGET_FIELD_ISSUES.get(normalized_label, frozenset())
+
+
+def _quote_issue_focus(
+    quote: str,
+    issue: dict,
+    *,
+    field_label: str | None = None,
+) -> tuple[bool, float, Optional[str]]:
+    """선택 quote 자체가 현재 쟁점에 직접 맞는지 판정한다.
+
+    whole chunk 관련성만 보면 큰 평가표 chunk 안의 다른 문장이 점수를 올리는 문제가 있으므로,
+    최종 주입 문장에 대해 쟁점 marker와 명시적 이탈 marker를 다시 검사한다.
+    """
+    issue_id = _normalized_issue_id(issue)
+    markers = _ISSUE_QUOTE_FOCUS_MARKERS.get(issue_id)
+    field_focus_pass = _field_label_matches_issue(field_label, issue)
+    if not markers:
+        score = calculate_relevance_score(issue.get("title") or issue.get("query") or "", quote)
+        return (score >= MIN_ISSUE_RELEVANCE_SCORE, score, None if score >= MIN_ISSUE_RELEVANCE_SCORE else "quote_below_issue_relevance")
+
+    normalized = quote.lower()
+    matched = {marker for marker in markers if marker.lower() in normalized}
+    if not matched and not field_focus_pass:
+        return False, 0.0, "quote_missing_issue_focus"
+    forbidden = _ISSUE_QUOTE_FORBIDDEN_MARKERS.get(issue_id, ())
+    if any(marker.lower() in normalized for marker in forbidden):
+        return False, len(matched) / len(markers), "quote_conflicts_with_issue"
+    score = max(len(matched) / len(markers), 1.0 if field_focus_pass else 0.0)
+    return True, score, None
+
+
+def _field_label_for_span(content: str, start: int, end: int) -> str | None:
+    """선택된 원문 span이 속한 target 합성 필드 라벨을 되찾는다."""
+    for candidate_start, candidate_end, field_label in _candidate_spans(content):
+        if candidate_start <= start and end <= candidate_end:
+            return field_label
+    return None
 
 
 def _selection_reason_code(persona_id: str, document_role: str, reused: bool) -> str:
@@ -388,6 +670,14 @@ def validate_evidence_plan(
             or content[start:end] != quote
         ):
             errors.append(f"quote_offset_invariant_failed:{ref}")
+        elif plan.get("issue"):
+            focus_pass, _, focus_reason = _quote_issue_focus(
+                quote,
+                plan["issue"],
+                field_label=evidence.get("field_label"),
+            )
+            if not focus_pass:
+                errors.append(f"{focus_reason or 'quote_issue_mismatch'}:{ref}")
 
         if not evidence.get("selection_reason_code"):
             errors.append(f"missing_selection_reason:{ref}")
@@ -449,27 +739,51 @@ def build_evidence_plan(
 
     history_chunk_ids = {h.get("chunk_id") for h in (shadow_history or []) if h.get("chunk_id")}
 
-    def sort_key(pair: tuple[dict, dict]):
-        item, evaluation = pair
+    quote_candidates: list[tuple[dict, dict, tuple[str, int, int], float]] = []
+    for item, evaluation in eligible:
+        content = item.get("text") or item.get("quote") or ""
+        extraction = extract_planner_quote(
+            content,
+            _planner_quote_query(issue),
+            issue=issue,
+        )
+        if extraction is None:
+            continue
+        quote, _, _ = extraction
+        if _is_meta_instruction_quote(item, quote):
+            continue
+        quote_start, quote_end = extraction[1], extraction[2]
+        field_label = _field_label_for_span(content, quote_start, quote_end)
+        focus_pass, focus_score, _ = _quote_issue_focus(
+            quote,
+            issue,
+            field_label=field_label,
+        )
+        if focus_pass:
+            quote_candidates.append((item, evaluation, extraction, focus_score, field_label))
+
+    if not quote_candidates:
+        return _empty_plan(plan_id, persona_id, issue, "no_issue_focused_quote")
+
+    def sort_key(pair: tuple[dict, dict, tuple[str, int, int], float, str | None]):
+        item, evaluation, _, quote_focus_score, _field_label = pair
         reused = item.get("chunk_id") in history_chunk_ids
         return (
+            0 if item.get("document_role") == "target" else 1,
             1 if reused else 0,
+            -quote_focus_score,
             -evaluation["issue_relevance_score"],
             -(evaluation["retrieval_score"] or 0.0),
             item.get("chunk_id") or "",
         )
 
-    ordered = sorted(eligible, key=sort_key)
+    ordered = sorted(quote_candidates, key=sort_key)
 
     role_counts: dict[str, int] = {}
     selected: list[dict] = []
-    for item, evaluation in ordered:
+    for item, evaluation, extraction, quote_focus_score, field_label in ordered:
         role = item.get("document_role")
         if role_counts.get(role, 0) >= _ROLE_MAX_SELECTION.get(role, 0):
-            continue
-        content = item.get("text") or item.get("quote") or ""
-        extraction = extract_planner_quote(content, issue["query"] or issue["title"])
-        if extraction is None:
             continue
         quote, quote_start, quote_end = extraction
         reused = item.get("chunk_id") in history_chunk_ids
@@ -485,6 +799,8 @@ def build_evidence_plan(
                 "quote_end": quote_end,
                 "retrieval_score": evaluation["retrieval_score"],
                 "issue_relevance_score": evaluation["issue_relevance_score"],
+                "quote_issue_relevance_score": quote_focus_score,
+                "field_label": field_label,
                 "selection_reason_code": _selection_reason_code(persona_id, role, reused),
                 "reused_in_same_issue": reused,
             }
@@ -516,6 +832,7 @@ def build_evidence_plan(
 __all__ = [
     "POLICY_VERSION",
     "MIN_ISSUE_RELEVANCE_SCORE",
+    "MIN_CRITERIA_ISSUE_RELEVANCE_SCORE",
     "resolve_retrieval_score",
     "evaluate_evidence_eligibility",
     "extract_planner_quote",

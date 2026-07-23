@@ -81,7 +81,16 @@ export async function replyIdeationConversation(sessionId, message, model) {
 export async function replyIdeationConversationStream(
   sessionId,
   message,
-  { model, signal, onEvent, targetSpeakerId, interruptedRequestId, activeIssueId } = {},
+  {
+    model,
+    signal,
+    onEvent,
+    targetSpeakerId,
+    opinionTargetSpeakerId,
+    interruptedSpeakerId,
+    interruptedRequestId,
+    activeIssueId,
+  } = {},
 ) {
   const res = await fetch(`${API_BASE_URL}/ideation-conversation/${sessionId}/reply/stream`, {
     method: 'POST',
@@ -90,6 +99,8 @@ export async function replyIdeationConversationStream(
       message,
       model: model || undefined,
       target_speaker_id: targetSpeakerId || undefined,
+      opinion_target_speaker_id: opinionTargetSpeakerId || undefined,
+      interrupted_speaker_id: interruptedSpeakerId || undefined,
       interrupted_request_id: interruptedRequestId || undefined,
       active_issue_id: activeIssueId || undefined,
     }),

@@ -21,6 +21,7 @@ planning_expert -> "planning"(문서 구조·기획 관점), dev_expert -> "tech
 from __future__ import annotations
 
 import logging
+import re
 from typing import Callable, Optional
 
 from ai.rag.integration.meeting_evidence_adapter import build_meeting_retrieved_evidence
@@ -61,6 +62,64 @@ _DOCUMENT_ROLE_QUOTAS: dict[str, dict[str, int]] = {
 # 나눠 담을 후보가 부족하지 않다(정확한 candidate_k는 RoleAwareRetrievalService 자체
 # 기본값을 그대로 따르되, 여기서는 role 필터링을 위해 한 번 더 넉넉한 top_k를 요청한다).
 _CANDIDATE_POOL_MULTIPLIER = 4
+
+# 긴 아이디어/역할별 query는 target 검색에는 유리하지만, 공모전 평가표의 짧은 세부 문항은
+# 의미가 희석돼 Top-5 밖으로 밀릴 수 있다. 현재 쟁점 제목을 topic_query에서 꺼내 한 번 더
+# 짧게 검색한 뒤 criteria 후보만 합친다. LLM 호출은 없고 기존 KURE/Chroma만 한 번 더 쓴다.
+_ISSUE_FOCUSED_QUERY_TERMS: dict[str, str] = {
+    "문제 정의": "도시 문제의 설정 사용자 피해 위험 발생 원인 현재 한계",
+    "목표 사용자": "목표 사용자 수혜자 시민 참여 사용자 요구",
+    "핵심 가치": "시민 편익 삶의 질 사회적 가치",
+    "공모전 적합성": "평가 기준 공모 목적 AI 스마트시티 적합성",
+    "차별성과 고객 가치": "혁신성 기존 방식 대비 차별성 개선 효과 고객 가치",
+    "MVP 범위": "실현 가능성 기술 완성도 경제성 핵심 기능 범위",
+    "데이터 확보 방안": "데이터 활용 수집 품질 보안",
+    "AI 활용 방식": "AI 기술 활용 도시 문제 해결 운영 혁신",
+    "확장 로드맵": "확장성 확산 가능성 지속 가능성 추진 전략",
+}
+_CURRENT_ISSUE_PATTERN = re.compile(r"(?:^|\|)\s*현재 쟁점:\s*([^|]+)")
+
+
+def _build_issue_focused_query(topic_query: str) -> str | None:
+    """topic_query의 구조화된 '현재 쟁점'을 짧은 criteria 검색어로 변환한다."""
+    match = _CURRENT_ISSUE_PATTERN.search(topic_query or "")
+    if not match:
+        return None
+    issue_title = match.group(1).strip()
+    terms = _ISSUE_FOCUSED_QUERY_TERMS.get(issue_title)
+    return f"{issue_title} {terms}" if terms else None
+
+
+def _search_issue_focused_criteria(
+    role_retrieval_service: RoleAwareRetrievalService,
+    *,
+    persona_id: str,
+    topic_query: str,
+    project_id: str,
+    top_k: int,
+) -> list[dict]:
+    """현재 쟁점 전용 semantic 검색 결과 중 criteria 문서만 반환한다."""
+    focused_query = _build_issue_focused_query(topic_query)
+    if not focused_query:
+        return []
+    try:
+        response = role_retrieval_service.search_by_role(
+            query=focused_query,
+            project_id=project_id,
+            role_id=None,
+            top_k=top_k,
+        )
+    except Exception:
+        logger.exception(
+            "[IDEATION_ISSUE_FOCUSED_CRITERIA_SEARCH_FAILED] persona_id=%s project_id=%s",
+            persona_id,
+            project_id,
+        )
+        return []
+    items = build_meeting_retrieved_evidence(
+        [PersonaRoleSearchResponse(persona_id=persona_id, response=response, role_id=None)]
+    )
+    return [dict(item) for item in items if item.get("document_role") == "criteria"]
 
 
 def _scope_target_evidence(
@@ -253,6 +312,14 @@ def search_ideation_evidence(
     )
     scoped_target_count = sum(1 for item in scoped_items if item.get("document_role") == "target")
 
+    issue_focused_criteria_items = _search_issue_focused_criteria(
+        role_retrieval_service,
+        persona_id=persona_id,
+        topic_query=topic_query,
+        project_id=project_id,
+        top_k=top_k,
+    )
+
     candidate_direct_items: list[dict] = []
     if selected_candidate_document_id:
         candidate_direct_items = _search_candidate_target_direct(
@@ -265,9 +332,10 @@ def search_ideation_evidence(
             top_k=top_k,
         )
 
-    direct_keys = {(item.get("document_id", ""), item.get("chunk_id", "")) for item in candidate_direct_items}
-    merged_items = candidate_direct_items + [
-        item for item in scoped_items if (item.get("document_id", ""), item.get("chunk_id", "")) not in direct_keys
+    priority_items = candidate_direct_items + issue_focused_criteria_items
+    priority_keys = {(item.get("document_id", ""), item.get("chunk_id", "")) for item in priority_items}
+    merged_items = priority_items + [
+        item for item in scoped_items if (item.get("document_id", ""), item.get("chunk_id", "")) not in priority_keys
     ]
 
     composed, missing_document_roles = _compose_by_document_role(merged_items, persona_id=persona_id, top_k=top_k)
@@ -276,7 +344,8 @@ def search_ideation_evidence(
     logger.info(
         "[IDEATION_EVIDENCE_SEARCH_DEBUG] persona_id=%s project_id=%s session_id=%s "
         "selected_candidate_document_id=%s raw_target_count=%d scoped_target_count=%d "
-        "candidate_target_direct_search_count=%d final_target_count=%d missing_document_roles=%s",
+        "candidate_target_direct_search_count=%d issue_focused_criteria_count=%d "
+        "final_target_count=%d missing_document_roles=%s",
         persona_id,
         project_id,
         session_id,
@@ -284,6 +353,7 @@ def search_ideation_evidence(
         raw_target_count,
         scoped_target_count,
         len(candidate_direct_items),
+        len(issue_focused_criteria_items),
         final_target_count,
         missing_document_roles,
     )

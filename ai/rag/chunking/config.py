@@ -28,7 +28,11 @@ DEFAULT_SEPARATORS: list[str] = [
 # 실질적으로 달라진다. chunk_id 해시에 chunking_version이 포함되므로(_generate_chunk_id),
 # 동일 문서라도 v1 청크와 v2 청크는 서로 다른 chunk_id를 가진다 — 기존 v1로 색인된 Chroma
 # 데이터는 자동으로 갱신되거나 삭제되지 않으며, 개선 효과를 적용하려면 해당 문서를 재색인해야 한다.
-CHUNKING_VERSION: str = "chunking_v2"
+# v2 -> v3: 평가표의 여러 평가 항목과 세부 질문이 한 800자 청크에 함께 들어가
+# 검색/Planner가 현재 쟁점과 다른 질문을 고르는 문제를 해결한다. 평가표로 확인된 본문만
+# "평가 항목 + 세부 질문 1개" 단위로 분리하며 일반 본문/표 청킹은 기존 규칙을 유지한다.
+# 기존 v2 Chroma 레코드는 자동 변환되지 않으므로 효과를 적용하려면 문서를 재색인해야 한다.
+CHUNKING_VERSION: str = "chunking_v3"
 
 # 목차 판정: MVP는 강한 heading 키워드가 있을 때만 확정한다 (과탐 방지 우선)
 TOC_HEADING_KEYWORDS: list[str] = ["목차", "차례", "contents"]

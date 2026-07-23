@@ -98,6 +98,8 @@ def _route_after_facilitator(state: IdeationConvState) -> str:
         return "failed"
     if state.get("next_route") == "continue_round":
         return "continue_round"
+    if state.get("phase") == "discussion_complete":
+        return "discussion_complete"
     return "await_user_decision"
 
 
@@ -249,6 +251,7 @@ def assemble_ideation_conversation_graph(
         _route_after_facilitator,
         {
             "continue_round": "planning_expert_discussion",
+            "discussion_complete": END,
             "await_user_decision": END,
             "failed": END,
         },

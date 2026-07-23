@@ -4,7 +4,7 @@
 # import: 같은 패키지의 calculator, weights, deductions, explanation, comparison.
 
 from .calculator import calculate_score
-from .comparison import build_revision_comparison
+from .comparison import build_revision_comparison, build_version_history
 from .deductions import compute_penalties
 from .explanation import build_score_explanation
 from .personalization import (
@@ -24,6 +24,7 @@ __all__ = [
     "build_impl_guide_prompt",
     "build_revision_comparison",
     "build_score_explanation",
+    "build_version_history",
     "calculate_score",
     "classify_impl_difficulty",
     "compute_penalties",

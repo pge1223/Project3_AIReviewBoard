@@ -158,6 +158,106 @@ def test_retry_note_still_present_when_second_response_also_fails():
 
 
 # ---------------------------------------------------------------------------
+# 1-1. 용준/Claude(2026-07-23, 요청: 스트리밍 UX 버그 수정) — grounding 재시도가 이전
+# 스트림 말풍선을 명시적으로 discard하는지. 재시도 프롬프트는 원본과 문자열이 달라
+# (prompt + retry_note) llm_call 내부의 "동일 prompt 재호출" 감지로는 자동으로 잡히지
+# 않으므로, _ground_and_finalize_claims가 재시도 llm_call 전에 반드시
+# discard_streamed_prompt(원본 prompt, ...)를 먼저 불러야 프런트에서 이전 초안과 재시도
+# 초안이 동시에 남는 문제가 생기지 않는다.
+# ---------------------------------------------------------------------------
+
+
+class _RecordingStreamingLLM:
+    def __init__(self, response: str):
+        self.response = response
+        self.calls: list[str] = []
+        self.discards: list[tuple[str, str, bool]] = []
+
+    def __call__(self, prompt: str) -> str:
+        self.calls.append(prompt)
+        return self.response
+
+    def discard_streamed_prompt(self, prompt: str, reason: str, will_retry: bool = True) -> None:
+        self.discards.append((prompt, reason, will_retry))
+
+
+def test_grounding_retry_discards_previous_stream_before_retry_call():
+    first_raw = {
+        "spoken_text": "초안",
+        "claims": [
+            {
+                "claim_id": "claim_1",
+                "text": "WSCE는 실현 가능성과 경제성을 평가한다.",
+                "claim_type": "document_fact",
+                "evidence_refs": ["E-does-not-exist"],
+            }
+        ],
+    }
+    second_response = json.dumps(
+        {
+            "spoken_text": "재시도 응답",
+            "claims": [
+                {
+                    "claim_id": "claim_1",
+                    "text": "WSCE는 실현 가능성과 경제성을 평가한다.",
+                    "claim_type": "document_fact",
+                    "evidence_refs": ["E1"],
+                }
+            ],
+        },
+        ensure_ascii=False,
+    )
+    llm = _RecordingStreamingLLM(second_response)
+
+    _ground_and_finalize_claims(
+        persona_id="planning_expert",
+        raw=first_raw,
+        retrieved=EVIDENCE,
+        prompt="원본 프롬프트",
+        llm_call=llm,
+        validate=_validate_always_ok,
+        used=1,
+        ground_claims_fn=_ground_claims_fn,
+    )
+
+    # discard가 원본 prompt에 대해, 재시도 llm_call보다 먼저 정확히 한 번 일어나야 한다.
+    assert llm.discards == [("원본 프롬프트", "grounding_retry", True)]
+    assert len(llm.calls) == 1
+    assert llm.calls[0] != "원본 프롬프트"  # 재시도는 retry_note가 덧붙은 다른 프롬프트다.
+
+
+def test_grounding_success_on_first_try_never_discards_anything():
+    """근거 연결이 처음부터 성공하면 재시도 자체가 없으므로 discard도 호출되지 않는다 —
+    정상 스트리밍 말풍선을 잘못 검토 중 상태로 바꾸면 안 된다."""
+    raw = {
+        "spoken_text": "발언",
+        "claims": [
+            {
+                "claim_id": "claim_1",
+                "text": "WSCE는 실현 가능성과 경제성을 평가한다.",
+                "claim_type": "document_fact",
+                "evidence_refs": ["E1"],
+            }
+        ],
+    }
+    llm = _RecordingStreamingLLM("{}")
+
+    _ground_and_finalize_claims(
+        persona_id="planning_expert",
+        raw=raw,
+        retrieved=EVIDENCE,
+        prompt="원본 프롬프트",
+        llm_call=llm,
+        validate=_validate_always_ok,
+        used=1,
+        ground_claims_fn=_ground_claims_fn,
+    )
+
+    assert llm.discards == []
+    assert llm.calls == []
+
+
+# ---------------------------------------------------------------------------
 # 2. IDEATION_EVIDENCE_LINKED 로그 매핑
 # ---------------------------------------------------------------------------
 

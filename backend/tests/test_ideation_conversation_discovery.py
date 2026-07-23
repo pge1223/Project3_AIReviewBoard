@@ -357,7 +357,7 @@ def test_active_stage_switches_to_refinement_after_candidate_selection(client: T
     assert body["ideation_mode"] == "discovery"
     # 용준/Claude(2026-07-21, 요청: 전문가 라운드테이블 전환) — 후보 확정 직후 라운드테이블이
     # 같은 요청 안에서 곧바로 끝까지 실행돼 "awaiting_user_decision"으로 멈춘다.
-    assert body["phase"] == "awaiting_user_decision"
+    assert body["phase"] == "discussion_complete"
     assert body["active_stage"] == "refinement"
 
 
@@ -392,7 +392,7 @@ def test_start_with_user_idea_still_returns_refinement_mode_backward_compatible(
     assert body["ideation_mode"] == "refinement"
     # 용준/Claude(2026-07-21, 요청: 전문가 라운드테이블 전환) — 초기 아이디어가 있으면
     # 곧바로 라운드테이블 한 라운드까지 실행된 뒤 "awaiting_user_decision"으로 멈춘다.
-    assert body["phase"] == "awaiting_user_decision"
+    assert body["phase"] == "discussion_complete"
     # 기존 필드가 하나도 빠지지 않았다.
     for field in (
         "session_id",
@@ -480,7 +480,7 @@ def test_start_response_exposes_updated_idea_canvas(client: TestClient):
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert body["phase"] == "awaiting_user_decision"
+    assert body["phase"] == "discussion_complete"
     assert body["idea_canvas"]["problem"] == "문의 응대 부담"
     assert body["idea_canvas"]["feasibility"] == "medium"
 
@@ -558,7 +558,7 @@ def test_reply_response_includes_merge_context_fields_after_combine(client: Test
     assert body["selected_idea"]["title"] == "결합 아이디어"
     # 용준/Claude(2026-07-21, 요청: 전문가 라운드테이블 전환) — 결합 확정 직후 라운드테이블이
     # 같은 요청 안에서 곧바로 끝까지 실행돼 "awaiting_user_decision"으로 멈춘다.
-    assert body["phase"] == "awaiting_user_decision"
+    assert body["phase"] == "discussion_complete"
 
 
 # ---------------------------------------------------------------------------

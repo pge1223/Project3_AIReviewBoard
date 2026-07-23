@@ -3,6 +3,8 @@ DOCX Parser using python-docx
 =============================
 """
 
+from pathlib import Path
+
 from docx import Document
 from docx.table import Table
 from docx.text.paragraph import Paragraph
@@ -27,11 +29,23 @@ class DOCXParser(BaseParser):
         return FileType.DOCX
 
     def get_page_count(self) -> int | None:
-        """
-        DOCX는 페이지 단위 개념이 없음
-        문서 전체를 하나의 document로 처리
-        """
-        return 1
+        """LibreOffice로 PDF 변환 후 페이지 수 반환"""
+        try:
+            import tempfile
+            import fitz  # pymupdf
+            from ai.rag.converters.preview_pdf_converter import convert_to_preview_pdf
+
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                pdf_path = convert_to_preview_pdf(
+                    self.file_path,
+                    output_dir=Path(tmp_dir),
+                )
+                doc = fitz.open(str(pdf_path))
+                page_count = len(doc)
+                doc.close()
+                return page_count
+        except Exception:
+            return 1  # 변환 실패 시 폴백
 
     def _iter_block_items(self, parent) -> list:
         """

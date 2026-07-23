@@ -55,6 +55,24 @@ _UNIT_JOIN_SEPARATOR = "\n\n"
 _PSEUDO_HEADING_PREFIX_RE = re.compile(rf"^\s*[{re.escape(PSEUDO_HEADING_MARKERS)}]\s*")
 _PSEUDO_HEADING_TITLE_DELIMITER_RE = re.compile(r"[:：\-\n]")
 _LIST_ITEM_BOUNDARY_RE = re.compile(rf"(?:\A|\n)[ \t]*(?:{LIST_ITEM_MARKER_PATTERN})")
+_EVALUATION_BULLET_RE = re.compile(r"^\s*[-*•·]\s+")
+_EVALUATION_SCORE_RE = re.compile(r"(?:\(\s*\d{1,3}\s*\)|\d{1,3}\s*점)\s*$")
+_EVALUATION_SECTION_NAMES = (
+    "혁신성",
+    "확장성",
+    "적용성",
+    "실현 가능성",
+    "실현가능성",
+    "사회적 가치성",
+    "계획 적정성",
+    "운영 혁신성",
+    "거버넌스 우수성",
+    "도시 문제 해결성",
+    "도시 경쟁력",
+    "지속 가능성",
+    "지속가능성",
+)
+_EVALUATION_DOCUMENT_MARKERS = ("평가 기준", "평가기준", "평가 항목", "평가항목", "배점")
 
 
 @dataclass
@@ -327,6 +345,137 @@ def _find_list_item_boundaries(text: str) -> list[int]:
     return [match.start() for match in _LIST_ITEM_BOUNDARY_RE.finditer(text)]
 
 
+def _evaluation_section_title(line: str) -> Optional[str]:
+    """평가표의 짧은 항목 제목(예: ``확장성 (20)``)을 반환한다."""
+    stripped = line.strip()
+    if not stripped or len(stripped) > 60 or _EVALUATION_BULLET_RE.match(stripped):
+        return None
+    if not any(name in stripped for name in _EVALUATION_SECTION_NAMES):
+        return None
+    if _EVALUATION_SCORE_RE.search(stripped) or stripped in _EVALUATION_SECTION_NAMES:
+        return stripped
+    return None
+
+
+def _looks_like_evaluation_criteria_text(text: str) -> bool:
+    """일반 목록을 과도하게 잘게 나누지 않도록 평가표 신호가 충분할 때만 활성화한다."""
+    marker_count = sum(1 for marker in _EVALUATION_DOCUMENT_MARKERS if marker in text)
+    bullet_count = sum(
+        1 for line in text.splitlines() if _EVALUATION_BULLET_RE.match(line)
+    )
+    section_count = sum(
+        1 for line in text.splitlines() if _evaluation_section_title(line) is not None
+    )
+    return marker_count >= 1 and bullet_count >= 2 and section_count >= 1
+
+
+def _split_evaluation_criteria_text(
+    text: str,
+    config: ChunkingConfig,
+) -> list[tuple[str, int, int, dict]]:
+    """평가표를 ``평가 항목 + 세부 질문 1개`` 단위로 분할한다.
+
+    질문 부분은 원문 범위를 가리키고, 항목 제목은 검색 문맥을 보존하기 위해 앞에 반복한다.
+    이 방식으로 같은 페이지의 ``문제 정의``와 ``확장성`` 문항이 한 청크에 섞이지 않는다.
+    """
+    if not _looks_like_evaluation_criteria_text(text):
+        return []
+
+    lines: list[tuple[int, int, str]] = []
+    offset = 0
+    for raw_line in text.splitlines(keepends=True):
+        body = raw_line.rstrip("\r\n")
+        lines.append((offset, offset + len(body), body))
+        offset += len(raw_line)
+    if offset < len(text):
+        lines.append((offset, len(text), text[offset:]))
+
+    pieces: list[tuple[str, int, int, dict]] = []
+    active_title: Optional[str] = None
+    first_bullet_start: Optional[int] = None
+    index = 0
+    while index < len(lines):
+        line_start, _, line = lines[index]
+        title = _evaluation_section_title(line)
+        if title is not None:
+            active_title = title
+            index += 1
+            continue
+        if not _EVALUATION_BULLET_RE.match(line):
+            index += 1
+            continue
+
+        if first_bullet_start is None:
+            first_bullet_start = line_start
+        item_start = line_start
+        item_end = lines[index][1]
+        cursor = index + 1
+        while cursor < len(lines):
+            _, next_end, next_line = lines[cursor]
+            if _EVALUATION_BULLET_RE.match(next_line) or _evaluation_section_title(next_line):
+                break
+            item_end = next_end
+            cursor += 1
+
+        raw_item = text[item_start:item_end].strip()
+        piece = f"{active_title}\n{raw_item}" if active_title else raw_item
+        if piece:
+            metadata = {
+                "evaluation_criterion": True,
+                "criterion_title": active_title,
+                "criterion_question": raw_item,
+            }
+            if len(piece) <= config.chunk_size:
+                pieces.append((piece, item_start, item_end, metadata))
+            else:
+                available = max(1, config.chunk_size - len(active_title or "") - 1)
+                sub_splitter = RecursiveCharacterTextSplitter(
+                    chunk_size=available,
+                    chunk_overlap=0,
+                    separators=list(config.separators),
+                    add_start_index=True,
+                )
+                for doc in sub_splitter.create_documents([raw_item]):
+                    sub = doc.page_content
+                    local_start = doc.metadata.get("start_index") or 0
+                    sub_start = item_start + local_start
+                    rendered = f"{active_title}\n{sub}" if active_title else sub
+                    pieces.append(
+                        (
+                            rendered,
+                            sub_start,
+                            sub_start + len(sub),
+                            {**metadata, "criterion_question": sub, "oversized_criterion_split": True},
+                        )
+                    )
+        index = cursor
+
+    # 평가표 오탐으로 원문 대부분을 잃는 것보다 기존 청킹으로 폴백하는 편이 안전하다.
+    if len(pieces) < 2:
+        return []
+    preamble = text[: first_bullet_start or 0].strip()
+    if preamble:
+        preamble_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=config.chunk_size,
+            chunk_overlap=0,
+            separators=list(config.separators),
+            add_start_index=True,
+        )
+        preamble_pieces = []
+        for doc in preamble_splitter.create_documents([preamble]):
+            start = doc.metadata.get("start_index") or 0
+            preamble_pieces.append(
+                (
+                    doc.page_content,
+                    start,
+                    start + len(doc.page_content),
+                    {"evaluation_criteria_preamble": True},
+                )
+            )
+        pieces[0:0] = preamble_pieces
+    return pieces
+
+
 def _looks_structurally_like_toc(body_text: str) -> bool:
     """구조적 목차 의심 판정. 확정에는 쓰지 않고 warning 트리거로만 사용한다 (과탐 방지 우선)."""
     lines = [line for line in body_text.splitlines() if line.strip()]
@@ -383,13 +532,18 @@ def _process_text_unit(
 
     warnings: list[str] = []
 
+    evaluation_ranges = _split_evaluation_criteria_text(unit_text, config)
     marker_positions = _find_list_item_boundaries(unit_text)
     use_list_aware_split = len(unit_text) > config.chunk_size and len(marker_positions) >= LIST_ITEM_MIN_MARKER_COUNT
 
-    if use_list_aware_split:
-        piece_ranges = _split_list_like_text(unit_text, marker_positions, config, splitter)
+    if evaluation_ranges:
+        piece_ranges_with_metadata = evaluation_ranges
+    elif use_list_aware_split:
+        piece_ranges_with_metadata = [
+            (*piece, {}) for piece in _split_list_like_text(unit_text, marker_positions, config, splitter)
+        ]
     else:
-        piece_ranges = []
+        piece_ranges_with_metadata = []
         for doc in splitter.create_documents([unit_text]):
             content = doc.page_content
             start = doc.metadata.get("start_index")
@@ -402,12 +556,25 @@ def _process_text_unit(
                 )
                 if start < 0:
                     start = 0
-            piece_ranges.append((content, start, start + len(content)))
+            piece_ranges_with_metadata.append((content, start, start + len(content), {}))
 
-    piece_ranges = _merge_small_tail_piece(piece_ranges, unit_text, config.chunk_size)
+    if not evaluation_ranges:
+        merged_ranges = _merge_small_tail_piece(
+            [(content, start, end) for content, start, end, _ in piece_ranges_with_metadata],
+            unit_text,
+            config.chunk_size,
+        )
+        metadata_by_range = {
+            (start, end): metadata
+            for _, start, end, metadata in piece_ranges_with_metadata
+        }
+        piece_ranges_with_metadata = [
+            (content, start, end, metadata_by_range.get((start, end), {}))
+            for content, start, end in merged_ranges
+        ]
 
     results: list[tuple[str, list[int], list[str], list[int], dict]] = []
-    for content, start, end in piece_ranges:
+    for content, start, end, extra_metadata in piece_ranges_with_metadata:
         if not content.strip():
             continue
 
@@ -428,7 +595,7 @@ def _process_text_unit(
         source_block_orders = [block.order for _, block in covered]
         source_block_ids = [block.source_block_id for _, block in covered if block.source_block_id is not None]
         local_positions = [local_index for local_index, _ in covered]
-        results.append((content, source_block_orders, source_block_ids, local_positions, {}))
+        results.append((content, source_block_orders, source_block_ids, local_positions, extra_metadata))
 
     return results, warnings
 

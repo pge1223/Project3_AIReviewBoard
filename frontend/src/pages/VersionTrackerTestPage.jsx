@@ -21,7 +21,7 @@ import {
 import { getMyProfile } from '../api/profileApi'
 import { getProjectReport, getProjectComparison, analyzeProject, getAnalyzeProgress } from '../api/projectApi'
 import { uploadDocument, getDocuments, deleteDocument, getDocumentStatus } from '../api/documentApi'
-import { getTypoCheck, getContextCheck } from '../api/workbenchApi'
+import { getTypoCheck, getContextCheck, getFormatCheck } from '../api/workbenchApi'
 import './VersionTrackerTest.css'
 
 const CRITERION_MAX = 25 // 4항목 × 25 = 100점
@@ -683,82 +683,125 @@ function reportToVersions(report) {
   ]
 }
 
-// C-3: 수정본 재분석으로 회의가 2개 이상이면 /comparison(build_revision_comparison) 결과로
-// [v1.0(이전), v1.1(현재)] 두 버전을 만든다. v1.1은 최신 /report의 풍부한 지적(+개인화 가이드)에
-// 비교 상태(신규/잔존/해결)를 덧입히고, v1.0은 comparison의 before 점수·판정·지적으로 채운다.
-function buildVersionsFromComparison(report, comparison) {
-  const cur = reportToVersions(report)[0] // 최신(현재) 버전, 풍부한 지적 포함
-  const compByCid = new Map((comparison.criteria || []).map((c) => [c.criterion_id, c]))
-  const metaById = new Map(cur.criteria.map((c) => [c.id, { committee: c.committee, max: c.max, name: c.name }]))
-
-  // v1.1(현재): 각 지적을 신규(new)/잔존(open)으로 표시하고, 해결된 지적(resolved)을 덧붙인다.
-  const currentCriteria = cur.criteria.map((c) => {
-    const comp = compByCid.get(c.id)
-    if (!comp) return c
-    const newSet = new Set(comp.new_issues || [])
-    const feedback = c.feedback.map((f) => ({ ...f, status: newSet.has(f.text) ? 'new' : 'open' }))
-    for (const t of comp.resolved_issues || []) {
-      feedback.push({ id: `${c.id}-resolved-${feedback.length}`, status: 'resolved', text: t, note: '이번 수정본에서 반영되어 더 이상 지적되지 않습니다' })
-    }
-    return { ...c, feedback }
-  })
-
-  // v1.0(이전): comparison의 before 점수/판정 + (해결+잔존) 지적을 그 버전 시점의 미해결로.
-  const beforeCriteria = (comparison.criteria || []).map((comp) => {
-    const meta = metaById.get(comp.criterion_id) || {}
-    const feedback = [...(comp.resolved_issues || []), ...(comp.persisting_issues || [])].map((t, i) => ({
-      id: `${comp.criterion_id}-b-${i}`, status: 'open', text: t,
-    }))
-    return {
-      id: comp.criterion_id,
-      name: comp.criterion_name || meta.name || comp.criterion_id,
-      committee: meta.committee || 'planning',
-      score: comp.before_score ?? 0,
-      max: meta.max ?? CRITERION_MAX,
-      judgment: comp.before_judgment || 'acceptable',
-      feedback,
-    }
-  })
-
-  return [
-    { version: 'v1.0', label: '이전 제출', total_score: comparison.total?.before ?? 0, criteria: beforeCriteria },
-    { version: 'v1.1', label: '현재 수정본', total_score: comparison.total?.after ?? cur.total_score, criteria: currentCriteria },
-  ]
+// C-3: "다음 수정본 제출"로 회의가 쌓일 때마다 백엔드 GET /comparison 의 versions 배열에
+// v1.0 → v1.1 → v1.2 … 가 하나씩 누적된다(build_version_history). 제출한 만큼 버전이 늘어나며
+// 오래된 버전이 사라지거나 라벨이 밀리지 않는다. 각 버전을 이 화면의 버전 구조로 변환한다:
+//   · 항목별 issues/suggestions를 짝지어 feedback으로 만들고,
+//   · 직전 버전 대비 new_issues는 '신규', resolved_issues는 '해결'로 표시한다.
+// impl_guides(개인화 구현 가이드)는 최신 버전에만 붙으므로 여기서 안 붙이고 criterion_id로
+// 렌더 시 매칭한다(realGuides).
+function buildVersionsFromHistory(versions) {
+  return versions.map((v) => ({
+    version: v.version,
+    label: v.label,
+    submitted_at: v.submitted_at,
+    total_score: v.total_score ?? 0,
+    criteria: (v.criteria || []).map((c) => {
+      const newSet = new Set(c.new_issues || [])
+      const issues = c.issues || []
+      const suggestions = c.suggestions || []
+      const feedback = []
+      const n = Math.max(issues.length, suggestions.length)
+      for (let i = 0; i < n; i++) {
+        const issue = issues[i] || ''
+        const sug = suggestions[i] || ''
+        if (!issue && !sug) continue
+        feedback.push({
+          id: `${c.criterion_id}-${i}`,
+          status: issue && newSet.has(issue) ? 'new' : 'open',
+          text: issue || sug,
+          suggestion: issue ? sug : '',
+        })
+      }
+      for (const t of c.resolved_issues || []) {
+        feedback.push({ id: `${c.criterion_id}-resolved-${feedback.length}`, status: 'resolved', text: t, note: '이번 수정본에서 반영되어 더 이상 지적되지 않습니다' })
+      }
+      return {
+        id: c.criterion_id,
+        name: c.criterion_name || c.criterion_id,
+        committee: c.committee || 'planning',
+        score: c.score ?? 0,
+        max: c.max ?? CRITERION_MAX,
+        judgment: c.judgment || 'acceptable',
+        feedback,
+      }
+    }),
+  }))
 }
 
-// AI 피드백 탭(3번째) — 위원 채점과 별개로 문자서식·오탈자를 잡아주는 자동 검사. 점수에
-// 반영하지 않고(배점 없음), 버전마다 "수정 필요/해결"만 추적한다(경이 요청, 2026-07-23).
-// 데이터: 워크벤치 getTypoCheck(오탈자)·getContextCheck(맥락 이상) — 현재 문서 기준 라이브 검사.
+// AI 피드백 탭(3번째) — 위원 채점과 별개로 자동 검사한 문서 품질(점수 미반영, 버전마다
+// "수정 필요/해결" 추적). 3축을 본다(경이 요청, 2026-07-23 → 분량·밀도 추가 2026-07-23):
+//   · 분량·밀도(getFormatCheck) — 공고문 요구 페이지 수 충족 + 페이지 채움률(빈 공간).
+//     같은 내용이라도 여백이 많은 문서(A)와 꽉 채운 문서(B)를 가르는 축이라, 위원 채점(내용)이
+//     비슷해도 여기서 B가 A보다 낫다는 게 드러난다.
+//   · 오탈자(getTypoCheck) / 맥락 이상(getContextCheck) — 현재 버전 문서 기준 라이브 검사.
 const AI_FEEDBACK = {
-  name: 'AI 피드백', Icon: FileText, desc: '문자서식 · 오탈자 (점수 미반영)',
+  name: 'AI 피드백', Icon: FileText, desc: '분량·밀도 · 오탈자 (점수 미반영)',
   color: '#16a37a', dim: 'rgba(22,163,122,0.12)',
   gradient: 'linear-gradient(135deg, #7fd8b8 0%, #16a37a 100%)',
 }
 
-function AiFeedbackPanel({ findings }) {
-  if (!findings || findings.length === 0) {
-    return (
-      <div className="card glass" style={{ padding: 20, display: 'flex', alignItems: 'center', gap: 8, color: '#16a37a', fontWeight: 600, fontSize: 13.5 }}>
-        <CheckCircle2 size={16} /> 오탈자·문자서식 이슈가 발견되지 않았습니다 — 깔끔합니다.
+// 분량·밀도 요약 카드 — A(빈 공간 많음)와 B(꽉 참)의 차이가 정확히 여기서 보인다.
+function FormatSummary({ format }) {
+  if (!format) return null
+  const hasReq = format.required_min != null || format.required_max != null
+  const req = !hasReq ? '기준 없음'
+    : format.required_min === format.required_max ? `${format.required_min}p`
+    : `${format.required_min ?? ''}~${format.required_max ?? ''}p`
+  const cov = format.overall_coverage != null ? Math.round(format.overall_coverage * 100) : null
+  const pageOk = format.page_verdict == null || format.page_verdict === '충족'
+  const densOk = format.overall_verdict == null || format.overall_verdict === '양호'
+
+  const Metric = ({ label, ok, verdict, big, msg }) => (
+    <div style={{ flex: 1, minWidth: 230, background: '#faf7f1', borderRadius: 12, padding: '14px 16px', border: `1px solid ${ok ? 'rgba(22,163,122,0.3)' : 'rgba(224,96,61,0.32)'}` }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 6 }}>
+        <span style={{ fontSize: 12.5, fontWeight: 800, color: '#5b5770' }}>{label}</span>
+        <span className="mono" style={{ fontSize: 11, fontWeight: 800, padding: '2px 10px', borderRadius: 99, color: ok ? '#16a37a' : '#e0603d', border: `1px solid ${ok ? '#16a37a' : '#e0603d'}` }}>
+          {ok ? <>✓ {verdict}</> : <>! {verdict}</>}
+        </span>
       </div>
-    )
-  }
+      {big && <div className="mono" style={{ fontSize: 20, fontWeight: 800, color: '#1c1a2e', marginBottom: 4 }}>{big}</div>}
+      {msg && <div style={{ fontSize: 12, color: '#5b5770', lineHeight: 1.6 }}>{msg}</div>}
+    </div>
+  )
+
+  return (
+    <div className="vt-fade card glass" style={{ padding: '16px 20px', marginBottom: 14 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 14, fontWeight: 800, color: '#16a37a' }}>분량 · 밀도</span>
+        <span style={{ fontSize: 11.5, color: '#918d9f' }}>공고문 기준 분량 충족과 페이지 채움 정도 — 같은 내용이라도 여백이 많으면 여기서 드러납니다</span>
+      </div>
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+        <Metric label="분량 (페이지 수)" ok={pageOk} verdict={format.page_verdict || '기준 없음'}
+          big={`${format.actual_pages ?? '?'}p / 기준 ${req}`} msg={format.page_message} />
+        <Metric label="밀도 (채움률)" ok={densOk} verdict={format.overall_verdict || '기준 없음'}
+          big={cov != null ? `${cov}%` : '—'} msg={format.density_message} />
+      </div>
+    </div>
+  )
+}
+
+function AiFeedbackPanel({ findings, format }) {
+  const list = findings || []
   return (
     <>
+      <FormatSummary format={format} />
       <div className="card glass" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', borderLeft: '4px solid #16a37a', marginBottom: 16, padding: '16px 20px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <span style={{ width: 42, height: 42, borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(22,163,122,0.12)', color: '#16a37a' }}>
             <FileText size={21} />
           </span>
           <div>
-            <div style={{ fontSize: 15.5, fontWeight: 700, color: '#16a37a' }}>AI 피드백</div>
-            <div style={{ fontSize: 12, color: '#918d9f', marginTop: 2 }}>문자서식 · 오탈자 — 점수 미반영, 버전마다 수정/해결 추적</div>
+            <div style={{ fontSize: 15.5, fontWeight: 700, color: '#16a37a' }}>오탈자 · 맥락</div>
+            <div style={{ fontSize: 12, color: '#918d9f', marginTop: 2 }}>점수 미반영 — 버전마다 수정/해결 추적</div>
           </div>
         </div>
-        <span className="badge amber mono">! 수정 필요 {findings.length}</span>
+        {list.length > 0
+          ? <span className="badge amber mono">! 수정 필요 {list.length}</span>
+          : <span className="mono" style={{ fontSize: 11.5, color: '#16a37a', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 5 }}><CheckCircle2 size={14} /> 이슈 없음</span>}
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        {findings.map((f, i) => (
+        {list.map((f, i) => (
           <div key={f.id || i} className="vt-fade card glass" style={{ padding: 16, animationDelay: `${i * 70}ms` }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
               <span className="mono" style={{ fontSize: 11, fontWeight: 800, padding: '3px 10px', borderRadius: 99, background: 'rgba(184,131,11,0.14)', color: '#b8830b' }}>
@@ -797,8 +840,9 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
   const [profileKey, setProfileKey] = useState('nonmajor')
   const profile = PROFILES[profileKey]
   const [report, setReport] = useState(null)      // 실제 /report (embedded)
-  const [comparison, setComparison] = useState(null) // 버전 비교(회의 2개 이상일 때)
-  const [aiFindings, setAiFindings] = useState([])    // AI 피드백(오탈자·문자서식) — 점수 미반영
+  const [versionPayload, setVersionPayload] = useState(null) // /comparison 응답(versions 히스토리)
+  const [aiFindings, setAiFindings] = useState([])    // AI 피드백(오탈자·맥락) — 점수 미반영
+  const [formatCheck, setFormatCheck] = useState(null) // 분량·밀도(빈 공간) 요약 — A vs B 변별 축
   const [reportLoaded, setReportLoaded] = useState(false)
   const [submitting, setSubmitting] = useState(false) // 수정본 업로드+재분석 중
   const [submitStage, setSubmitStage] = useState('')  // 진행 상태 문구
@@ -827,20 +871,22 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
       getProjectComparison(projectId).catch(() => null),
     ])
     setReport(r)
-    setComparison(c && c.available ? c.comparison : null)
+    setVersionPayload(c) // {versions:[v1.0,v1.1,...], comparison, available, meeting_count}
   }, [embedded, projectId])
 
   // AI 피드백(오탈자·맥락)은 LLM 호출이라 느릴 수 있어 메인 리포트 로딩과 분리해 비동기로 받는다.
   const loadAiFindings = useCallback(async () => {
     if (!embedded || !projectId) return
-    const [typos, ctx] = await Promise.all([
+    const [typos, ctx, fmt] = await Promise.all([
       getTypoCheck(projectId).catch(() => []),
       getContextCheck(projectId).catch(() => []),
+      getFormatCheck(projectId).catch(() => null),
     ])
     setAiFindings([
       ...(typos || []).map((f) => ({ ...f, kind: 'typo' })),
       ...(ctx || []).map((f) => ({ ...f, kind: 'context' })),
     ])
+    setFormatCheck(fmt) // 분량(페이지 수)·밀도(채움률·빈 페이지) — A(빈 공간 많음) vs B(꽉 참) 차이가 여기서 드러난다
   }, [embedded, projectId])
 
   useEffect(() => {
@@ -854,13 +900,15 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
     return () => { cancelled = true }
   }, [embedded, projectId, loadReportAndComparison, loadAiFindings])
 
-  // 비교(회의 2개+)가 있으면 [v1.0, v1.1], 없으면 단일 버전, 실데이터 없으면 mock. realGuides는
-  // 최신 회의 impl_guides(criterion_id 키)로 개발 위원 항목 개인화 가이드를 렌더 시 매칭한다.
+  // 버전 히스토리(/comparison.versions)가 있으면 v1.0, v1.1, v1.2 … 전체를 그리고, 없으면
+  // (조회 실패 등) /report 단일 버전으로 폴백, 그것도 없으면 mock. realGuides는 최신 회의
+  // impl_guides(criterion_id 키)로 개발 위원 항목 개인화 가이드를 렌더 시 매칭한다.
   const realVersions = useMemo(() => {
-    if (!report) return null
-    if (comparison) return buildVersionsFromComparison(report, comparison)
-    return reportToVersions(report)
-  }, [report, comparison])
+    const hist = versionPayload?.versions
+    if (Array.isArray(hist) && hist.length) return buildVersionsFromHistory(hist)
+    if (report) return reportToVersions(report)
+    return null
+  }, [versionPayload, report])
   const usingReal = Boolean(realVersions)
   const ALL = usingReal ? realVersions : ALL_VERSIONS
   const realGuides = useMemo(() => {
@@ -985,10 +1033,22 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
             <div style={{ flex: 1, minWidth: 300 }}>
               <span className="badge purple mono" style={{ marginBottom: 12 }}>버전 추적형 USER RAG</span>
               <h1 style={{ fontSize: 27, fontWeight: 700, lineHeight: 1.3, margin: '10px 0 10px' }}>IT 공모전 · 개인 맞춤형 피드백 루프</h1>
-              <p style={{ margin: 0, fontSize: 13.5, lineHeight: 1.7, color: '#5b5770', maxWidth: 480 }}>
-                기획 위원과 개발 위원이 <b>구체적이고 실현 가능한</b> 피드백을 남기고, 수정본을 낼 때마다{' '}
-                <b>어떤 지적이 해결됐는지</b>와 <b>점수 상승세</b>를 기억합니다.
-              </p>
+              <div style={{ maxWidth: 500, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 9, fontSize: 13, lineHeight: 1.6, color: '#5b5770' }}>
+                  <span style={{ flexShrink: 0, fontSize: 11, fontWeight: 800, color: '#7c5cea', background: 'rgba(124,92,234,0.1)', padding: '3px 10px', borderRadius: 99, whiteSpace: 'nowrap' }}>기획 · 개발 위원</span>
+                  <span>공고문 <b>평가기준 · 배점</b>을 근거로 채점합니다.</span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 9, fontSize: 13, lineHeight: 1.6, color: '#5b5770' }}>
+                  <span style={{ flexShrink: 0, fontSize: 11, fontWeight: 800, color: '#16a37a', background: 'rgba(22,163,122,0.1)', padding: '3px 10px', borderRadius: 99, whiteSpace: 'nowrap' }}>AI 피드백</span>
+                  <span><b>오탈자 · 분량 · 밀도 · 맥락</b>을 점검합니다.</span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginTop: 3, padding: '10px 13px', background: '#fbf3ec', border: '1px solid rgba(224,96,61,0.28)', borderRadius: 10 }}>
+                  <AlertTriangle size={15} style={{ color: '#e0603d', flexShrink: 0, marginTop: 1 }} />
+                  <span style={{ fontSize: 12.5, lineHeight: 1.55, color: '#8a4a30' }}>
+                    위원 <b>총점이 높아도</b> AI 피드백을 반영하지 않으면 <b>서류 심사를 통과하지 못합니다.</b>
+                  </span>
+                </div>
+              </div>
             </div>
             <div style={{ textAlign: 'center', minWidth: 140, padding: '4px 8px' }}>
               <div className="mono" style={{ fontSize: 11, color: '#918d9f', marginBottom: 6, fontWeight: 600 }}>{selected.version} 총점</div>
@@ -1052,7 +1112,7 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
         </div>
 
         {/* AI 피드백 탭: 점수 영역 대신 오탈자·문자서식 검사 결과 */}
-        {committee === 'ai_feedback' && <AiFeedbackPanel findings={aiFindings} />}
+        {committee === 'ai_feedback' && <AiFeedbackPanel findings={aiFindings} format={formatCheck} />}
 
         {committee !== 'ai_feedback' && (<>
         {/* 위원 소계 요약 */}
@@ -1094,9 +1154,9 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
           <p style={{ fontSize: 11.5, color: '#a8a4b2', lineHeight: 1.7, marginTop: 26 }}>
             ※ 이 리포트는 실제 회의 결과(<code style={codeStyle}>GET /projects/{'{id}'}/report</code>)의 점수·위원 피드백·개인화
             구현 가이드를 그대로 렌더한 것입니다.{' '}
-            {comparison
-              ? <>버전 간 비교(해결/잔존/신규·점수 증감)는 <code style={codeStyle}>GET /projects/{'{id}'}/comparison</code>(build_revision_comparison) 결과입니다.</>
-              : <>수정본을 제출해 재분석하면 이전/현재 버전이 자동 비교됩니다.</>}
+            {versions.length > 1
+              ? <>버전 간 비교(해결/잔존/신규·점수 증감)는 <code style={codeStyle}>GET /projects/{'{id}'}/comparison</code>(build_version_history) 결과이며, 수정본을 낼 때마다 v1.0 → v1.1 → v1.2 … 로 누적됩니다.</>
+              : <>수정본을 제출해 재분석하면 v1.1, v1.2 … 로 버전이 쌓이며 이전/현재가 자동 비교됩니다.</>}
           </p>
         ) : (
           <p style={{ fontSize: 11.5, color: '#a8a4b2', lineHeight: 1.7, marginTop: 26 }}>

@@ -312,7 +312,7 @@ def test_start_runs_roundtable_immediately_without_interview_question():
     "await_user_decision"이라 첫 라운드가 끝나면 멈춘다."""
     llm = ScriptedLLM()
     state = _start(llm)
-    assert state["phase"] == "awaiting_user_decision"
+    assert state["phase"] == "discussion_complete"
     speakers_and_types = [(m["speaker_id"], m["message_type"]) for m in state["messages"]]
     assert speakers_and_types == [
         ("ideation_facilitator", "summary"),
@@ -332,7 +332,7 @@ def test_roundtable_updates_idea_canvas_without_changing_meeting_phase():
     llm = ScriptedLLM()
     state = _start(llm)
 
-    assert state["phase"] == "awaiting_user_decision"
+    assert state["phase"] == "discussion_complete"
     assert state["idea_canvas"] == json.loads(CANVAS_STUB_RESPONSE)
     canvas_prompts = [prompt for prompt in llm.captured_prompts if "[캔버스 갱신 규칙]" in prompt]
     assert len(canvas_prompts) == 1
@@ -428,7 +428,7 @@ def test_reply_to_developer_question_runs_both_experts_in_order():
     state = reply_ideation_conversation(previous_state=state, user_message="답변1", llm_call=llm)
     state = reply_ideation_conversation(previous_state=state, user_message="카카오톡 채널 API를 쓰려 합니다", llm_call=llm)
 
-    assert state["phase"] == "awaiting_user_decision"
+    assert state["phase"] == "discussion_complete"
     speakers = [m["speaker_id"] for m in state["messages"]]
     # dev_next_action="await_user_decision"이고 stance="보완"(REVISION_TRIGGER_STANCES
     # 밖)이라 planning_expert_revision은 끼지 않는다. 진행자 정리 메시지가 항상 마지막에
@@ -452,13 +452,13 @@ def test_continue_round_auto_advances_to_next_discussion_round_without_stopping(
     next_action="continue_round"를 반환하면(그리고 아직 max_rounds에 도달하지 않았으면)
     같은 그래프 호출 안에서 곧바로 다음 라운드의 기획 위원 최초 의견까지 자동 생성된다
     (1:1 인터뷰 질문으로는 절대 돌아가지 않는다). dev_next_action이 항상 "continue_round"
-    이므로 max_rounds(3)에 도달할 때까지 자동으로 라운드가 이어지다가 강제로 멈춘다."""
+    이므로 max_rounds(3)에 도달한 뒤 남은 쟁점을 한 번 이월하고 정상 종료한다."""
     llm = ScriptedLLM(dev_next_action="continue_round")
     state = _start(llm, max_rounds=3)
 
-    assert state["phase"] == "awaiting_user_decision"
-    assert state["round"] == 3
-    assert len(state["discussion_rounds"]) == 3
+    assert state["phase"] == "discussion_complete"
+    assert state["round"] == 4
+    assert len(state["discussion_rounds"]) == 4
     assert not any(m["message_type"] == "question" for m in state["messages"])
 
 
@@ -467,13 +467,14 @@ def test_continue_round_auto_advances_to_next_discussion_round_without_stopping(
 # ---------------------------------------------------------------------------
 
 
-def test_max_rounds_forces_awaiting_user_decision_even_if_llm_says_continue():
+def test_max_rounds_completes_discussion_without_empty_user_wait():
     llm = ScriptedLLM(dev_next_action="continue_round")
     state = _start(llm, max_rounds=1)
 
-    assert state["phase"] == "awaiting_user_decision"
-    assert state["round"] == 1
-    assert len(state["discussion_rounds"]) == 1
+    assert state["phase"] == "discussion_complete"
+    assert state["round"] == 2
+    assert len(state["discussion_rounds"]) == 2
+    assert state["pending_question"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -484,7 +485,7 @@ def test_max_rounds_forces_awaiting_user_decision_even_if_llm_says_continue():
 def test_idea_proposal_only_exists_after_explicit_finalize_call():
     llm = ScriptedLLM(dev_next_action="await_user_decision")
     state = _start(llm)
-    assert state["phase"] == "awaiting_user_decision"
+    assert state["phase"] == "discussion_complete"
     assert state["idea_proposal"] is None
     assert not any('"idea_name"' in p for p in llm.captured_prompts)
 
@@ -621,7 +622,7 @@ def test_sufficient_answer_advances_and_opinion_is_structured():
     그대로 저장되어 내부 상태로 쓰인다."""
     llm = ScriptedLLM(dev_next_action="await_user_decision")
     state = _start(llm)
-    assert state["phase"] == "awaiting_user_decision"
+    assert state["phase"] == "discussion_complete"
 
     planning_opinion = next(
         m for m in state["messages"] if m["speaker_id"] == "planning_expert" and m["message_type"] == "opinion"
@@ -1017,7 +1018,7 @@ def test_discussion_node_handles_non_list_confirmed_and_unconfirmed_safely():
 
     state = _start(llm)
 
-    assert state["phase"] == "awaiting_user_decision"
+    assert state["phase"] == "discussion_complete"
     assert state["consensus"] == []
     assert state["unresolved_issues"] == []
     # 용준/Claude(2026-07-22, 요청: 보고서형 메시지 → 자연스러운 회의 발화 전환) —
@@ -1071,7 +1072,7 @@ def test_empty_discussion_response_falls_back_to_safe_expert_judgment():
     update = make_conv_discussion_node("planning_expert", llm)(state)
     assert update.get("phase") != "failed"
     assert update["previous_speaker"] == "planning_expert"
-    assert "추가로 확인" in update["messages"][0]["content"]
+    assert "전문가 판단으로 진행" in update["messages"][0]["content"]
 
 
 def test_sufficiency_call_failure_fails_open_and_conversation_still_progresses():
@@ -1107,7 +1108,7 @@ def test_discussion_node_rejects_blank_judgment_instead_of_producing_empty_card(
     message = update["messages"][0]
     assert update.get("phase") != "failed"
     assert message["content"]
-    assert message["structured"]["judgment"] == "문제 정의에 대한 추가 확인이 필요합니다."
+    assert "문제 정의를 구체화" in message["structured"]["judgment"]
 
 
 # ---------------------------------------------------------------------------
@@ -1226,7 +1227,7 @@ def test_expert_delegation_on_developer_question_produces_mvp_proposal_and_advan
 
     sufficiency_calls_after = len([p for p in llm.captured_prompts if "[판정 규칙]" in p])
     assert sufficiency_calls_after == sufficiency_calls_before
-    assert state["phase"] == "awaiting_user_decision"
+    assert state["phase"] == "discussion_complete"
     assert state["answer_retry_count"] == 0
     dev_delegation_messages = [
         m for m in state["messages"] if m["speaker_id"] == "dev_expert" and m["message_type"] == "opinion"
@@ -1261,7 +1262,7 @@ def test_delegation_phrase_not_deterministically_matched_falls_back_to_llm_class
     assert llm.sufficiency_queue == []  # 두 항목 모두 소비됐다.
     sufficiency_prompts = [p for p in llm.captured_prompts if "[판정 규칙]" in p]
     assert sufficiency_prompts  # 이번에는 LLM 판정 호출이 실제로 일어났다.
-    assert state["phase"] == "awaiting_user_decision"
+    assert state["phase"] == "discussion_complete"
     assert state["answer_retry_count"] == 0
     assert any(
         m["speaker_id"] == "dev_expert" and m["message_type"] == "opinion" and m["structured"].get("proposal")
@@ -1346,7 +1347,7 @@ def test_expert_delegation_content_is_visible_to_next_question_and_synthesis_pro
     assert "[planning_expert] 임시 제안 내용입니다" in dev_question_prompts[-1]
 
     state = reply_ideation_conversation(previous_state=state, user_message="카카오톡 채널 API를 쓰려 합니다", llm_call=llm)
-    assert state["phase"] == "awaiting_user_decision"
+    assert state["phase"] == "discussion_complete"
     state = finalize_ideation_conversation(previous_state=state, llm_call=llm)
     assert state["phase"] == "finalized"
 
@@ -1633,18 +1634,18 @@ def test_facilitator_does_not_change_phase_decided_by_dev_review():
     """discussion_facilitator는 dev_expert_discussion(review)이 이미 정한 phase(next_action)를
     바꾸지 않는다 — continue_round면 같은 요청 안에서 곧바로 다음 라운드 discussion으로
     자동 이어지는지(1:1 인터뷰 질문으로 돌아가지 않는지) 확인한다. dev_next_action이 항상
-    "continue_round"이므로 max_rounds(3)에 도달할 때까지 자동으로 라운드가 이어지다가
-    강제로 멈춰야 한다."""
+    "continue_round"이므로 max_rounds(3)에 도달한 뒤 남은 쟁점을 한 번 이월하고
+    정상 종료해야 한다."""
     llm = _DebateScriptedLLM(dev_stance="보완", dev_next_action="continue_round")
     state = _run_to_discussion(llm, max_rounds=3)
 
-    assert state["phase"] == "awaiting_user_decision"
-    assert state["round"] == 3
-    assert len(state["discussion_rounds"]) == 3
+    assert state["phase"] == "discussion_complete"
+    assert state["round"] == 4
+    assert len(state["discussion_rounds"]) == 4
     assert not any(m["message_type"] == "question" for m in state["messages"])
     facilitator_indices = [i for i, m in enumerate(state["messages"]) if m["speaker_id"] == "ideation_facilitator"]
-    # 오프닝 안건 제시 메시지(1) + 라운드별 정리(3) = 4.
-    assert len(facilitator_indices) == 4
+    # 오프닝 안건 제시 메시지(1) + 라운드별 정리(4) = 5.
+    assert len(facilitator_indices) == 5
 
 
 def test_dev_review_references_planning_message_id():
@@ -1672,7 +1673,7 @@ def test_message_ids_unique_after_multi_round_auto_chain():
     assert len(ids) == len(set(ids)), f"중복된 message_id가 있습니다: {ids}"
 
 
-def test_facilitator_is_sole_source_of_user_questions():
+def test_no_actionable_question_completes_discussion_without_pending_question():
     """요청 5~6번 — pending_question은 진행자가 needs_user_decision=True로 실제 질문을
     던졌을 때만 설정된다. 여기서는 dev_next_action="await_user_decision"이지만
     facilitator 응답이 needs_user_decision=False이므로(고정 stub) pending_question이
@@ -1680,9 +1681,9 @@ def test_facilitator_is_sole_source_of_user_questions():
     llm = _DebateScriptedLLM(dev_stance="보완", dev_next_action="await_user_decision")
     state = _run_to_discussion(llm, max_rounds=3)
 
-    assert state["phase"] == "awaiting_user_decision"
-    assert state.get("pending_question") is None
-    assert state.get("pending_question_topic") is None
+    assert state["phase"] == "discussion_complete"
+    assert state["pending_question"] is None
+    assert state["pending_question_topic"] is None
 
 
 class _NeedsDecisionScriptedLLM(_DebateScriptedLLM):
@@ -1730,13 +1731,14 @@ def test_user_answer_to_facilitator_question_is_answer_type():
     assert user_messages[-1]["message_type"] == "answer"
 
 
-def test_user_interjection_without_pending_question_is_recorded_and_referenced():
+def test_user_interjection_after_discussion_complete_is_recorded_and_referenced():
     """요청 6번 — 진행자가 needs_user_decision=False였는데 사용자가 자유롭게 한 마디
     남기면 message_type="interjection"으로 기록되고, 다음 라운드에서 기획/개발 위원 중
     하나 이상이 그 메시지를 referenced_message_ids에 포함해야 한다."""
     llm = _DebateScriptedLLM(dev_stance="보완", dev_next_action="await_user_decision")
     state = _run_to_discussion(llm, max_rounds=3)
-    assert state.get("pending_question") is None  # 진행자가 실제로 묻지 않았다.
+    assert state["phase"] == "discussion_complete"
+    assert state["pending_question"] is None
 
     interjection_text = "학습 범위가 너무 좁은 것 같아. 대학생도 포함하고 싶어."
     state = reply_ideation_conversation(previous_state=state, user_message=interjection_text, llm_call=llm)
@@ -1941,7 +1943,7 @@ def test_no_evidence_available_produces_empty_evidence_section_without_crashing(
         llm_call=llm,
         evidence_lookup=None,  # RAG 미사용.
     )
-    assert state["phase"] == "awaiting_user_decision"
+    assert state["phase"] == "discussion_complete"
     planning_prompt = next(
         p for p in llm.captured_prompts if "[의견 규칙]" in p and "당신은 AI Review Board의 기획 전문가입니다" in p
     )

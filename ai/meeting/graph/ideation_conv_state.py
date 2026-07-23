@@ -35,6 +35,7 @@ ConvPhase = Literal[
     "awaiting_developer_answer",
     "expert_discussion",
     "awaiting_user_decision",
+    "discussion_complete",
     "finalized",
     "failed",
     # 내부 전이용 값 — API/프론트에 노출되는 공개 상태에는 포함되지 않는다.
@@ -166,6 +167,16 @@ class IssueRecord(TypedDict):
     development_position: str | None
     resolution: str | None
     turns: int
+    # 용준/Claude(2026-07-23, 요청: 동일 쟁점 표현 변경 반복 루프 수정) — 이 쟁점이 속한
+    # 결정론적 canonical family(TOPIC_PRIORITY 슬러그 또는 "custom:<정규화 텍스트>").
+    # resolve_canonical_issue_family가 채우며, 표현만 바뀐 재등록을 이 값으로 판별한다.
+    # 구버전 저장 레코드에는 없을 수 있으므로 읽는 쪽은 항상 `.get("family")`로 접근한다.
+    family: str
+    # 강제 종료(발언 상한 도달)인지 실제 합의 해결인지 구분한다 — status="resolved"가 된
+    # 이유를 코드·로그·후속 라우팅이 구분할 수 있게 한다(요청: "강제 종료와 합의 완료
+    # 구분"). status가 "open"인 동안은 둘 다 None이다.
+    closed_reason: str | None  # None | "consensus_reached" | "max_issue_turns_reached" | "semantic_repetition_detected"
+    resolution_kind: str | None  # None | "agreed_resolution" | "parked_expert_judgment"
 
 
 class DiscussionRoundRecord(TypedDict):
@@ -441,6 +452,18 @@ class IdeationConvState(TypedDict):
     # {})`로 접근한다(하위 호환).
     evidence_plan_shadow_history: dict[str, list[dict]]
 
+    # 용준/Claude(2026-07-23, 요청: 근거 기반 자율 토론형 회의로 개편) — 쟁점(issue_id)별로
+    # 보완 RAG 검색을 이미 시도했는지 기록한다("쟁점당 최대 1회"). 세션 전체에 걸쳐
+    # 누적되고(라운드/이슈 변경으로 리셋되지 않는다), 같은 이슈가 다시 열려도 이미 시도한
+    # 검색을 반복하지 않는다. 구버전 저장 state에는 이 키가 없을 수 있으므로 읽는 쪽은
+    # 항상 `.get("supplemental_retrieval_issue_ids", [])`로 접근한다(하위 호환).
+    supplemental_retrieval_issue_ids: list[str]
+    # 이미 사용자에게 물은 결정 질문의 지문(issue_id+주제+missing_information 기반 해시) —
+    # 같은 쟁점에서 같은(또는 의미상 유사한) 사유로 반복 질문하지 않도록 막는다(요청:
+    # "세션 내 질문 fingerprint 또는 reason code를 기록"). 구버전 저장 state에는 이 키가
+    # 없을 수 있으므로 읽는 쪽은 항상 `.get("asked_decision_fingerprints", [])`로 접근한다.
+    asked_decision_fingerprints: list[str]
+
 
 def _extract_initial_idea_text(user_idea: dict | str | None) -> str:
     """user_idea에서 trim된 초기 아이디어 텍스트를 뽑아낸다. dict({"description": ...})와
@@ -553,6 +576,8 @@ def initial_conv_state(
         last_new_information_text="",
         consecutive_no_new_information_turns=0,
         evidence_plan_shadow_history={},
+        supplemental_retrieval_issue_ids=[],
+        asked_decision_fingerprints=[],
     )
 
 
@@ -577,7 +602,7 @@ def apply_user_answer(previous_state: IdeationConvState, answer_message: ConvMes
         next_phase = "developer_question"
     elif prev_phase == "awaiting_developer_answer":
         next_phase = "expert_discussion"
-    elif prev_phase == "awaiting_user_decision":
+    elif prev_phase in {"awaiting_user_decision", "discussion_complete"}:
         # 요청 8번 "필요한 경우 추가 질문 라운드" — 시스템이 스스로 판단해 다음 라운드로
         # 넘어가는 경우(next_action="continue_round")와 별개로, 사용자가 확정 버튼을
         # 누르지 않고 자유롭게 한 마디 더 남기면 그 발언도 두 전문가의 보완 의견 대상이
@@ -615,9 +640,10 @@ def request_finalize(previous_state: IdeationConvState) -> IdeationConvState:
     """사용자가 '주제 확정하고 초안 받기'를 눌렀을 때만 호출된다(요구 9~10번 —
     전문가/진행자가 임의로 최종 확정하지 않는다). phase="awaiting_user_decision"이 아니면
     호출부(API)가 이 함수를 부르기 전에 이미 막아야 한다."""
-    if previous_state["phase"] != "awaiting_user_decision":
+    if previous_state["phase"] not in {"awaiting_user_decision", "discussion_complete"}:
         raise ValueError(
-            f"awaiting_user_decision 상태에서만 최종 확정할 수 있습니다(현재: {previous_state['phase']!r})."
+            "awaiting_user_decision 또는 discussion_complete 상태에서만 최종 확정할 수 "
+            f"있습니다(현재: {previous_state['phase']!r})."
         )
     return IdeationConvState(**{**previous_state, "phase": "finalizing"})
 

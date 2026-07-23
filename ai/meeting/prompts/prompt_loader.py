@@ -448,6 +448,7 @@ def build_ideation_conv_discussion_facilitator_prompt(
     open_issues: Any = None,
     resolved_issues: Any = None,
     stop_reason: str | None = None,
+    next_issue_hint: str | None = None,
 ) -> str:
     """진행자가 전문가 토론을 정리하고 사용자 질문이 꼭 필요한지 판단하는 프롬프트를
     조립한다. decided_next_action은 이미 라우터(ideation_conv_build.py::
@@ -458,7 +459,12 @@ def build_ideation_conv_discussion_facilitator_prompt(
     development_review는 더 이상 "이번 라운드 발언"이 아니라 각 전문가의 "가장 최근 발언"
     스냅샷이다(발언 횟수가 라운드마다 고정이 아니게 됐으므로). open_issues/resolved_issues/
     stop_reason(모두 새 파라미터, 기본값 None — 호출부가 안 넘기면 기존과 동일하게 렌더)은
-    이 라운드가 왜 끝났는지, 아직 안 끝난 쟁점이 남아있는지를 진행자에게 알려준다."""
+    이 라운드가 왜 끝났는지, 아직 안 끝난 쟁점이 남아있는지를 진행자에게 알려준다.
+
+    용준/Claude(2026-07-23, 요청: "진행자에게 갱신된 쟁점 상태 전달") — next_issue_hint는
+    발언 상한으로 방금 쟁점이 강제 종료되고 다음 공식 쟁점으로 로테이션됐을 때만 채워지는
+    사람이 읽는 제목이다. 채워져 있으면 spoken_text가 방금 닫힌 쟁점을 더 논의하자고
+    요구하지 않고 이 다음 쟁점으로 자연스럽게 넘어가야 한다는 신호다."""
     card = get_persona_card("ideation_facilitator")
     template = _read_text(IDEATION_CONV_DISCUSSION_FACILITATOR_TEMPLATE)
     replacements = {
@@ -475,6 +481,7 @@ def build_ideation_conv_discussion_facilitator_prompt(
         "<<OPEN_ISSUES_JSON>>": _as_text(open_issues if open_issues is not None else []),
         "<<RESOLVED_ISSUES_JSON>>": _as_text(resolved_issues if resolved_issues is not None else []),
         "<<STOP_REASON>>": stop_reason or "",
+        "<<NEXT_ISSUE_HINT>>": next_issue_hint or "",
     }
     for token, value in replacements.items():
         template = template.replace(token, value)

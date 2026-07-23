@@ -167,6 +167,39 @@ class TestEvaluateEvidenceEligibility:
         assert result["issue_relevance_pass"] is True
         assert result["eligible"] is True
 
+    def test_generic_criteria_below_stricter_direct_relevance_is_excluded(self):
+        item = _criteria_item(text="AI 기술을 활용한 도시 운영 혁신이 이루어졌는가?")
+        issue = {
+            "issue_id": "problem",
+            "title": "문제 정의",
+            "query": "에너지 소비 비효율과 환경 오염 문제",
+        }
+        result = evaluate_evidence_eligibility(
+            item, persona_id="planning_expert", effective_issue=issue, runtime_scope={}
+        )
+        assert result["issue_relevance_threshold"] == 0.25
+        assert result["issue_relevance_pass"] is False
+        assert result["eligible"] is False
+
+    def test_short_v3_problem_criterion_uses_direct_issue_focus_signal(self):
+        item = _criteria_item(
+            text="평가 기준 계획 적정성 (20)\n- 도시 문제의 설정이 구체적인가?"
+        )
+        issue = {
+            "issue_id": "problem",
+            "title": "문제 정의",
+            "query": "집중호우 때 지하차도 침수 피해를 줄이는 안전 서비스",
+        }
+        result = evaluate_evidence_eligibility(
+            item,
+            persona_id="planning_expert",
+            effective_issue=issue,
+            runtime_scope={},
+        )
+        assert result["direct_issue_focus_pass"] is True
+        assert result["issue_relevance_pass"] is True
+        assert result["eligible"] is True
+
     def test_expanded_planning_policy_still_rejects_issue_irrelevant_criteria(self):
         item = _criteria_item(text="조리법과 식자재 보관 방법을 설명하는 문서입니다.")
         issue = {
@@ -261,7 +294,7 @@ class TestExtractPlannerQuote:
         assert quote.startswith("차별성")
 
     def test_prefers_earliest_span_on_tie(self):
-        content = "차별성 문장 하나. 차별성 문장 둘."
+        content = "차별성 문장 하나. 차별성 문장 하나."
         result = extract_planner_quote(content, "차별성")
         assert result is not None
         _, start, _ = result
@@ -274,6 +307,38 @@ class TestExtractPlannerQuote:
         quote, _, _ = result
         assert "…" not in quote
         assert quote in content
+
+    def test_prefers_focused_clause_over_mixed_full_sentence(self):
+        content = "사용자 문제와 피해를 구체화하고, 데이터 확보와 운영 비용은 다음 단계에서 검토합니다."
+        result = extract_planner_quote(content, "문제 정의 사용자 피해")
+        assert result is not None
+        quote, start, end = result
+        assert quote == "사용자 문제와 피해를 구체화하고"
+        assert content[start:end] == quote
+
+    def test_target_label_only_line_is_not_selected_as_quote(self):
+        content = (
+            "제목:\nAI 기반 도시 안전 모니터링 시스템\n\n"
+            "문제:\n도시의 범죄와 사고 증가로 시민이 겪는 안전 문제가 커지고 있습니다.\n\n"
+            "해결 방식:\nAI로 위험 상황을 감지합니다."
+        )
+        result = extract_planner_quote(content, "문제 정의 사용자 피해 위험")
+        assert result is not None
+        quote, start, end = result
+        assert quote == "도시의 범죄와 사고 증가로 시민이 겪는 안전 문제가 커지고 있습니다."
+        assert quote != "문제:"
+        assert content[start:end] == quote
+
+    def test_inline_target_label_returns_only_field_value(self):
+        content = "문제: 침수 위험으로 시민의 대피가 늦어지는 문제가 있습니다."
+        result = extract_planner_quote(content, "문제 정의 시민 피해 위험")
+        assert result is not None
+        quote, start, end = result
+        assert quote == "침수 위험으로 시민의 대피가 늦어지는 문제가 있습니다."
+        assert content[start:end] == quote
+
+    def test_target_label_without_value_is_not_a_quote(self):
+        assert extract_planner_quote("문제:", "문제 정의") is None
 
 
 class TestValidateEvidencePlan:
@@ -373,6 +438,92 @@ class TestBuildEvidencePlan:
         assert roles["criteria"]["claim_type"] == "document_fact"
         assert len(plan["selected_evidence"]) == 2
 
+    def test_topic_prefixed_target_user_selects_structured_target_field_over_kpi_criteria(self):
+        target = _target_item(
+            text=(
+                "제목:\n스마트 교통 관리 시스템\n\n"
+                "문제:\n도시 교통 혼잡 문제를 해결해야 합니다.\n\n"
+                "대상 사용자:\n도시 교통 관리 기관\n\n"
+                "기대 효과:\n교통 혼잡을 줄이고 시민의 이동 편의성을 높입니다."
+            )
+        )
+        criteria = _criteria_item(
+            text="평가 기준 계획 적정성 (20)\n- AI 기반 해결 목표 및 KPI의 설정이 이루어졌는가?"
+        )
+        issue = {
+            "issue_id": "topic_target_user",
+            "title": "목표 사용자",
+            "query": "스마트 교통 관리 시스템 목표 사용자 도시 교통 관리 기관",
+        }
+
+        plan = build_evidence_plan(
+            persona_id="planning_expert",
+            effective_issue=issue,
+            retrieved_evidence=[criteria, target],
+            runtime_scope={},
+            shadow_history=[],
+        )
+
+        assert plan["validation"]["valid"] is True
+        assert plan["empty_plan_reason"] is None
+        assert [item["document_role"] for item in plan["selected_evidence"]] == ["target"]
+        assert plan["selected_evidence"][0]["quote"] == "도시 교통 관리 기관"
+        assert plan["selected_evidence"][0]["field_label"] == "대상 사용자"
+
+    def test_topic_prefixed_target_user_is_not_valid_empty_for_dev(self):
+        target = _target_item(
+            text=(
+                "제목:\n스마트 교통 관리 시스템\n\n"
+                "대상 사용자:\n도시 교통 관리 기관\n\n"
+                "기술 접근 방식:\n카메라와 센서 데이터를 분석합니다."
+            )
+        )
+        issue = {
+            "issue_id": "topic_target_user",
+            "title": "목표 사용자",
+            "query": "스마트 교통 관리 시스템 목표 사용자",
+        }
+
+        plan = build_evidence_plan(
+            persona_id="dev_expert",
+            effective_issue=issue,
+            retrieved_evidence=[target],
+            runtime_scope={},
+            shadow_history=[],
+        )
+
+        assert plan["empty_plan_reason"] is None
+        assert plan["selected_evidence"][0]["quote"] == "도시 교통 관리 기관"
+
+    def test_topic_prefixed_core_value_selects_expected_effect_target_before_criteria(self):
+        target = _target_item(
+            text=(
+                "제목:\n스마트 교통 관리 시스템\n\n"
+                "기대 효과:\n교통 혼잡을 줄이고 시민의 이동 편의성을 증가시킵니다."
+            )
+        )
+        criteria = _criteria_item(
+            text="AI 기술이 시민 삶의 질 향상 및 사회적 가치 창출에 기여하는가?"
+        )
+        issue = {
+            "issue_id": "topic_core_value",
+            "title": "핵심 가치",
+            "query": "스마트 교통 관리 시스템 핵심 가치 시민 이동 편의",
+        }
+
+        plan = build_evidence_plan(
+            persona_id="planning_expert",
+            effective_issue=issue,
+            retrieved_evidence=[criteria, target],
+            runtime_scope={},
+            shadow_history=[],
+        )
+
+        assert plan["empty_plan_reason"] is None
+        assert plan["selected_evidence"][0]["document_role"] == "target"
+        assert plan["selected_evidence"][0]["quote"] == "교통 혼잡을 줄이고 시민의 이동 편의성을 증가시킵니다."
+        assert plan["selected_evidence"][0]["field_label"] == "기대 효과"
+
     def test_role_max_one_each_even_with_multiple_candidates(self):
         items = [
             _target_item(ref="E1", chunk_id="chk_t1"),
@@ -438,4 +589,131 @@ class TestBuildEvidencePlan:
             shadow_history=[],
         )
         assert plan["plan_id"].startswith("EP-")
-        assert plan["policy_version"] == "ideation-planner-v3"
+        assert plan["policy_version"] == "ideation-planner-v9"
+
+    def test_problem_issue_rejects_expansion_quote_and_selects_problem_quote(self):
+        issue = {
+            "issue_id": "problem",
+            "title": "문제 정의",
+            "query": "도시 침수 피해와 시민 안전 문제 정의",
+        }
+        expansion = _criteria_item(
+            ref="E1",
+            chunk_id="chk_expansion",
+            text="확장성 (20)\n- 도시 서비스 및 운영 모델의 확장성이 있는가?",
+        )
+        problem = _criteria_item(
+            ref="E2",
+            chunk_id="chk_problem",
+            text="계획 적정성 (20)\n- 도시 문제의 설정이 구체적인가?",
+        )
+        plan = build_evidence_plan(
+            persona_id="planning_expert",
+            effective_issue=issue,
+            retrieved_evidence=[expansion, problem],
+            runtime_scope={},
+            shadow_history=[],
+        )
+
+        assert [item["chunk_id"] for item in plan["selected_evidence"]] == ["chk_problem"]
+        assert "확장성" not in plan["selected_evidence"][0]["quote"]
+
+    def test_score_only_heading_is_skipped_for_descriptive_criterion(self):
+        issue = {
+            "issue_id": "core_value",
+            "title": "핵심 가치",
+            "query": "시민 삶의 질과 사회적 가치",
+        }
+        criteria = _criteria_item(
+            ref="E1",
+            chunk_id="chk_social_value",
+            text=(
+                "사회적 가치성 (20)\n"
+                "- AI 기술이 시민 삶의 질 향상 및 사회적 가치 창출에 기여하는가?\n"
+                "- 안전·환경·포용성 등 지속가능한 도시 구현에 기여하는가?"
+            ),
+        )
+
+        plan = build_evidence_plan(
+            persona_id="planning_expert",
+            effective_issue=issue,
+            retrieved_evidence=[criteria],
+            runtime_scope={},
+            shadow_history=[],
+        )
+
+        assert len(plan["selected_evidence"]) == 1
+        assert plan["selected_evidence"][0]["quote"] == (
+            "AI 기술이 시민 삶의 질 향상 및 사회적 가치 창출에 기여하는가?"
+        )
+
+    def test_problem_plan_selects_candidate_problem_value_not_label(self):
+        issue = {
+            "issue_id": "problem",
+            "title": "문제 정의",
+            "query": "도시 안전 문제와 시민 피해",
+        }
+        item = _target_item(
+            text=(
+                "제목:\nAI 기반 도시 안전 모니터링 시스템\n\n"
+                "문제:\n도시의 범죄와 사고 증가로 시민 안전 문제가 커지고 있습니다.\n\n"
+                "해결 방식:\nAI로 위험 상황을 감지합니다."
+            )
+        )
+        item["ideation_source_type"] = "ideation_candidate"
+        item["document_id"] = "DOC-candidate"
+
+        plan = build_evidence_plan(
+            persona_id="planning_expert",
+            effective_issue=issue,
+            retrieved_evidence=[item],
+            runtime_scope={"selected_candidate_document_id": "DOC-candidate"},
+            shadow_history=[],
+        )
+
+        selected = plan["selected_evidence"][0]
+        assert selected["quote"] == "도시의 범죄와 사고 증가로 시민 안전 문제가 커지고 있습니다."
+        assert item["text"][selected["quote_start"]:selected["quote_end"]] == selected["quote"]
+
+    def test_problem_issue_returns_valid_empty_when_only_expansion_quote_exists(self):
+        issue = {
+            "issue_id": "problem",
+            "title": "문제 정의",
+            "query": "도시 침수 문제 정의와 시민 피해",
+        }
+        expansion = _criteria_item(
+            text="확장성 (20)\n- 도시 문제 해결 서비스 및 운영 모델의 확장성이 있는가?"
+        )
+        plan = build_evidence_plan(
+            persona_id="planning_expert",
+            effective_issue=issue,
+            retrieved_evidence=[expansion],
+            runtime_scope={},
+            shadow_history=[],
+        )
+
+        assert plan["selected_evidence"] == []
+        assert plan["empty_plan_reason"] == "no_issue_focused_quote"
+
+    def test_user_answer_meta_instruction_is_not_selected_as_fact(self):
+        issue = {
+            "issue_id": "problem",
+            "title": "문제 정의",
+            "query": "도시 문제 피해와 현재 한계",
+        }
+        item = _target_item(
+            text="문제 정의를 유지하면서 사용자 피해와 현재 해결 방식의 한계를 한 차례 더 검토해주세요."
+        )
+        item["ideation_source_type"] = "user_session_answer"
+        item["session_id"] = "S1"
+
+        plan = build_evidence_plan(
+            persona_id="planning_expert",
+            effective_issue=issue,
+            retrieved_evidence=[item],
+            runtime_scope={"session_id": "S1"},
+            shadow_history=[],
+        )
+
+        assert plan["selected_evidence"] == []
+        assert plan["empty_plan_reason"] == "no_issue_focused_quote"

@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import time
@@ -245,6 +246,7 @@ def _safe_call_structured_json(
     prompt: str,
     validate: Callable[[dict], str | None],
     node_name: str,
+    retry_note_for: Callable[[str], str] | None = None,
 ) -> tuple[dict | None, bool, int]:
     """JSON 파싱 + 스키마(필수 필드 비어있지 않음) 검증을 함께, 최대 2회(최초 1회 + 재시도
     1회) 시도한다 — 요청 7번 "구조화 응답이 유효하지 않으면 최대 1회 재시도" +
@@ -258,8 +260,11 @@ def _safe_call_structured_json(
     포함하지 않는다."""
     last_reason = "unknown"
     for attempt in range(1, 3):
+        attempt_prompt = prompt
+        if attempt > 1 and retry_note_for is not None:
+            attempt_prompt += retry_note_for(last_reason)
         try:
-            raw = parse_json_response(llm_call(prompt))
+            raw = parse_json_response(llm_call(attempt_prompt))
         except (ValueError, KeyError, TypeError):
             last_reason = "json_parse_failed"
             trace_event(
@@ -271,7 +276,7 @@ def _safe_call_structured_json(
             )
             discard = getattr(llm_call, "discard_streamed_prompt", None)
             if callable(discard):
-                discard(prompt, last_reason)
+                discard(attempt_prompt, last_reason, attempt < 2)
             continue
         problem = validate(raw)
         if problem is None:
@@ -286,7 +291,7 @@ def _safe_call_structured_json(
         )
         discard = getattr(llm_call, "discard_streamed_prompt", None)
         if callable(discard):
-            discard(prompt, last_reason)
+            discard(attempt_prompt, last_reason, attempt < 2)
     logger.warning("[%s] 구조화 응답 검증 실패 reason=%s", node_name, last_reason)
     return None, False, 2
 
@@ -308,9 +313,33 @@ def _safe_discussion_fallback(
     issue_id = issue["issue_id"]
     issue_title = issue["title"]
     counterpart = _DISCUSSION_COUNTERPART.get(persona_id, "ideation_facilitator")
+    role_guidance = {
+        "planning_expert": {
+            "problem": "대상 사용자가 겪는 상황·원인·영향을 한 문장씩 구분해 문제 정의를 구체화하겠습니다.",
+            "target_user": "핵심 사용자를 하나로 좁히고 사용 상황과 가장 큰 불편을 우선 검증하겠습니다.",
+            "core_value": "사용 전후의 변화를 측정할 수 있는 핵심 가치와 지표를 먼저 정하겠습니다.",
+            "differentiation": "기존 방식과 비교해 사용자 경험이 달라지는 지점을 하나의 차별점으로 좁히겠습니다.",
+            "mvp": "사용자 가치 검증에 꼭 필요한 기능만 남겨 초기 MVP 범위를 축소하겠습니다.",
+        },
+        "dev_expert": {
+            "problem": "구현으로 넘어가기 전에 문제를 관측할 수 있는 데이터와 측정 지표부터 정의하겠습니다.",
+            "data": "공공 데이터와 자체 수집 데이터를 구분하고 정확도·갱신 주기·수집 비용을 먼저 검증하겠습니다.",
+            "ai_role": "AI가 담당할 판단과 규칙 기반으로 처리할 기능을 분리해 기술 위험을 줄이겠습니다.",
+            "differentiation": "차별 기능에 필요한 데이터와 구현 난도를 확인해 실제 개발 가능한 범위로 좁히겠습니다.",
+            "mvp": "핵심 데이터 흐름 하나를 기준으로 수집·분석·알림까지의 최소 기능을 먼저 검증하겠습니다.",
+        },
+    }.get(persona_id, {})
+    guidance = role_guidance.get(
+        issue_id,
+        (
+            "사용자 가치와 검증 기준을 먼저 정해 다음 논의를 구체화하겠습니다."
+            if persona_id == "planning_expert"
+            else "필요 데이터와 구현 위험을 구분해 검증 가능한 최소 범위부터 제안하겠습니다."
+        ),
+    )
     spoken_text = (
-        f"현재 응답 형식을 안정적으로 확인하지 못해 {issue_title}에 관한 문서 사실을 확정하기 어렵습니다. "
-        "검색 자료와 세부 조건을 추가로 확인한 뒤 판단을 보완해야 합니다."
+        f"{issue_title}에 관한 문서 사실을 추가로 단정하지 않고 전문가 판단으로 진행하겠습니다. "
+        f"{guidance}"
     )
     responding_to = (
         "앞선 의견의 세부 근거를 추가로 확인해야 합니다."
@@ -319,22 +348,22 @@ def _safe_discussion_fallback(
     )
     return {
         "stance": "보완",
-        "judgment": f"{issue_title}에 대한 추가 확인이 필요합니다.",
-        "reason": "두 차례 생성된 구조화 응답이 검증을 통과하지 않아 문서 사실을 안전하게 확정할 수 없습니다.",
-        "suggestion": "검색 자료와 사용자 조건을 다시 확인한 뒤 구체적인 판단을 이어갑니다.",
-        "interim_conclusion": "현재 단계에서는 문서 사실을 단정하지 않고 추가 확인이 필요하다고 정리합니다.",
+        "judgment": guidance,
+        "reason": "문서에서 확인된 사실과 전문가의 제안을 분리하면서도 회의를 중단하지 않기 위한 판단입니다.",
+        "suggestion": guidance,
+        "interim_conclusion": f"{issue_title}은 위 검증 방향을 임시 기준으로 삼아 다음 논의를 이어갑니다.",
         "spoken_text": spoken_text,
         "responding_to": responding_to,
         "agreement": "추가 검토가 필요하다는 점은 수용합니다." if responding_to else None,
         "concern": "현재 자료만으로 구체적인 사실을 단정할 수 없습니다." if responding_to else None,
         "revision": None,
         "confirmed": [],
-        "unconfirmed": [f"{issue_title} 관련 세부 근거"],
+        "unconfirmed": [],
         "referenced_message_ids": [responding_to_message_id] if responding_to_message_id else [],
         "claims": [
             {
                 "claim_id": "safe_fallback_judgment",
-                "text": f"{issue_title}에 대한 추가 확인이 필요합니다.",
+                "text": guidance,
                 "claim_type": "expert_judgment",
                 "evidence_refs": [],
             }
@@ -342,11 +371,14 @@ def _safe_discussion_fallback(
         "next_action": None,
         "active_issue_id": issue_id,
         "active_issue_title": issue_title,
-        "new_information": ["구조화 응답 검증 실패로 문서 사실 확정을 보류함"],
+        # 구조화 응답이 두 번 모두 실패했다는 것은 이 턴에서 검증 가능한 새 논점을
+        # 얻지 못했다는 뜻이다. 이를 새 정보/대안으로 저장하면 다음 턴이 서버가 만든
+        # 상투적인 문구를 다시 반박하며 같은 쟁점을 이어간다.
+        "new_information": [],
         "proposal": None,
         "changed_position": False,
-        "needs_counterpart_response": True,
-        "recommended_next_speaker": counterpart,
+        "needs_counterpart_response": False,
+        "recommended_next_speaker": "ideation_facilitator",
         "issue_resolved": False,
         "needs_user_input": False,
         "user_question": None,
@@ -367,6 +399,107 @@ def _safe_fallback_spoken_text(grounding: dict) -> str:
     return text[:_MAX_SPOKEN_TEXT_CHARS]
 
 
+def _evidence_unavailable_discussion_response(
+    *,
+    persona_id: str,
+    state: IdeationConvState,
+    discussion_stage: str,
+    responding_to_message_id: str | None,
+    responding_to_content: str | None,
+) -> dict:
+    """Planner가 현재 쟁점에 적격 근거가 없다고 확정한 턴을 일반 전문가 의견으로 만들지 않는다."""
+    raw = _safe_discussion_fallback(
+        persona_id=persona_id,
+        state=state,
+        discussion_stage=discussion_stage,
+        responding_to_message_id=responding_to_message_id,
+        responding_to_content=responding_to_content,
+    )
+    issue_title = raw.get("active_issue_title") or "현재 쟁점"
+    notice = (
+        f"{issue_title}에 직접 연결할 수 있는 문서 근거를 찾지 못해 이번 전문가 판단은 "
+        "생성하지 않고 다음 쟁점 판단으로 넘기겠습니다."
+    )
+    return {
+        **raw,
+        "judgment": notice,
+        "reason": "Evidence Planner가 현재 쟁점에 적격한 근거를 선택하지 못했습니다.",
+        "suggestion": "진행자가 근거 부족을 기록하고 다음 쟁점으로 이동합니다.",
+        "interim_conclusion": notice,
+        "spoken_text": notice,
+        "claims": [],
+        "new_information": [],
+        "proposal": None,
+        "needs_counterpart_response": False,
+        "recommended_next_speaker": "ideation_facilitator",
+        "safe_fallback_reason": "evidence_first_no_eligible_evidence",
+        "evidence_first_skipped": True,
+    }
+
+
+def _evidence_anchor_response(raw: dict, retrieved: list[dict]) -> dict | None:
+    """LLM 응답이 근거를 하나도 연결하지 못했을 때 선택 근거 자체로 안전한 발언을 만든다.
+
+    근거 quote를 그대로 claim text로 사용하므로 새로운 문서 사실을 만들지 않는다. target
+    근거를 criteria보다 우선해 아이디어 자체에 대한 논의가 평가표 일반론보다 앞서게 한다.
+    """
+    candidates = [
+        item
+        for item in retrieved
+        if isinstance(item, dict)
+        and isinstance(item.get("ref"), str)
+        and item.get("ref")
+        and isinstance(item.get("quote") or item.get("text"), str)
+        and (item.get("quote") or item.get("text")).strip()
+    ]
+    if not candidates:
+        return None
+    evidence = sorted(
+        candidates,
+        key=lambda item: (0 if item.get("document_role") == "target" else 1),
+    )[0]
+    quote = str(evidence.get("quote") or evidence.get("text")).strip()
+    ref = evidence["ref"]
+    claim_type = evidence.get("claim_type")
+    if claim_type not in ("document_fact", "user_provided_fact"):
+        claim_type = "user_provided_fact" if evidence.get("document_role") == "target" else "document_fact"
+    issue_title = raw.get("active_issue_title") or "현재 쟁점"
+    judgment = f"{issue_title}에서는 이 근거가 요구하거나 설명하는 내용을 구체화해야 합니다."
+    spoken_text = f'근거 자료에는 “{quote}”라고 제시되어 있습니다. {judgment}'
+    return {
+        **raw,
+        "judgment": judgment,
+        "reason": quote,
+        "suggestion": judgment,
+        "interim_conclusion": judgment,
+        "spoken_text": spoken_text[:_MAX_SPOKEN_TEXT_CHARS],
+        "confirmed": [quote],
+        "unconfirmed": [],
+        "claims": [
+            {
+                "claim_id": "evidence_anchor_fact",
+                "text": quote,
+                "claim_type": claim_type,
+                "evidence_refs": [ref],
+            },
+            {
+                "claim_id": "evidence_anchor_judgment",
+                "text": judgment,
+                "claim_type": "expert_judgment",
+                "evidence_refs": [],
+            },
+        ],
+        "new_information": [quote],
+        "proposal": None,
+        "changed_position": False,
+        "needs_counterpart_response": False,
+        "recommended_next_speaker": "ideation_facilitator",
+        "needs_user_input": False,
+        "user_question": None,
+        "evidence_first_fallback": True,
+    }
+
+
 def _ground_and_finalize_claims(
     *,
     persona_id: str,
@@ -377,6 +510,7 @@ def _ground_and_finalize_claims(
     validate: Callable[[dict], str | None],
     used: int,
     ground_claims_fn: ClaimGroundingFn | None,
+    require_linked_evidence: bool = False,
 ) -> tuple[dict, dict, int]:
     """구조화 검증(_safe_call_structured_json)을 통과한 raw 응답의 claims를 실제 검색 근거와
     대조 검증한다(요청: 최종 발언의 주장과 실제 청크가 연결되고 관련성 검증을 통과해야만
@@ -423,6 +557,15 @@ def _ground_and_finalize_claims(
             "retrieved_evidence에 실제로 있는 ref만 evidence_refs에 넣고, 문서에서 확인할 수 "
             "없는 내용은 claim_type을 expert_judgment로 바꾸거나 claims에서 제외하세요."
         )
+        # 용준/Claude(2026-07-23, 요청: 스트리밍 UX 버그 수정 — grounding retry에서 이전
+        # 초안과 재시도 초안이 동시에 화면에 남는 문제): 이 재시도는 _safe_call_structured_json
+        # 의 재시도 축과 달리 프롬프트 문자열이 달라지므로(prompt + retry_note), llm_call
+        # 내부의 "동일 prompt 재호출" 감지로는 이전 스트림 말풍선이 자동으로 지워지지
+        # 않는다. 재시도 호출 전에 명시적으로 이전 스트림을 discard해야, 프런트가 두 초안을
+        # 동시에 들고 있지 않고 "검토 중" 표시로 전환한 뒤 재시도 말풍선으로 교체한다.
+        discard = getattr(llm_call, "discard_streamed_prompt", None)
+        if callable(discard):
+            discard(prompt, "grounding_retry", True)
         try:
             retry_raw = parse_json_response(llm_call(prompt + retry_note))
         except (ValueError, KeyError, TypeError):
@@ -435,6 +578,25 @@ def _ground_and_finalize_claims(
     if _has_hard_grounding_failure(grounding):
         raw = dict(raw)
         raw["spoken_text"] = _safe_fallback_spoken_text(grounding)
+
+    if require_linked_evidence and retrieved and grounding["linked_evidence_count"] == 0:
+        anchored_raw = _evidence_anchor_response(raw, retrieved)
+        if anchored_raw is not None:
+            anchored_grounding = ground_claims_fn(
+                persona_id,
+                anchored_raw.get("claims"),
+                retrieved,
+            )
+            if anchored_grounding["linked_evidence_count"] > 0:
+                raw = anchored_raw
+                grounding = anchored_grounding
+                trace_event(
+                    "IDEATION_EVIDENCE_FIRST_FALLBACK",
+                    speaker=persona_id,
+                    selected_ref=anchored_raw["claims"][0]["evidence_refs"][0],
+                    linked_evidence_count=grounding["linked_evidence_count"],
+                    reason="generated_response_had_no_linked_evidence",
+                )
 
     trace_event(
         "IDEATION_CLAIM_GROUNDING_RESULT",
@@ -555,16 +717,456 @@ def validate_spoken_text_speaker_reference(
     return None
 
 
+_RESTATEMENT_STOPWORDS = frozenset(
+    {
+        "것",
+        "점",
+        "현재",
+        "매우",
+        "단순",
+        "실제",
+        "다만",
+        "하지만",
+        "그리고",
+        "따라서",
+        "아니라",
+        "어떻게",
+        "통해",
+        "기반",
+        "위해",
+        "대한",
+        "관련",
+        "문제",
+        "중요",
+        "중요한",
+        "필요",
+        "필요한",
+        "필수",
+        "핵심",
+        "방안",
+        "방법",
+        "전략",
+        "체계",
+        "마련",
+        "고려",
+        "결정",
+        "과정",
+        "이유",
+        "설계",
+        "개선",
+        "시스템",
+        "확대",
+        "기회",
+        "보장",
+        "보장할",
+        "효과적",
+        "있습니다",
+        "합니다",
+        "됩니다",
+    }
+)
+_RESTATEMENT_SUFFIX_RE = re.compile(
+    r"(입니다|합니다|됩니다|있습니다|없습니다|해야합니다|해야|하며|하고|하는|한|된|"
+    r"에서|에게|으로|부터|까지|처럼|보다|과|와|을|를|은|는|이|가|에|도|만)$"
+)
+_RESTATEMENT_ALIASES: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("피드백", "의견수렴", "의견"), "피드백"),
+    (("마케팅", "프로모션", "홍보", "유도"), "참여유도"),
+    (("정확성", "정확도", "신뢰성", "신뢰도", "품질"), "품질"),
+    (("수집", "확보"), "확보"),
+    (("연계", "연동", "통합"), "통합"),
+    (("시민", "주민"), "시민"),
+    (("참여",), "참여"),
+    (("정책",), "정책"),
+    (("반영",), "반영"),
+    (("소통",), "소통"),
+    (("경로", "채널"), "소통경로"),
+)
+
+
+def _restatement_terms(text: str | None) -> set[str]:
+    """표현만 바꾼 회의 발언을 비교하기 위한 결정론적 핵심어 집합."""
+    normalized = (text or "").lower().replace("의견 수렴", "의견수렴")
+    terms: set[str] = set()
+    for raw_token in re.findall(r"[가-힣A-Za-z0-9]+", normalized):
+        token = raw_token
+        previous = None
+        while token != previous:
+            previous = token
+            token = _RESTATEMENT_SUFFIX_RE.sub("", token)
+        if (
+            len(token) < 2
+            or token in _RESTATEMENT_STOPWORDS
+            or any(
+                token.startswith(prefix)
+                for prefix in ("중요", "필요", "구체", "명확", "효과적", "실제로", "필수")
+            )
+        ):
+            continue
+        canonical = token
+        for aliases, replacement in _RESTATEMENT_ALIASES:
+            if any(alias in token for alias in aliases):
+                canonical = replacement
+                break
+        if canonical not in _RESTATEMENT_STOPWORDS:
+            terms.add(canonical)
+    return terms
+
+
+def _restatement_similarity(spoken_text: str, previous_content: str | None) -> float:
+    """두 발언의 핵심어 유사도. 짧은 쪽의 재진술도 잡도록 Jaccard와 포함률을 함께 본다."""
+    current = _restatement_terms(spoken_text)
+    previous = _restatement_terms(previous_content)
+    if len(current) < 3 or len(previous) < 3:
+        return 0.0
+    shared = len(current & previous)
+    if shared < 3:
+        return 0.0
+    union = len(current | previous)
+    jaccard = shared / union if union else 0.0
+    containment = shared / min(len(current), len(previous))
+    return max(jaccard, containment * 0.8)
+
+
 def _looks_like_restatement(spoken_text: str, responding_to_content: str | None) -> bool:
-    """거의 같은 어휘만 되풀이한 발언을 보수적으로 감지한다."""
+    """핵심 주장이 같은 발언을 감지한다. LLM의 new_information 자기 신고는 사용하지 않는다."""
+    return _restatement_similarity(spoken_text, responding_to_content) >= 0.45
+
+
+def _looks_like_near_verbatim_restatement(spoken_text: str, responding_to_content: str | None) -> bool:
+    """응답 검증용의 엄격한 반복 판정.
+
+    상대 발언을 인용한 뒤 수정안을 덧붙이는 정상 응답은 핵심어 포함률이 높다. 따라서 검증
+    단계에서는 예전 계약처럼 원문 토큰 Jaccard가 0.82 이상인 사실상 복사 발언만 거부한다.
+    의미 반복의 조기 라우팅은 별도의 다중 메시지 검사에서 담당한다.
+    """
     if not responding_to_content:
         return False
-    tokenize = lambda text: {t for t in re.findall(r"[가-힣A-Za-z0-9]+", text.lower()) if len(t) >= 2}
+    tokenize = lambda text: {
+        token
+        for token in re.findall(r"[가-힣A-Za-z0-9]+", (text or "").lower())
+        if len(token) >= 2
+    }
     current = tokenize(spoken_text)
     previous = tokenize(responding_to_content)
     if len(current) < 5 or len(previous) < 5:
         return False
     return len(current & previous) / len(current | previous) >= 0.82
+
+
+def _recent_issue_restatement_matches(
+    messages: list[dict],
+    *,
+    issue_id: str | None,
+    spoken_text: str,
+    limit: int = 4,
+) -> list[dict[str, Any]]:
+    """현재 발언과 의미가 겹치는 최근 동일 쟁점 전문가 발언을 최대 ``limit``개 찾는다."""
+    if not issue_id:
+        return []
+    candidates: list[dict] = []
+    for message in reversed(messages):
+        structured = message.get("structured") or {}
+        if structured.get("active_issue_id") != issue_id:
+            continue
+        if message.get("speaker_id") not in ("planning_expert", "dev_expert"):
+            continue
+        candidates.append(message)
+        if len(candidates) >= limit:
+            break
+
+    matches: list[dict[str, Any]] = []
+    for message in candidates:
+        score = _restatement_similarity(spoken_text, message.get("content"))
+        if score >= 0.45:
+            matches.append(
+                {
+                    "message_id": message.get("message_id"),
+                    "speaker_id": message.get("speaker_id"),
+                    "similarity": round(score, 3),
+                }
+            )
+    return matches
+
+
+def _issue_evidence_exhausted(
+    messages: list[dict],
+    *,
+    issue_id: str | None,
+    current_speaker_id: str,
+    current_linked_chunk_ids: list[str],
+) -> bool:
+    """두 전문가가 검토를 마쳤고 현재 근거가 모두 재사용이면 쟁점 근거가 소진된 것으로 본다.
+
+    문장 유사도만으로는 한국어 어미와 표현 변경 때문에 같은 결론을 놓칠 수 있다. 반면 active
+    Planner가 같은 쟁점에 같은 chunk만 다시 주입했다는 사실은 결정론적으로 확인 가능하다.
+    첫 화자만 말한 상태에서는 상대 관점을 보장하기 위해 닫지 않고, 현재 턴까지 기획/개발
+    양쪽이 모두 발언한 경우에만 적용한다.
+    """
+    if not issue_id or not current_linked_chunk_ids:
+        return False
+
+    prior_chunk_ids: set[str] = set()
+    speakers = {current_speaker_id}
+    for message in messages:
+        structured = message.get("structured") or {}
+        if structured.get("active_issue_id") != issue_id:
+            continue
+        speaker_id = message.get("speaker_id")
+        if speaker_id not in ("planning_expert", "dev_expert"):
+            continue
+        speakers.add(speaker_id)
+        prior_chunk_ids.update(
+            chunk_id
+            for chunk_id in (message.get("linked_evidence_refs") or [])
+            if isinstance(chunk_id, str) and chunk_id
+        )
+
+    return (
+        speakers == {"planning_expert", "dev_expert"}
+        and bool(prior_chunk_ids)
+        and set(current_linked_chunk_ids).issubset(prior_chunk_ids)
+    )
+
+
+_USER_QUESTION_STOPWORDS = {
+    "관련", "관해", "대해", "대한", "문제", "문제를", "어떻게", "무엇", "뭐가",
+    "해결", "해결해야지", "해결해야하지", "궁금", "궁금해", "알려줘", "설명해줘",
+    "가능", "가능한가요", "되나요", "할까요", "해야하나요", "해야하지",
+}
+
+_ISSUE_FOCUS_MARKERS: dict[str, tuple[str, ...]] = {
+    "problem": ("문제", "불편", "위험", "피해", "원인", "영향", "비효율", "오염", "어려", "부족"),
+    "target_user": ("사용자", "이용자", "고객", "시민", "주민", "대상", "상황"),
+    "core_value": ("가치", "효과", "개선", "절감", "편의", "안전", "혜택"),
+    "contest_fit": ("공모", "평가", "심사", "기준", "주제", "적합"),
+    "differentiation": ("차별", "기존", "대비", "독창", "혁신", "경쟁"),
+    "mvp": ("MVP", "최소", "우선", "범위", "초기", "핵심 기능"),
+    "data": ("데이터", "수집", "확보", "품질", "센서", "연동"),
+    "ai_role": ("AI", "모델", "알고리즘", "예측", "분석", "자동화"),
+    "roadmap": ("확장", "단계", "로드맵", "향후", "도입", "고도화"),
+}
+
+_ISSUE_DRIFT_MARKERS: dict[str, tuple[str, ...]] = {
+    # 문제 정의를 한 번 언급한 뒤 곧바로 구현/MVP/확장성으로 넘어가는 실측 실패를 차단한다.
+    "problem": (
+        "MVP",
+        "구현",
+        "데이터 확보",
+        "데이터 수집",
+        "센서 연동",
+        "API",
+        "운영 비용",
+        "개인정보",
+        "보안",
+        "확장성",
+        "적용성",
+        "혁신성",
+        "차별성",
+        "KPI",
+        "로드맵",
+    ),
+}
+
+_EVALUATIVE_CONCLUSION_MARKERS = (
+    "부족",
+    "미흡",
+    "구체적이지 않",
+    "불명확",
+    "우려",
+    "약합니다",
+    "타당하지",
+    "문제가 있",
+    "필요",
+    "해야",
+    "타당",
+    "적절",
+    "생각",
+    "가치",
+    "효과",
+    "권고",
+    "제안",
+)
+_FACTUAL_ATTRIBUTION_MARKERS = (
+    "공고문에 명시",
+    "문서에 명시",
+    "자료에 명시",
+    "공고문에 따르면",
+    "문서에 따르면",
+    "자료에 따르면",
+)
+
+
+def _has_evaluative_conclusion(spoken_text: str) -> bool:
+    """문서 사실의 단순 전달이 아니라 전문가의 평가·권고가 포함됐는지 판정한다."""
+    return (
+        any(marker in spoken_text for marker in _EVALUATIVE_CONCLUSION_MARKERS)
+        and not any(marker in spoken_text for marker in _FACTUAL_ATTRIBUTION_MARKERS)
+    )
+
+
+def _repair_evaluative_expert_judgment_claim(
+    raw: dict,
+    evidence_claim_types_by_ref: dict[str, str],
+) -> None:
+    """평가기준 인용과 그 기준을 적용한 전문가 판단을 한 claim으로 뭉친 응답을 안전하게 분리한다.
+
+    평가기준 자체는 document_fact지만, 아이디어가 부족하거나 보완이 필요하다는 결론은
+    expert_judgment다. 이 분류는 결정론적으로 확정할 수 있으므로 동일 프롬프트를 다시 호출해
+    비용과 실패율을 늘리는 대신 별도 claim을 추가한다. 원래 document_fact claim과 ref는
+    변경하지 않으며 새로운 문서 사실도 만들지 않는다.
+    """
+    claims = [claim for claim in (raw.get("claims") or []) if isinstance(claim, dict)]
+    has_evidence_fact_claim = any(
+        claim.get("claim_type") in ("document_fact", "user_provided_fact")
+        for claim in claims
+    )
+    has_expert_judgment_claim = any(claim.get("claim_type") == "expert_judgment" for claim in claims)
+    spoken_text = raw.get("spoken_text") or ""
+    if (
+        not evidence_claim_types_by_ref
+        or not has_evidence_fact_claim
+        or has_expert_judgment_claim
+        or not _has_evaluative_conclusion(spoken_text)
+    ):
+        return
+
+    judgment_text = (raw.get("judgment") or spoken_text).strip()
+    if not judgment_text:
+        return
+    used_ids = {
+        claim.get("claim_id")
+        for claim in claims
+        if isinstance(claim.get("claim_id"), str)
+    }
+    suffix = 1
+    claim_id = "claim_expert_judgment"
+    while claim_id in used_ids:
+        suffix += 1
+        claim_id = f"claim_expert_judgment_{suffix}"
+    claims.append(
+        {
+            "claim_id": claim_id,
+            "text": judgment_text,
+            "claim_type": "expert_judgment",
+            "evidence_refs": [],
+        }
+    )
+    raw["claims"] = claims
+    trace_event(
+        "IDEATION_DISCUSSION_CLAIM_REPAIRED",
+        reason="spoken_evaluation_missing_expert_judgment_claim",
+        added_claim_id=claim_id,
+        claim_type="expert_judgment",
+    )
+
+
+def _discussion_retry_note(reason: str) -> str:
+    guidance = {
+        "spoken_text_issue_mismatch": (
+            "spoken_text의 모든 문장을 현재 active_issue에 직접 맞추고 다른 쟁점으로 이동하지 마세요."
+        ),
+        "spoken_text_issue_drift": (
+            "현재 쟁점의 판단만 말하고 MVP·구현·비용·확장성 등 다음 쟁점의 내용은 제외하세요."
+        ),
+        "active_issue_id_mismatch": "active_issue_id와 active_issue_title을 입력으로 받은 현재 쟁점과 정확히 일치시키세요.",
+        "spoken_text_does_not_answer_user_question": "spoken_text의 첫 문장부터 사용자의 질문에 직접 답하세요.",
+        "claim_type_evidence_role_mismatch": "각 claim_type을 인용한 evidence ref의 claim_type과 일치시키세요.",
+        "claim_mixes_document_roles": "criteria 근거와 target 근거를 서로 다른 claim으로 분리하세요.",
+        "document_fact_missing_evidence": "document_fact에는 실제 retrieved_evidence의 ref를 넣으세요.",
+        "user_provided_fact_missing_target_evidence": "user_provided_fact에는 실제 target 근거 ref를 넣으세요.",
+        "expert_judgment_must_not_cite_evidence": "expert_judgment의 evidence_refs는 빈 배열로 두세요.",
+    }.get(reason, "검증 실패 사유를 수정하되 기존 JSON 스키마와 현재 쟁점을 그대로 유지하세요.")
+    return (
+        "\n\n[구조화 응답 재시도]\n"
+        f"이전 응답이 검증에 실패했습니다. 실패 코드: {reason}\n"
+        f"수정 지침: {guidance}\n"
+        "JSON 객체 하나만 다시 반환하고, 이전의 잘못된 문장을 그대로 반복하지 마세요."
+    )
+
+
+_USER_DECISION_MARKERS = (
+    "예산",
+    "비용 상한",
+    "대상 지역",
+    "대상 기관",
+    "핵심 사용자",
+    "우선순위",
+    "선택",
+    "선호",
+    "일정",
+    "마감",
+    "보유 데이터",
+    "보유 센서",
+    "내부 시스템",
+    "mvp",
+    "mvp 범위",
+    "운영 주체",
+)
+
+
+def _is_actionable_user_decision_question(question: str | None) -> bool:
+    """사용자만 결정할 수 있는 제품 제약·선택 질문인지 보수적으로 판정한다."""
+    normalized = (question or "").strip().lower()
+    if not normalized:
+        return False
+    return any(marker in normalized for marker in _USER_DECISION_MARKERS)
+
+
+def _user_question_focus_terms(text: str) -> set[str]:
+    tokens = re.findall(r"[가-힣A-Za-z0-9]+", (text or "").lower())
+    terms: set[str] = set()
+    for token in tokens:
+        normalized = re.sub(
+            r"(인가요|한가요|할까요|해야하나요|해야하지|입니다|습니까|에서|으로|에게|부터|까지|"
+            r"과|와|을|를|은|는|이|가|에|도|만|면)$",
+            "",
+            token,
+        )
+        if len(normalized) >= 2 and normalized not in _USER_QUESTION_STOPWORDS:
+            terms.add(normalized)
+    return terms
+
+
+def _answers_user_question(spoken_text: str, user_question: str) -> bool:
+    focus_terms = _user_question_focus_terms(user_question)
+    if not focus_terms:
+        return True
+    normalized_answer = (spoken_text or "").lower()
+    return any(term in normalized_answer for term in focus_terms)
+
+
+def _spoken_text_matches_issue(spoken_text: str, issue_id: str, issue_title: str | None = None) -> bool:
+    """구조화 issue_id만 맞춰 쓰고 실제 발언은 다른 주제로 이탈하는 경우를 막는다."""
+    normalized = (spoken_text or "").lower()
+    markers = _ISSUE_FOCUS_MARKERS.get(issue_id)
+    if markers:
+        return any(marker.lower() in normalized for marker in markers)
+    title_terms = _user_question_focus_terms(issue_title or "")
+    return not title_terms or any(term in normalized for term in title_terms)
+
+
+def _spoken_text_issue_validation_reason(
+    spoken_text: str,
+    issue_id: str,
+    issue_title: str | None = None,
+) -> str | None:
+    if not _spoken_text_matches_issue(spoken_text, issue_id, issue_title):
+        return "spoken_text_issue_mismatch"
+    drift_markers = _ISSUE_DRIFT_MARKERS.get(issue_id, ())
+    if not drift_markers:
+        return None
+    normalized = (spoken_text or "").lower()
+    has_drift = any(marker.lower() in normalized for marker in drift_markers)
+    focus_count = sum(
+        1
+        for marker in _ISSUE_FOCUS_MARKERS.get(issue_id, ())
+        if marker.lower() in normalized
+    )
+    # 문제 marker 하나만 형식적으로 넣고 본문 대부분이 구현 계획인 경우에만 재시도한다.
+    if has_drift and focus_count < 2:
+        return "spoken_text_issue_drift"
+    return None
 
 
 def _validate_discussion_response(
@@ -573,6 +1175,11 @@ def _validate_discussion_response(
     current_speaker_id: str | None = None,
     responding_to_speaker_id: str | None = None,
     responding_to_content: str | None = None,
+    require_user_question_focus: bool = False,
+    expected_issue_id: str | None = None,
+    expected_issue_title: str | None = None,
+    require_issue_content_focus: bool = True,
+    evidence_claim_types_by_ref: dict[str, str] | None = None,
 ) -> str | None:
     """용준/Claude(2026-07-21, 요청: 위원 간 실제 회의로 개편): discussion_stage가
     "review"(상대 의견 검토) 또는 "revision"(검토 반영 수정)이면 responding_to가 비어
@@ -597,7 +1204,60 @@ def _validate_discussion_response(
         )
         if speaker_problem:
             return speaker_problem
-    if discussion_stage == "response" and _looks_like_restatement(
+    if (
+        require_user_question_focus
+        and responding_to_speaker_id == "user"
+        and responding_to_content
+        and not _answers_user_question(raw.get("spoken_text", ""), responding_to_content)
+    ):
+        return "spoken_text_does_not_answer_user_question"
+    generated_issue_id = (raw.get("active_issue_id") or "").strip()
+    if expected_issue_id and generated_issue_id != expected_issue_id:
+        return "active_issue_id_mismatch"
+    if expected_issue_id and require_issue_content_focus:
+        issue_problem = _spoken_text_issue_validation_reason(
+            raw.get("spoken_text", ""), expected_issue_id, expected_issue_title
+        )
+        if issue_problem:
+            return issue_problem
+    if evidence_claim_types_by_ref is not None:
+        has_target_evidence = "user_provided_fact" in evidence_claim_types_by_ref.values()
+        claims = [claim for claim in (raw.get("claims") or []) if isinstance(claim, dict)]
+        has_evidence_fact_claim = any(
+            claim.get("claim_type") in ("document_fact", "user_provided_fact")
+            for claim in claims
+        )
+        has_expert_judgment_claim = any(claim.get("claim_type") == "expert_judgment" for claim in claims)
+        spoken_text = raw.get("spoken_text", "")
+        if (
+            has_evidence_fact_claim
+            and not has_expert_judgment_claim
+            and _has_evaluative_conclusion(spoken_text)
+        ):
+            # 평가표의 질문/기준(document_fact)은 "무엇을 평가하는지"만 증명한다. 그 근거만
+            # 인용한 채 아이디어가 부족/미흡하다고 말하면 평가 기준을 판정 결과로 확대한
+            # 것이므로, 해당 결론을 별도 expert_judgment claim으로 명시하게 재시도한다.
+            return "spoken_evaluation_missing_expert_judgment_claim"
+        for claim in claims:
+            claim_type = claim.get("claim_type")
+            refs = claim.get("evidence_refs")
+            refs = refs if isinstance(refs, list) else []
+            known_types = {
+                evidence_claim_types_by_ref[ref]
+                for ref in refs
+                if isinstance(ref, str) and ref in evidence_claim_types_by_ref
+            }
+            if len(known_types) > 1:
+                return "claim_mixes_document_roles"
+            if known_types and claim_type not in known_types:
+                return "claim_type_evidence_role_mismatch"
+            if claim_type == "document_fact" and not refs:
+                return "document_fact_missing_evidence"
+            if claim_type == "user_provided_fact" and has_target_evidence and not refs:
+                return "user_provided_fact_missing_target_evidence"
+            if claim_type == "expert_judgment" and refs:
+                return "expert_judgment_must_not_cite_evidence"
+    if discussion_stage == "response" and _looks_like_near_verbatim_restatement(
         raw.get("spoken_text", ""), responding_to_content
     ):
         return "spoken_text_restates_responding_message"
@@ -951,12 +1611,39 @@ def _slugify_issue_title(title: str) -> str:
     return normalized.lower() or "unknown_issue"
 
 
+def _active_user_interjection(state: IdeationConvState) -> ConvMessage | None:
+    """지정 위원 응답/상대 검토가 끝나기 전까지 가장 최근 사용자 개입을 반환한다."""
+    interjection_in_progress = bool(
+        state.get("interjection_target_speaker_id")
+        or state.get("required_counterpart_speaker_id")
+    )
+    if not interjection_in_progress:
+        return None
+    for message in reversed(state.get("messages") or []):
+        if message.get("speaker_id") == "user" and message.get("message_type") == "interjection":
+            content = (message.get("content") or "").strip()
+            if content:
+                return message
+    return None
+
+
 def resolve_effective_issue(state: IdeationConvState, persona_id: str | None = None) -> dict[str, str]:
     """용준/Claude(2026-07-23, Phase 1 "Shadow Deterministic Evidence Planner"): 이번 턴
     retrieval이 실제로 초점을 맞추는 쟁점을 issue_id/title 구조로 반환한다.
     resolve_retrieval_issue()와 정확히 같은 우선순위를 따르며(아래에서 그 함수가 이 함수의
     title만 재사용하도록 리팩터링했다 — 요청: "_topic_query()가 사용한 issue title/query와
     Planner의 issue가 반드시 동일") 반환하는 title 문자열은 항상 같다."""
+    user_interjection = _active_user_interjection(state)
+    if user_interjection is not None:
+        question = user_interjection["content"].strip()
+        issue_id = state.get("active_issue_id") or _slugify_issue_title(question)
+        return {
+            "issue_id": issue_id,
+            "title": question,
+            "query": question,
+            "source": "user_interjection",
+        }
+
     issue_id = state.get("active_issue_id")
     if issue_id:
         title = _active_issue_title(state) or issue_id
@@ -1005,11 +1692,15 @@ def _topic_query(state: IdeationConvState, persona_id: str | None = None) -> str
     역할별 검색 결과 차별화) — persona_id가 없으면(진행자 등 role_id가 없는 호출자) 이전과
     동일하게 기본 필드 요약 + 이슈만 반환한다."""
     parts: list[str] = []
+    effective_issue = resolve_effective_issue(state, persona_id)
+    if effective_issue.get("source") == "user_interjection":
+        parts.append(f"사용자 직접 질문: {effective_issue['query']}")
+
     idea_summary = _idea_core_summary(state["user_idea"], persona_id)
     if idea_summary:
         parts.append(idea_summary)
 
-    issue_title = resolve_retrieval_issue(state, persona_id)
+    issue_title = effective_issue["title"]
     if issue_title:
         parts.append(f"현재 쟁점: {issue_title}")
 
@@ -1675,6 +2366,275 @@ def _fallback_issue_id(state: IdeationConvState) -> str:
     return f"issue_r{state.get('round', 1)}"
 
 
+# 용준/Claude(2026-07-23, 요청: "동일 쟁점 표현 변경 반복 루프" 수정) — 진행자/전문가가 같은
+# 쟁점을 문장만 바꿔 새 issue_id로 재등록하는 문제를 결정론적 코드로 막는다. 임베딩·LLM 호출
+# 없이 (1) 표현을 정규화하고 (2) TOPIC_PRIORITY 공식 평가축 키워드로 canonical family를
+# 판정하고 (3) active/open/resolved(강제 종료 포함) 쟁점과 비교해 중복이면 등록을 억제하며
+# 필요하면 아직 다루지 않은 다음 공식 평가축으로 로테이션한다.
+_ISSUE_NORMALIZE_STOPWORDS = frozenset(
+    {
+        "필요하다", "필요합니다", "필요한", "필요", "구체적으로", "구체적인", "구체적", "방안", "방법",
+        "검토", "추가적으로", "추가로", "추가", "가능성", "확보", "확인", "관련", "대한", "위한", "합니다",
+        "해야", "해야합니다", "입니다", "됩니다", "되어야", "있습니다", "있다", "한다", "것", "의", "및",
+    }
+)
+_ISSUE_PARTICLE_RE = re.compile(r"(을|를|이|가|은|는|의|에서|에게|으로|로|와|과|도|만|까지|부터)$")
+_ISSUE_VERB_SUFFIX_RE = re.compile(r"(합니다|됩니다|습니다|입니다|한다|된다|해요|해야|하다|되다)$")
+_ISSUE_PUNCT_RE = re.compile(r"[^\w\s]")
+
+
+def normalize_issue_text(text: str | None) -> str:
+    """쟁점 문구를 결정론적으로 정규화한다 — 공백·문장부호를 지우고, 흔한 조사·서술어
+    종결 어미를 어절 끝에서 떼어내고, "필요하다/구체적/방안/방법/검토/추가" 같은 일반
+    표현의 영향을 줄인 뒤, 어절을 정렬해 어순만 다른 동일 표현도 같은 결과가 되게 한다
+    (bag-of-words 비교). 임베딩·외부 API를 쓰지 않는 순수 문자열 함수다."""
+    if not text:
+        return ""
+    lowered = _ISSUE_PUNCT_RE.sub(" ", text.strip().lower())
+    tokens: list[str] = []
+    for raw_token in lowered.split():
+        token = _ISSUE_PARTICLE_RE.sub("", raw_token)
+        token = _ISSUE_VERB_SUFFIX_RE.sub("", token)
+        if not token or token in _ISSUE_NORMALIZE_STOPWORDS:
+            continue
+        tokens.append(token)
+    return " ".join(sorted(tokens))
+
+
+# TOPIC_PRIORITY(공식 평가축) 각 슬러그로 자유 문장 쟁점 제목을 매핑하기 위한 키워드.
+# question_topic과 동일한 분류 체계를 재사용한다(요청: "새로운 임의 분류 체계를 중복
+# 생성하지 마세요") — 여기서 새 축을 만들지 않고, 이미 있는 TOPIC_PRIORITY만 재사용한다.
+#
+# 용준/Claude(2026-07-23, 요청: "canonical family 다중 키워드 충돌 수정") — 각 키워드에
+# 가중치(int)를 붙인다. "문제"("니즈" 등 포괄적인 단일 단어)는 낮은 가중치를, "실시간
+# 데이터"/"데이터 수집"/"api"/"센서"처럼 구체적인 표현은 높은 가중치를 준다 — 첫 매칭
+# 우선(첫 family 즉시 반환) 대신, family별 총점을 비교해 가장 구체적으로 걸린 family를
+# 고른다(예: "문제 해결을 위한 실시간 데이터 수집 방안"은 problem이 아니라 data여야 한다).
+_ISSUE_FAMILY_KEYWORDS: dict[str, tuple[tuple[str, int], ...]] = {
+    "problem": (("문제", 1), ("니즈", 2), ("페인포인트", 3), ("과제 정의", 3)),
+    "target_user": (
+        ("타겟", 2),
+        ("대상 사용자", 3),
+        ("사용자층", 3),
+        ("고객층", 3),
+        ("목표 사용자", 3),
+    ),
+    "core_value": (("핵심 가치", 3), ("가치 제안", 3), ("핵심가치", 3)),
+    "contest_fit": (
+        ("공모전", 2),
+        ("선정 기준", 3),
+        ("심사 기준", 3),
+        ("적합성", 2),
+        ("평가 기준", 3),
+    ),
+    "differentiation": (("차별", 2), ("경쟁사", 2), ("경쟁 우위", 3)),
+    "mvp": (("mvp", 2), ("구축 범위", 3), ("우선순위 기능", 3), ("핵심 기능", 3)),
+    "data": (
+        ("데이터", 2),
+        ("api", 3),
+        ("소스", 1),
+        ("수집", 1),
+        ("실시간", 2),
+        ("제공자", 2),
+        ("연계", 1),
+        ("센서", 3),
+        ("실시간 데이터", 4),
+        ("데이터 수집", 4),
+        ("데이터 확보", 4),
+    ),
+    "ai_role": (("ai 역할", 3), ("인공지능 역할", 3), ("모델 역할", 3), ("ai 활용", 3)),
+    "roadmap": (("로드맵", 3), ("확장 계획", 3), ("향후 계획", 3), ("확장 기능", 2)),
+}
+
+# TOPIC_PRIORITY 슬러그 -> 사람이 읽는 한국어 제목(로테이션 시 다음 공식 쟁점의 표시용).
+_TOPIC_TITLE_KO: dict[str, str] = {
+    "problem": "문제 정의",
+    "target_user": "목표 사용자",
+    "core_value": "핵심 가치",
+    "contest_fit": "공모전 적합성",
+    "differentiation": "차별성",
+    "mvp": "MVP 범위",
+    "data": "데이터 확보 방안",
+    "ai_role": "AI 활용 방식",
+    "roadmap": "로드맵",
+}
+
+
+def resolve_canonical_issue_family(text: str | None, issue_id: str | None = None) -> str:
+    """쟁점 제목(또는 missing_information)을 canonical family로 매핑한다.
+
+    용준/Claude(2026-07-23, 요청: "canonical family 다중 키워드 충돌 수정"):
+    1) issue_id가 공식 슬러그 형태("topic_<family>")면 텍스트 추정 없이 그 family를 그대로
+       쓴다(요청: "공식 issue_id가 명시돼 있으면 텍스트 추정보다 우선").
+    2) 아니면 family별로 걸린 키워드의 가중치 합(점수)을 계산해 가장 높은 family를 고른다
+       — 첫 매칭 즉시 반환하던 이전 방식은 "문제"처럼 포괄적인 단일 단어가 "실시간 데이터
+       수집"처럼 더 구체적인 표현보다 먼저 걸려 잘못 분류되는 문제가 있었다.
+    3) 점수가 동점이면 TOPIC_PRIORITY 순서로 첫 번째를 쓴다(기존 우선순위 규칙 유지).
+    4) 어떤 family도 걸리지 않으면(예: "리스크", "기술 구현 가능성"처럼 공식 9축에 없는
+       실제로 다른 주제) 정규화된 텍스트 자체를 family로 써서 서로 다른 쟁점끼리 잘못
+       합쳐지지 않게 한다."""
+    if issue_id and issue_id.startswith("topic_"):
+        official_family = issue_id[len("topic_"):]
+        if official_family in TOPIC_PRIORITY:
+            return official_family
+
+    haystack = (text or "").lower()
+    scores: dict[str, int] = {}
+    for family in TOPIC_PRIORITY:
+        weighted_keywords = _ISSUE_FAMILY_KEYWORDS.get(family, ())
+        score = sum(weight for keyword, weight in weighted_keywords if keyword in haystack)
+        if score > 0:
+            scores[family] = score
+
+    if scores:
+        best_score = max(scores.values())
+        for family in TOPIC_PRIORITY:
+            if scores.get(family) == best_score:
+                return family
+
+    normalized = normalize_issue_text(text)
+    return f"custom:{normalized}" if normalized else "custom:unknown"
+
+
+def is_duplicate_issue(family_a: str | None, family_b: str | None) -> bool:
+    """두 canonical family가 같은 쟁점을 가리키는지 판정하는 순수 함수."""
+    return bool(family_a) and bool(family_b) and family_a == family_b
+
+
+def _select_next_issue_family(
+    *,
+    excluded_family: str | None,
+    open_issues: list[dict],
+    resolved_issues: list[dict],
+    resolved_topics: list[str] | None,
+) -> str | None:
+    """발언 상한으로 닫힌(또는 중복 판정된) family 다음에 다룰 공식 평가축을 고른다.
+    우선순위: (1) 이미 열려 있는 다른 open_issues의 family, (2) TOPIC_PRIORITY에서 아직
+    다루지 않은 다음 공식 쟁점. 둘 다 없으면 None(더 다룰 공식 쟁점이 없다는 뜻 — 호출부가
+    이 경우 회의를 정리한다)."""
+    for issue in open_issues:
+        family = issue.get("family") or resolve_canonical_issue_family(issue.get("title"))
+        if family and family != excluded_family:
+            return family
+
+    covered = {excluded_family} if excluded_family else set()
+    for issue in resolved_issues:
+        family = issue.get("family") or resolve_canonical_issue_family(issue.get("title"))
+        if family:
+            covered.add(family)
+    covered.update(resolved_topics or [])
+
+    for topic in TOPIC_PRIORITY:
+        if topic not in covered:
+            return topic
+    return None
+
+
+def resolve_issue_duplicate(
+    *,
+    candidate_issue_id: str,
+    candidate_issue_title: str,
+    current_active_issue_id: str | None,
+    open_issues: list[dict],
+    resolved_issues: list[dict],
+    resolved_topics: list[str] | None = None,
+) -> dict[str, Any]:
+    """이번 턴이 제안한 쟁점(candidate_issue_id/title)이 세션 안에서 의미상 이미 다뤄진
+    쟁점인지 결정적으로 판정한다 — LLM이 문장을 바꿔 같은 쟁점을 새 id로 반환해도, 여기서
+    최종적으로 어떤 issue_id/title을 이번 턴에 쓸지 코드가 확정한다.
+
+    반환 dict:
+      - issue_id/issue_title: 이번 턴이 실제로 써야 할 값(None이면 로테이션할 다음 공식
+        쟁점도 없다는 뜻 — 호출부가 활성 쟁점 없이 이번 턴을 처리해야 한다).
+      - duplicate: 이번 제안이 기존 쟁점과 중복 판정됐는지.
+      - duplicate_of_issue_id/duplicate_source("active"/"open"/"resolved"/"parked"): 무엇과
+        중복인지.
+      - rotated: 중복이라 다음 공식 평가축으로 이동했는지(True면 issue_id/title이 후보가
+        아니라 로테이션된 다음 공식 쟁점이다).
+    """
+    candidate_family = resolve_canonical_issue_family(
+        candidate_issue_title or candidate_issue_id, issue_id=candidate_issue_id
+    )
+
+    def _accepted() -> dict[str, Any]:
+        return {
+            "issue_id": candidate_issue_id,
+            "issue_title": candidate_issue_title,
+            "canonical_family": candidate_family,
+            "duplicate": False,
+            "duplicate_of_issue_id": None,
+            "duplicate_source": None,
+            "rotated": False,
+        }
+
+    if current_active_issue_id is not None and candidate_issue_id == current_active_issue_id:
+        return _accepted()
+
+    for issue in open_issues:
+        if issue.get("issue_id") == candidate_issue_id:
+            return {
+                "issue_id": candidate_issue_id,
+                "issue_title": issue.get("title") or candidate_issue_title,
+                "canonical_family": issue.get("family") or candidate_family,
+                "duplicate": False,
+                "duplicate_of_issue_id": None,
+                "duplicate_source": None,
+                "rotated": False,
+            }
+
+    for issue in open_issues:
+        issue_family = issue.get("family") or resolve_canonical_issue_family(issue.get("title"))
+        if is_duplicate_issue(candidate_family, issue_family):
+            source = "active" if issue.get("issue_id") == current_active_issue_id else "open"
+            return {
+                "issue_id": issue["issue_id"],
+                "issue_title": issue.get("title") or candidate_issue_title,
+                "canonical_family": issue_family,
+                "duplicate": True,
+                "duplicate_of_issue_id": issue["issue_id"],
+                "duplicate_source": source,
+                "rotated": False,
+            }
+
+    matched_closed: tuple[str, str] | None = None  # (duplicate_of_issue_id, source)
+    for issue in resolved_issues:
+        issue_family = issue.get("family") or resolve_canonical_issue_family(issue.get("title"))
+        if is_duplicate_issue(candidate_family, issue_family):
+            source = "parked" if issue.get("resolution_kind") == "parked_expert_judgment" else "resolved"
+            matched_closed = (issue.get("issue_id"), source)
+            break
+
+    if matched_closed is None:
+        return _accepted()
+
+    duplicate_of_issue_id, source = matched_closed
+    next_family = _select_next_issue_family(
+        excluded_family=candidate_family,
+        open_issues=open_issues,
+        resolved_issues=resolved_issues,
+        resolved_topics=resolved_topics,
+    )
+    if next_family is not None:
+        return {
+            "issue_id": f"topic_{next_family}",
+            "issue_title": _TOPIC_TITLE_KO.get(next_family, next_family),
+            "canonical_family": next_family,
+            "duplicate": True,
+            "duplicate_of_issue_id": duplicate_of_issue_id,
+            "duplicate_source": source,
+            "rotated": True,
+        }
+    return {
+        "issue_id": None,
+        "issue_title": None,
+        "canonical_family": candidate_family,
+        "duplicate": True,
+        "duplicate_of_issue_id": duplicate_of_issue_id,
+        "duplicate_source": source,
+        "rotated": False,
+    }
+
+
 def _update_issue_records(
     *,
     open_issues: list[dict],
@@ -1685,12 +2645,21 @@ def _update_issue_records(
     position_text: str,
     resolved: bool,
     resolution_text: str,
+    family: str | None = None,
+    closed_reason: str | None = None,
+    resolution_kind: str | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """용준/Claude(2026-07-22, 요청: 동적 전문가 회의로 개편): open_issues/resolved_issues를
     코드가 결정적으로 갱신한다 — LLM은 issue_resolved bool만 판단하고, 레코드 생성·이동은
-    항상 여기서 수행한다(라우팅이 LLM 추천을 그대로 신뢰하지 않는 것과 같은 원칙)."""
+    항상 여기서 수행한다(라우팅이 LLM 추천을 그대로 신뢰하지 않는 것과 같은 원칙).
+
+    용준/Claude(2026-07-23, 요청: 동일 쟁점 표현 변경 반복 루프 수정) — family(canonical
+    family)를 레코드에 함께 저장해 다음 턴의 resolve_issue_duplicate가 재계산 없이 바로
+    비교할 수 있게 한다. resolved=True일 때만 closed_reason/resolution_kind를 채운다(요청:
+    "강제 종료와 합의 완료 구분") — 기본값은 정상 합의 해결이다."""
     open_issues = list(open_issues)
     position_key = "planning_position" if persona_id == "planning_expert" else "development_position"
+    resolved_family = family or resolve_canonical_issue_family(issue_title or issue_id)
 
     idx = next((i for i, issue in enumerate(open_issues) if issue["issue_id"] == issue_id), None)
     if idx is None:
@@ -1702,6 +2671,9 @@ def _update_issue_records(
             "development_position": None,
             "resolution": None,
             "turns": 0,
+            "family": resolved_family,
+            "closed_reason": None,
+            "resolution_kind": None,
         }
         open_issues.append(record)
         idx = len(open_issues) - 1
@@ -1711,10 +2683,13 @@ def _update_issue_records(
     record["turns"] = record.get("turns", 0) + 1
     if issue_title:
         record["title"] = issue_title
+    record["family"] = record.get("family") or resolved_family
 
     if resolved:
         record["status"] = "resolved"
         record["resolution"] = resolution_text
+        record["closed_reason"] = closed_reason or "consensus_reached"
+        record["resolution_kind"] = resolution_kind or "agreed_resolution"
         resolved_issues = list(resolved_issues) + [record]
         open_issues = [issue for i, issue in enumerate(open_issues) if i != idx]
     else:
@@ -1805,6 +2780,24 @@ def _route_next_expert_turn(state: IdeationConvState) -> str:
     if hit_issue_cap:
         return routed("facilitator", "max_issue_turns_reached")
 
+    # 첫 전문가가 상대 검토가 필요 없다고 판단하더라도 한 라운드에 두 전문가는 최소 한 번씩
+    # 발언해야 한다. LLM의 단일 판단으로 planning → facilitator가 반복되어 개발 관점이
+    # 완전히 사라지는 것을 라우터에서 결정적으로 차단한다.
+    current_round = state.get("round")
+    round_speakers = {
+        message.get("speaker_id")
+        for message in messages
+        if message.get("round") == current_round
+        and message.get("speaker_id") in ("planning_expert", "dev_expert")
+    }
+    counterpart = _DISCUSSION_COUNTERPART.get(last["speaker_id"])
+    if (
+        turn_count < 2
+        and counterpart
+        and counterpart not in round_speakers
+    ):
+        return routed(counterpart, "round_counterpart_required")
+
     if turn_count >= MIN_EXPERT_TURNS_PER_ROUND and not (state.get("open_issues") or []):
         # 열린 쟁점이 하나도 없다 — 지금까지 다룬 쟁점이 전부 해결됐다는 뜻이므로 정리한다.
         return routed("facilitator", "consensus_reached")
@@ -1865,6 +2858,7 @@ def _trace_shadow_plan_created(
                 "document_role": item.get("document_role"),
                 "claim_type": item.get("claim_type"),
                 "quote_preview": sanitize_preview(item.get("quote", ""), limit=160),
+                "field_label": item.get("field_label"),
                 "quote_start": item.get("quote_start"),
                 "quote_end": item.get("quote_end"),
                 "retrieval_score": item.get("retrieval_score"),
@@ -1979,6 +2973,7 @@ def _build_active_planned_evidence(plan: dict, retrieved: list[dict]) -> list[di
                 "document_role": selected.get("document_role"),
                 "claim_type": selected.get("claim_type"),
                 "quote": selected.get("quote"),
+                "field_label": selected.get("field_label"),
                 "source": source.get("document_name"),
                 "page": source.get("page"),
                 "effective_issue_id": issue.get("issue_id"),
@@ -2009,8 +3004,8 @@ def _resolve_discussion_evidence(
       - "valid_empty": plan validation은 통과했지만 이번 쟁점에 맞는 근거가 하나도 없다고
         planner가 정상적으로 판단했다(selected_evidence=[]) — retrieved 전체로 fallback하지
         않는다(요청 B. "부적합한 근거를 다시 주입하면 Planner eligibility 정책이
-        무효화되기 때문"). 빈 리스트 그대로 써서 전문가가 근거 없이(expert_judgment만)
-        판단하게 한다.
+        무효화되기 때문"). Evidence-first 활성 경로에서는 호출부가 일반 전문가 생성을
+        생략하고 진행자에게 넘긴다.
       - "active": plan이 유효하고 selected_evidence가 있다 — 그 근거만 prompt/grounding에
         노출한다(선택되지 않은 evidence는 노출하지 않는다).
     """
@@ -2025,6 +3020,46 @@ def _resolve_discussion_evidence(
     if not selected:
         return [], "valid_empty", None
     return _build_active_planned_evidence(shadow_plan, retrieved), "active", None
+
+
+def _plan_supplemental_evidence(
+    *,
+    evidence_planner: "EvidencePlanningFn | None",
+    persona_id: str,
+    effective_issue: dict[str, str],
+    supplemental_query: str,
+    retrieved: list[dict],
+    runtime_scope: dict[str, Any],
+) -> tuple[list[dict], dict | None]:
+    """보완 검색 결과도 최초 검색과 동일한 active Planner 계약을 통과시킨다."""
+    if not retrieved:
+        return [], None
+    if evidence_planner is None or not getattr(evidence_planner, "active", False):
+        # Planner active 플래그가 꺼진 레거시 세션은 기존 보완 검색 동작을 보존한다.
+        return list(retrieved), None
+    try:
+        plan = evidence_planner(
+            persona_id=persona_id,
+            effective_issue={
+                **effective_issue,
+                "query": supplemental_query,
+                "planner_stage": "supplemental_retrieval",
+            },
+            retrieved_evidence=retrieved,
+            runtime_scope=runtime_scope,
+            shadow_history=[],
+        )
+    except Exception:
+        logger.exception(
+            "[IDEATION_SUPPLEMENTAL_EVIDENCE_PLAN_FAILED] speaker=%s issue=%s",
+            persona_id,
+            effective_issue.get("issue_id"),
+        )
+        return [], None
+    validation = plan.get("validation") or {"valid": True, "errors": []}
+    if not validation.get("valid", True) or not (plan.get("selected_evidence") or []):
+        return [], plan
+    return _build_active_planned_evidence(plan, retrieved), plan
 
 
 def _build_evidence_plan_notice(mode: str, plan: dict | None) -> str:
@@ -2052,6 +3087,9 @@ def _build_evidence_plan_notice(mode: str, plan: dict | None) -> str:
             f"판단하고, 특별한 이유 없이 다른 쟁점으로 임의 전환하지 마세요. "
             f"현재 턴에서 허용된 evidence_refs는 [{allowed_refs_text}]뿐입니다. "
             f"evidence_refs에는 이번 [검색 근거] 목록에 실제로 표시된 ref만 사용할 수 있습니다. "
+            f"최소 한 개의 document_fact 또는 user_provided_fact claim이 위 ref 중 하나를 "
+            f"인용해야 하며, 전문가 판단은 그 근거를 적용한 별도 expert_judgment claim으로 "
+            f"구분하세요. "
             f"대화 맥락의 과거 발언에서 보았던 E번호나 chunk_id는 현재 턴의 근거가 아니므로 "
             f"절대 재사용하지 마세요."
         )
@@ -2059,6 +3097,45 @@ def _build_evidence_plan_notice(mode: str, plan: dict | None) -> str:
         f'이번 쟁점(effective_issue_id="{issue_id}", 제목: "{issue_title}")에는 인용할 문서 근거가 '
         f"없습니다. 문서 사실(document_fact)을 새로 만들지 말고 전문가 판단(expert_judgment)으로만 "
         f"판단하세요. 이 쟁점 범위 안에서만 판단하고 다른 쟁점으로 임의 전환하지 마세요."
+    )
+
+
+def _build_user_interjection_notice(state: IdeationConvState) -> str:
+    message = _active_user_interjection(state)
+    if message is None:
+        return ""
+    question = message["content"].strip()
+    structured = message.get("structured") or {}
+    opinion_target = structured.get("opinion_target_speaker_id")
+    interrupted_speaker = structured.get("interrupted_speaker_id")
+    target_label = {
+        "planning_expert": "기획 위원",
+        "dev_expert": "개발 위원",
+        "both": "기획 위원과 개발 위원 모두",
+    }.get(opinion_target)
+    target_notice = (
+        f"사용자는 {target_label}의 의견을 대상으로 말하고 있습니다. "
+        if target_label
+        else ""
+    )
+    interrupted_targeted = (
+        interrupted_speaker == opinion_target
+        or opinion_target == "both"
+        and interrupted_speaker in ("planning_expert", "dev_expert")
+    )
+    interrupted_notice = (
+        "대상 위원의 직전 발언은 도중에 중단되어 완성 발언으로 저장되지 않았으므로, "
+        "중단된 문장을 추측하지 말고 사용자의 질문에 적힌 내용만 기준으로 답하세요. "
+        if interrupted_targeted
+        else ""
+    )
+    return (
+        "### 사용자 직접 질문 최우선 규칙\n"
+        f'사용자가 방금 질문했습니다: "{question}"\n'
+        f"{target_notice}{interrupted_notice}"
+        "이번 발언의 첫 문장부터 이 질문에 직접 답하세요. 기존 쟁점의 일반론을 반복하거나 "
+        "질문과 무관한 MVP·비용·기능 논의로 돌아가지 마세요. 문서 근거가 부족하면 그 사실을 "
+        "밝힌 뒤 전문가 판단으로 실행 가능한 답을 제시하세요."
     )
 
 
@@ -2149,6 +3226,313 @@ def _trace_evidence_plan_compliance(
         linked_evidence_count=grounding["linked_evidence_count"],
         linked_chunk_ids=list(grounding["linked_evidence_refs"]),
     )
+
+
+# 용준/Claude(2026-07-23, 요청: "사용자 정보 수집형 회의"에서 "근거 기반 자율 토론형
+# 회의"로 개편) — 사용자가 실제로 결정해야 하는 주제(예산 상한/대상 지역·기관/핵심 사용자
+# 우선순위/MVP 범위/보유 데이터·센서·내부 시스템 여부/일정·운영 제약)와, 문서 검색·전문가
+# 판단으로 해결 가능한 일반 기술/구현 질문을 결정적 키워드로 구분한다. LLM이
+# needs_user_input=true를 반환했다는 사실만으로는 사용자에게 라우팅하지 않는다 — 이
+# 키워드에 걸리는 경우에만 "진짜 사용자 결정"으로 취급한다(resolve_user_input_gate 참고).
+_USER_DECISION_TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "budget": ("예산", "비용 상한", "예산 상한", "가용 예산", "투자 규모"),
+    "target_scope": ("대상 지역", "대상 기관", "타겟 지역", "서비스 지역", "적용 지역", "대상 기관 범위"),
+    "user_priority": ("핵심 사용자", "우선순위", "우선 대상", "타겟 사용자 선정"),
+    "mvp_scope": ("mvp 범위", "초기 범위", "1차 범위", "mvp 우선순위", "출시 범위"),
+    "data_availability": ("보유 데이터", "내부 시스템", "보유 센서", "자체 데이터", "연동 가능한 시스템"),
+    "schedule_constraint": ("마감 일정", "운영 제약", "필수 일정", "고정 일정", "납기"),
+}
+
+# 주제별 결정 질문 템플릿. 코드가 결정적으로 조립한다(요청: "포괄적인 자유 입력 질문
+# 금지" — 왜 지금 결정이 필요한지 + 2~3개의 구체적 선택지(장단점 포함) + 응답이 없을 때
+# 적용할 권장 기본값). LLM을 다시 호출하지 않는다.
+_DECISION_TEMPLATES: dict[str, dict[str, Any]] = {
+    "budget": {
+        "why": "예산 상한에 따라 추천할 구현 범위가 달라집니다",
+        "options": [
+            {"label": "저비용안", "detail": "공공 데이터·오픈소스 중심, 초기 투자 최소화"},
+            {"label": "고비용안", "detail": "자체 인프라·유료 서비스 포함, 정확도·확장성 우선"},
+        ],
+        "default": "저비용안",
+    },
+    "target_scope": {
+        "why": "대상 지역·기관 범위에 따라 필요한 데이터와 협력 대상이 달라집니다",
+        "options": [
+            {"label": "소규모 시범 지역", "detail": "1개 지역·기관에서 먼저 검증"},
+            {"label": "광역 적용", "detail": "여러 지역·기관을 동시에 포괄"},
+        ],
+        "default": "소규모 시범 지역",
+    },
+    "user_priority": {
+        "why": "우선 대응할 핵심 사용자층에 따라 기능 우선순위가 달라집니다",
+        "options": [
+            {"label": "일반 시민 우선", "detail": "접근성과 사용 편의 중심"},
+            {"label": "전문 운영 인력 우선", "detail": "정확도와 관리 기능 중심"},
+        ],
+        "default": "일반 시민 우선",
+    },
+    "mvp_scope": {
+        "why": "초기 MVP에 포함할 범위에 따라 개발 기간과 검증 항목이 달라집니다",
+        "options": [
+            {"label": "핵심 기능만", "detail": "가장 중요한 기능 1~2개만 우선 검증"},
+            {"label": "확장 기능 포함", "detail": "부가 기능까지 포함해 완성도 우선"},
+        ],
+        "default": "핵심 기능만",
+    },
+    "data_availability": {
+        "why": "보유 데이터·센서·내부 시스템 여부에 따라 구현 방식이 달라집니다",
+        "options": [
+            {"label": "공공 데이터만 활용", "detail": "별도 구축 없이 공개 데이터로 시작"},
+            {"label": "자체 데이터·센서 연동", "detail": "보유·구축 예정인 시스템을 연동"},
+        ],
+        "default": "공공 데이터만 활용",
+    },
+    "schedule_constraint": {
+        "why": "반드시 지켜야 하는 일정·운영 제약에 따라 우선순위가 달라집니다",
+        "options": [
+            {"label": "일정 준수 우선", "detail": "범위를 줄여서라도 일정 내 완료"},
+            {"label": "완성도 우선", "detail": "일정보다 완성도·검증을 우선"},
+        ],
+        "default": "일정 준수 우선",
+    },
+    "product_direction_choice": {
+        "why": "문서와 전문가 판단만으로는 두 방향 중 하나를 확정할 수 없습니다",
+        "options": [
+            {"label": "제안 A", "detail": "기획 위원이 제시한 방향"},
+            {"label": "제안 B", "detail": "개발 위원이 제시한 방향"},
+        ],
+        "default": "제안 A",
+    },
+}
+
+
+def extract_distinct_alternatives(
+    *, messages: list[dict], active_issue_id: str | None, max_alternatives: int = 3
+) -> list[dict[str, str]]:
+    """세션 메시지에서 이번 쟁점(active_issue_id)에 대해 planning_expert/dev_expert가 이미
+    말한 proposal(없으면 recommendation/interim_conclusion) 텍스트를 모아, 표현만 바뀐
+    같은 제안은 normalize_issue_text로 하나로 합치고 실제로 서로 다른 실행 대안만 남긴다.
+    새 LLM 호출이나 embedding 없이 기존 structured 필드만 재사용한다(요청: "실제 발언
+    내용을 사용하고 제안 A/B로 만들지 않는다")."""
+    if not active_issue_id:
+        return []
+    distinct: list[dict[str, str]] = []
+    seen_normalized: set[str] = set()
+    for message in messages:
+        structured = message.get("structured") or {}
+        if structured.get("active_issue_id") != active_issue_id:
+            continue
+        speaker = message.get("speaker_id")
+        if speaker not in ("planning_expert", "dev_expert"):
+            continue
+        text = (
+            structured.get("proposal")
+            or structured.get("recommendation")
+            or structured.get("interim_conclusion")
+            or ""
+        ).strip()
+        if not text:
+            continue
+        normalized = normalize_issue_text(text)
+        if not normalized or normalized in seen_normalized:
+            continue
+        seen_normalized.add(normalized)
+        distinct.append({"speaker": speaker, "text": text, "message_id": message.get("message_id")})
+    return distinct[:max_alternatives]
+
+
+def classify_user_decision_topic(
+    *,
+    missing_information: list[str],
+    issue_title: str | None,
+    near_issue_cap: bool,
+    distinct_alternatives: list[dict] | None = None,
+) -> str | None:
+    """실제 사용자 결정이 필요한 주제인지 결정적 키워드로 분류한다. 일반 기술 접근 방법·
+    공개 데이터 활용 가능성·평가 기준 해석처럼 요청에서 명시한 "사용자 질문 사유가 될 수
+    없는" 주제는 여기 걸리지 않는다 — None이면 전문가 판단(또는 보완 검색)으로 해결해야
+    한다는 뜻이다.
+
+    용준/Claude(2026-07-23, 요청: "실제 전문가 대안 기반 사용자 선택 게이트") —
+    near_issue_cap만으로는 더 이상 product_direction_choice를 만들지 않는다. distinct_
+    alternatives(extract_distinct_alternatives 결과)가 실제로 서로 다른 실행 대안을 2개
+    이상 담고 있을 때만 사용자에게 "선택"을 묻는다 — 대안이 없거나 하나뿐이면(단순 정보
+    부족) 전문가 판단으로 계속 진행한다."""
+    haystack = " ".join([*missing_information, issue_title or ""])
+    for topic, keywords in _USER_DECISION_TOPIC_KEYWORDS.items():
+        if any(keyword in haystack for keyword in keywords):
+            return topic
+    if near_issue_cap and distinct_alternatives is not None and len(distinct_alternatives) >= 2:
+        return "product_direction_choice"
+    return None
+
+
+def _decision_fingerprint(issue_id: str | None, topic: str, missing_information: list[str]) -> str:
+    """동일하거나 의미상 유사한 missing_information으로 반복 질문하지 않기 위한 지문
+    (요청: "세션 내 질문 fingerprint 또는 reason code를 기록")."""
+    key = f"{issue_id or ''}:{topic}:{'|'.join(sorted(missing_information))}"
+    return hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
+
+
+_ALTERNATIVE_LABEL_TRAILING_RE = re.compile(
+    r"(을|를|이|가|은|는|의|에서|에게|으로|로|와|과|도|만|까지|부터|"
+    r"합니다|됩니다|습니다|입니다|한다|된다|해요|해야|하다|되다)+$"
+)
+
+
+def _short_label_from_alternative_text(text: str, max_len: int = 22) -> str:
+    """용준/Claude(2026-07-23, 요청: "decision_options 라벨은 화자 이름이 아니라 실제 내용에서
+    추출") — "기획 위원 제안"/"개발 위원 제안" 대신 전문가 발언 원문에서 결정론적으로 짧은
+    선택지 제목을 뽑는다(새 LLM 호출 없음). 첫 문장(또는 첫 쉼표 이전)만 쓰고 조사/서술어
+    종결 어미를 끝에서 떼어낸 뒤 길이를 제한한다 — 의미 요약이 아니라 표시용 축약이므로
+    완벽한 제목을 보장하지 않으며, detail(원문 전체)이 항상 함께 표시되어 이를 보완한다."""
+    first_clause = re.split(r"[.!?\n]", text.strip())[0]
+    first_clause = first_clause.split(",")[0].strip()
+    trimmed = _ALTERNATIVE_LABEL_TRAILING_RE.sub("", first_clause).strip()
+    trimmed = trimmed or first_clause
+    if len(trimmed) > max_len:
+        trimmed = trimmed[:max_len].rstrip() + "…"
+    return trimmed or "제안"
+
+
+def _compose_decision_question(
+    *,
+    topic: str,
+    issue_title: str | None,
+    missing_information: list[str],
+    distinct_alternatives: list[dict] | None = None,
+) -> tuple[str, list[dict[str, str]], str]:
+    """[왜 지금 결정이 필요한지 + 2~3개 선택지(장단점 포함) + 응답 없을 때 기본값] 형식으로
+    질문을 조립한다(요청: 포괄적인 자유 입력 질문 금지). LLM을 다시 호출하지 않는다.
+
+    topic이 "product_direction_choice"이고 distinct_alternatives(실제 전문가 발언에서 뽑은
+    서로 다른 대안)가 있으면, 범용 "제안 A/제안 B" 템플릿 대신 그 실제 발언 내용으로 선택지를
+    조립한다(요청: "단순히 제안 A, 제안 B라고 만들지 말고 실제 발언 내용을 사용")."""
+    if topic == "product_direction_choice" and distinct_alternatives:
+        options = [
+            {
+                "label": f"{idx + 1}. {_short_label_from_alternative_text(alt['text'])}",
+                "detail": alt["text"],
+            }
+            for idx, alt in enumerate(distinct_alternatives)
+        ]
+        default_label = options[0]["label"]
+        option_lines = "\n".join(f"{opt['label']} — {opt['detail']}" for opt in options)
+        context_detail = issue_title or "이 쟁점"
+        question = (
+            f"{context_detail}에 대해 전문가들이 서로 다른 실행 대안을 제시해 문서와 전문가 판단만으로는 "
+            f"하나를 확정할 수 없습니다. 다음 중 하나를 선택해 주세요.\n"
+            f"{option_lines}\n"
+            f"응답이 없으면 기본값({default_label} — 가장 먼저 제시된 전문가 제안)으로 진행합니다."
+        )
+        return question, options, default_label
+
+    template = _DECISION_TEMPLATES.get(topic, _DECISION_TEMPLATES["product_direction_choice"])
+    context_detail = missing_information[0] if missing_information else (issue_title or "이 쟁점")
+    options: list[dict[str, str]] = template["options"]
+    default_label = template["default"]
+    option_lines = "\n".join(f"{idx + 1}. {opt['label']} — {opt['detail']}" for idx, opt in enumerate(options))
+    question = (
+        f"{context_detail}과 관련해 {template['why']}. 다음 중 하나를 선택해 주세요.\n"
+        f"{option_lines}\n"
+        f"응답이 없으면 기본값({default_label})으로 진행합니다."
+    )
+    return question, options, default_label
+
+
+def evaluate_user_decision_requirement(
+    *,
+    missing_information: list[str],
+    issue_title: str | None,
+    issue_turn_count: int,
+    max_issue_turns: int = MAX_EXPERT_TURNS_PER_ISSUE,
+    distinct_alternatives: list[dict] | None = None,
+) -> dict[str, Any]:
+    """사용자 결정이 실제로 필요한지(예산/대상 지역·기관/우선순위/MVP 범위/보유 데이터/일정
+    제약/상충하는 대안 중 선택 등)를 결정적으로 판정한다. resolve_user_input_gate가 이
+    결과에 보완 검색·중복 질문 억제 로직을 더한다."""
+    near_issue_cap = issue_turn_count >= max(max_issue_turns - 1, 1)
+    topic = classify_user_decision_topic(
+        missing_information=missing_information,
+        issue_title=issue_title,
+        near_issue_cap=near_issue_cap,
+        distinct_alternatives=distinct_alternatives,
+    )
+    return {
+        "user_decision_required": topic is not None,
+        "decision_topic": topic,
+        "blocking_reason_code": f"user_decision_required:{topic}" if topic else None,
+        "near_issue_cap": near_issue_cap,
+    }
+
+
+def resolve_user_input_gate(
+    *,
+    missing_information: list[str],
+    issue_id: str | None,
+    issue_title: str | None,
+    issue_turn_count: int,
+    supplemental_attempted_issue_ids: list[str],
+    asked_decision_fingerprints: list[str],
+    distinct_alternatives: list[dict] | None = None,
+) -> dict[str, Any]:
+    """LLM이 needs_user_input을 반환했는지와 무관하게, (a) 먼저 보완 검색을 시도해야
+    하는지, (b) 전문가 판단으로 자율 진행해도 되는지, (c) 정말 사용자 결정이 필요한지를
+    결정적으로 정한다(요청: "결정론적 사용자 질문 게이트"). resolution_mode는
+    continue_with_evidence/continue_with_expert_judgment/supplemental_retrieval/
+    require_user_decision 중 하나다. 이 함수 자체는 상태를 바꾸지 않는 순수 함수다 —
+    호출부(make_conv_discussion_node)가 supplemental_retrieval을 실제로 수행한 뒤 필요하면
+    다시 호출한다."""
+    decision = evaluate_user_decision_requirement(
+        missing_information=missing_information,
+        issue_title=issue_title,
+        issue_turn_count=issue_turn_count,
+        distinct_alternatives=distinct_alternatives,
+    )
+    topic = decision["decision_topic"]
+
+    if topic is not None:
+        fingerprint = _decision_fingerprint(issue_id, topic, missing_information)
+        if fingerprint in asked_decision_fingerprints:
+            return {
+                "resolution_mode": "continue_with_expert_judgment",
+                "decision_topic": topic,
+                "blocking_reason_code": "duplicate_question_suppressed",
+                "user_question_suppressed_reason": "same_topic_already_asked_this_session",
+                "fingerprint": fingerprint,
+                "near_issue_cap": decision["near_issue_cap"],
+            }
+        question, options, default_label = _compose_decision_question(
+            topic=topic,
+            issue_title=issue_title,
+            missing_information=missing_information,
+            distinct_alternatives=distinct_alternatives,
+        )
+        return {
+            "resolution_mode": "require_user_decision",
+            "decision_topic": topic,
+            "blocking_reason_code": decision["blocking_reason_code"],
+            "decision_question": question,
+            "decision_options": options,
+            "decision_default": default_label,
+            "fingerprint": fingerprint,
+            "near_issue_cap": decision["near_issue_cap"],
+        }
+
+    if issue_id and issue_id not in supplemental_attempted_issue_ids:
+        return {
+            "resolution_mode": "supplemental_retrieval",
+            "decision_topic": None,
+            "blocking_reason_code": "supplemental_retrieval_pending",
+            "near_issue_cap": decision["near_issue_cap"],
+        }
+
+    return {
+        "resolution_mode": "continue_with_expert_judgment",
+        "decision_topic": None,
+        "blocking_reason_code": "expert_judgment_fallback",
+        "near_issue_cap": decision["near_issue_cap"],
+    }
 
 
 def make_conv_discussion_node(
@@ -2269,7 +3653,11 @@ def make_conv_discussion_node(
                 injected_evidence_count=len(turn_evidence),
                 elapsed_ms=plan_elapsed_ms,
             )
-        evidence_plan_notice = _build_evidence_plan_notice(evidence_mode, shadow_plan)
+        notice_parts = [
+            _build_user_interjection_notice(state),
+            _build_evidence_plan_notice(evidence_mode, shadow_plan),
+        ]
+        evidence_plan_notice = "\n\n".join(part for part in notice_parts if part)
         context = conversation_context_for(state)
         if evidence_mode in ("active", "valid_empty"):
             context = _isolate_discussion_evidence_context(context)
@@ -2296,6 +3684,12 @@ def make_conv_discussion_node(
             retrieved_evidence_count=len(retrieved),
             fallback_reason=fallback_reason,
         )
+        issue_control_active = evidence_mode in ("active", "valid_empty")
+        expected_issue_id = (
+            effective_issue.get("issue_id") or state.get("active_issue_id")
+            if issue_control_active
+            else None
+        )
         prompt = build_ideation_conv_discussion_prompt(
             persona_id,
             state["notice_and_criteria"],
@@ -2304,7 +3698,7 @@ def make_conv_discussion_node(
             context,
             speaks_second=(discussion_stage == "response"),
             discussion_stage=discussion_stage,
-            active_issue_id=state.get("active_issue_id"),
+            active_issue_id=expected_issue_id or state.get("active_issue_id"),
             open_issues=state.get("open_issues") or [],
             resolved_issues=state.get("resolved_issues") or [],
             current_speaker={"speaker_id": persona_id, "role_name": speaker_name},
@@ -2322,14 +3716,57 @@ def make_conv_discussion_node(
             # 가은/Claude(2026-07-22, 요청: 신청양식 항목 약한 주입) — 순수 추가 인자.
             application_form_items=state.get("application_form_items") or None,
         )
-        validate = lambda raw, _stage=discussion_stage: _validate_discussion_response(  # noqa: E731
-            raw,
-            _stage,
-            current_speaker_id=persona_id,
-            responding_to_speaker_id=responding_to_speaker_id,
-            responding_to_content=(responding_to_target.get("content") if responding_to_target else None),
-        )
-        raw, ok, attempts = _safe_call_structured_json(llm_call, prompt, validate, f"discussion__{persona_id}")
+        evidence_claim_types_by_ref = {
+            item["ref"]: item["claim_type"]
+            for item in turn_evidence
+            if isinstance(item, dict)
+            and isinstance(item.get("ref"), str)
+            and item.get("claim_type") in ("document_fact", "user_provided_fact")
+        }
+        def validate(raw: dict, _stage: str = discussion_stage) -> str | None:
+            _repair_evaluative_expert_judgment_claim(raw, evidence_claim_types_by_ref)
+            return _validate_discussion_response(
+                raw,
+                _stage,
+                current_speaker_id=persona_id,
+                responding_to_speaker_id=responding_to_speaker_id,
+                responding_to_content=(responding_to_target.get("content") if responding_to_target else None),
+                require_user_question_focus=is_interjection_first_response,
+                expected_issue_id=expected_issue_id,
+                expected_issue_title=effective_issue.get("title"),
+                require_issue_content_focus=effective_issue.get("source") != "user_interjection",
+                evidence_claim_types_by_ref=evidence_claim_types_by_ref,
+            )
+
+        if evidence_mode == "valid_empty" and ground_claims is not None:
+            # Evidence-first 계약: Planner가 적격 근거 없음(valid empty)을 확정한 상태에서
+            # LLM의 자유로운 전문가 의견을 생성하지 않는다. 제어 메시지만 남겨 진행자가
+            # 다음 쟁점으로 이동하게 하며, 불필요한 API 호출도 사용하지 않는다.
+            raw = _evidence_unavailable_discussion_response(
+                persona_id=persona_id,
+                state=state,
+                discussion_stage=discussion_stage,
+                responding_to_message_id=responding_to_message_id,
+                responding_to_content=(responding_to_target.get("content") if responding_to_target else None),
+            )
+            ok = True
+            attempts = 0
+            trace_event(
+                "IDEATION_EVIDENCE_FIRST_TURN_SKIPPED",
+                session_id=state.get("session_id"),
+                speaker=persona_id,
+                issue=effective_issue.get("issue_id"),
+                reason=(shadow_plan or {}).get("empty_plan_reason", "no_eligible_evidence"),
+                llm_call_skipped=True,
+            )
+        else:
+            raw, ok, attempts = _safe_call_structured_json(
+                llm_call,
+                prompt,
+                validate,
+                f"discussion__{persona_id}",
+                retry_note_for=_discussion_retry_note,
+            )
         used = state.get("llm_calls_used", 0) + attempts
         if not ok:
             raw = _safe_discussion_fallback(
@@ -2359,6 +3796,7 @@ def make_conv_discussion_node(
             validate=validate,
             used=used,
             ground_claims_fn=ground_claims,
+            require_linked_evidence=(evidence_mode == "active"),
         )
 
         stance = raw.get("stance")
@@ -2420,8 +3858,40 @@ def make_conv_discussion_node(
                 generated_issue_id=generated_issue_id_raw,
                 generated_issue_title=generated_issue_title_raw,
             )
-        active_issue_id = generated_issue_id_raw or _fallback_issue_id(state)
-        active_issue_title = generated_issue_title_raw or active_issue_id
+        candidate_issue_id = generated_issue_id_raw or _fallback_issue_id(state)
+        candidate_issue_title = generated_issue_title_raw or candidate_issue_id
+        issue_dedup = resolve_issue_duplicate(
+            candidate_issue_id=candidate_issue_id,
+            candidate_issue_title=candidate_issue_title,
+            current_active_issue_id=state.get("active_issue_id"),
+            open_issues=state.get("open_issues") or [],
+            resolved_issues=state.get("resolved_issues") or [],
+            resolved_topics=state.get("resolved_topics") or [],
+        )
+        if issue_dedup["duplicate"]:
+            trace_event(
+                "IDEATION_ISSUE_DUPLICATE_SUPPRESSED",
+                session_id=state.get("session_id"),
+                candidate_issue_title=candidate_issue_title,
+                canonical_family=issue_dedup["canonical_family"],
+                duplicate_of_issue_id=issue_dedup["duplicate_of_issue_id"],
+                duplicate_source=issue_dedup["duplicate_source"],
+                reason_code="semantic_duplicate_issue",
+            )
+            if issue_dedup["rotated"]:
+                trace_event(
+                    "IDEATION_ISSUE_ROTATED",
+                    session_id=state.get("session_id"),
+                    previous_issue_id=issue_dedup["duplicate_of_issue_id"],
+                    previous_issue_family=resolve_canonical_issue_family(candidate_issue_title),
+                    next_issue_id=issue_dedup["issue_id"],
+                    next_issue_family=issue_dedup["canonical_family"],
+                    rotation_reason=f"duplicate_source:{issue_dedup['duplicate_source']}",
+                    skipped_duplicate_count=1,
+                )
+        active_issue_id = issue_dedup["issue_id"]
+        active_issue_title = issue_dedup["issue_title"]
+        active_issue_family = issue_dedup["canonical_family"]
         new_information = _as_string_list(raw.get("new_information"))
         proposal = raw.get("proposal") or None
         changed_position = bool(raw.get("changed_position"))
@@ -2441,29 +3911,14 @@ def make_conv_discussion_node(
         # 아니라, "이 시점에 회의가 실제로 이 쟁점을 닫았는가"를 정확히 반영하려는 것이다).
         if is_interjection_first_response and issue_resolved:
             issue_resolved = False
-        needs_user_input = bool(raw.get("needs_user_input"))
-        user_question = (raw.get("user_question") or None) if needs_user_input else None
-        # 용준/Claude(2026-07-22, 요청 9번: 반복 회의 방지) — 이번 발언의 핵심 문서 주장이
-        # 재생성 후에도 근거 연결에 실패했는데(evidence_status="ungrounded") LLM 스스로
-        # 사용자 질문으로 전환하지 않았다면, 전문가끼리 같은 내용을 계속 반복하지 않도록
-        # 코드가 강제로 사용자에게 되묻는 흐름으로 전환한다.
-        if grounding["evidence_status"] == "ungrounded" and not needs_user_input:
-            needs_user_input = True
-            if grounding["missing_information"]:
-                user_question = (
-                    "현재 자료에서는 "
-                    + " · ".join(grounding["missing_information"][:2])
-                    + " 부분을 확인할 수 없습니다. 관련 정보를 알고 계신가요?"
-                )
-            else:
-                user_question = "이 부분을 판단할 근거 자료가 부족합니다. 관련 정보를 제공해 주실 수 있나요?"
-            recommended_next_speaker = "user"
+        llm_requested_user_input = bool(raw.get("needs_user_input"))
+        llm_user_question = (raw.get("user_question") or None) if llm_requested_user_input else None
 
         # 용준/Claude(2026-07-22, 요청: 반복되는 근거 없는 의견을 사용자 질문으로 전환) —
-        # evidence_status="ungrounded"(document_fact 인용 실패, 위에서 즉시 처리됨) 외에도
-        # linked_evidence_count=0인 턴이나 expert_judgment_only 상태, 같은 missing_information이
-        # 별다른 진전 없이 "쟁점이 바뀌지 않은 채" 반복되면(2회 연속) 전문가 둘이서 끝없이 같은
-        # 판단을 되풀이하는 대신 사용자에게 구체적으로 되묻는다(요청 4번).
+        # evidence_status="ungrounded"(document_fact 인용 실패) 외에도 linked_evidence_count=0인
+        # 턴이나 expert_judgment_only 상태, 같은 missing_information이 별다른 진전 없이
+        # "쟁점이 바뀌지 않은 채" 반복되면(2회 연속) 전문가 둘이서 끝없이 같은 판단을
+        # 되풀이하는 대신 반복을 감지한다(요청 4번).
         #
         # ground_claims_fn이 없으면(use_rag=False 등 RAG 자체를 쓰지 않는 세션) grounding은
         # 항상 _EMPTY_GROUNDING(linked_evidence_count=0)이다 — 이건 "근거 연결이 반복 실패"가
@@ -2477,6 +3932,29 @@ def make_conv_discussion_node(
         issue_changed = active_issue_id != state.get("active_issue_id")
         missing_info_normalized = sorted({m.strip() for m in grounding["missing_information"] if m and m.strip()})
         new_information_text = " ".join(new_information)
+        spoken_text = raw.get("spoken_text", "")
+        restatement_matches = _recent_issue_restatement_matches(
+            state.get("messages") or [],
+            issue_id=active_issue_id,
+            spoken_text=spoken_text,
+        )
+        # 한 발언과만 겹치는 것은 정상적인 반론·응답일 수 있다. 최근 동일 쟁점 발언 두 개
+        # 이상과 핵심어가 겹치거나, 구조화 응답 실패 후 서버 fallback이 만들어졌을 때만
+        # "실질적 새 정보 없음"으로 확정한다.
+        # 세 번째 발언까지 생성한 뒤 반복을 잡으면 사용자는 이미 같은 스트리밍 초안을 본다.
+        # 핵심어 3개 이상·유사도 0.45를 통과한 직전 동일 쟁점 발언이 하나라도 있고 실제 입장
+        # 변경이 없다면 두 번째 발언에서 즉시 진행자에게 넘긴다.
+        semantic_restatement = bool(restatement_matches) and not changed_position
+        safe_fallback_triggered = bool(raw.get("safe_fallback"))
+        evidence_exhausted = (
+            evidence_mode == "active"
+            and _issue_evidence_exhausted(
+                state.get("messages") or [],
+                issue_id=active_issue_id,
+                current_speaker_id=persona_id,
+                current_linked_chunk_ids=grounding["linked_evidence_refs"],
+            )
+        )
 
         if not ground_claims_configured:
             consecutive_zero_linked_turns = 0
@@ -2506,30 +3984,335 @@ def make_conv_discussion_node(
                 bool(missing_info_normalized) and missing_info_normalized == prev_missing_information
             )
             consecutive_repeated_missing_information_turns = prev_missing_streak + 1 if missing_information_repeated else 0
-            no_new_information_turn = bool(prev_new_information_text) and _looks_like_restatement(
-                new_information_text, prev_new_information_text
+            no_new_information_turn = (
+                semantic_restatement
+                or safe_fallback_triggered
+                or (
+                    bool(prev_new_information_text)
+                    and _looks_like_restatement(new_information_text, prev_new_information_text)
+                )
             )
             consecutive_no_new_information_turns = prev_no_new_info_streak + 1 if no_new_information_turn else 0
 
         _REPETITION_TURN_THRESHOLD = 2
+        # 근거를 인용하지 않은 expert_judgment는 정상적인 전문가 역할이며 사용자 질문 사유가
+        # 아니다. 실제로 같은 누락 정보나 같은 새 정보가 반복될 때만 반복으로 취급한다.
         repetition_triggered = ground_claims_configured and (
-            consecutive_zero_linked_turns >= _REPETITION_TURN_THRESHOLD
-            or consecutive_expert_judgment_only_turns >= _REPETITION_TURN_THRESHOLD
-            or consecutive_repeated_missing_information_turns >= _REPETITION_TURN_THRESHOLD
+            consecutive_repeated_missing_information_turns >= _REPETITION_TURN_THRESHOLD
+            or consecutive_no_new_information_turns >= _REPETITION_TURN_THRESHOLD
+            or semantic_restatement
+            or safe_fallback_triggered
+            or evidence_exhausted
         )
-        if repetition_triggered and not needs_user_input:
-            needs_user_input = True
-            if missing_info_normalized:
-                user_question = (
-                    "현재 자료에서는 " + " · ".join(missing_info_normalized[:2])
-                    + " 부분을 확인할 수 없습니다. 관련 정보를 알고 계신가요?"
+        if repetition_triggered:
+            repetition_reason = (
+                "structured_response_safe_fallback"
+                if safe_fallback_triggered
+                else "evidence_exhausted"
+                if evidence_exhausted
+                else "semantic_restatement"
+            )
+            trace_event(
+                "IDEATION_INTRA_ISSUE_REPETITION_DETECTED",
+                session_id=state.get("session_id"),
+                speaker=persona_id,
+                issue=active_issue_id,
+                reason=repetition_reason,
+                matched_messages=restatement_matches,
+                linked_chunk_ids=grounding["linked_evidence_refs"],
+                evidence_exhausted=evidence_exhausted,
+                consecutive_no_new_information_turns=consecutive_no_new_information_turns,
+            )
+
+        # 용준/Claude(2026-07-23, 요청: "사용자 정보 수집형 회의"에서 "근거 기반 자율
+        # 토론형 회의"로 개편) — LLM이 needs_user_input=true를 반환했든, 문서 근거 연결이
+        # 실패했든(ungrounded), 같은 판단이 반복됐든, 실제로 사용자에게 물어도 되는지는
+        # 항상 결정론적 게이트(resolve_user_input_gate)가 최종 결정한다(요청: "LLM이
+        # needs_user_input=true라고 출력했다는 이유만으로 사용자에게 라우팅하지 마세요").
+        # _is_actionable_user_decision_question(LLM이 고른 질문 문구 자체의 신호)과
+        # classify_user_decision_topic(missing_information/쟁점 제목 신호)을 함께 봐서 실제
+        # 사용자 결정 주제인지 판정하고, 아니면 먼저 보완 검색을 1회 시도한 뒤에도 안 되면
+        # 전문가 판단으로 자율 진행한다.
+        insufficiency_detected = (
+            llm_requested_user_input or grounding["evidence_status"] == "ungrounded" or repetition_triggered
+        )
+        needs_user_input = False
+        user_question: str | None = None
+        resolution_mode = "continue_with_evidence"
+        blocking_reason_code: str | None = None
+        decision_topic: str | None = None
+        supplemental_retrieval_attempted_this_turn = False
+        supplemental_evidence_count = 0
+        autonomous_assumption_note: str | None = None
+        decision_options: list[dict[str, str]] = []
+        gate: dict[str, Any] = {}
+
+        supplemental_attempted_issue_ids = list(state.get("supplemental_retrieval_issue_ids") or [])
+        asked_decision_fingerprints = list(state.get("asked_decision_fingerprints") or [])
+
+        if insufficiency_detected:
+            issue_turn_count = next(
+                (
+                    issue.get("turns", 0)
+                    for issue in (state.get("open_issues") or [])
+                    if issue.get("issue_id") == active_issue_id
+                ),
+                0,
+            )
+            gate_missing_information = list(missing_info_normalized)
+            if (
+                llm_requested_user_input
+                and _is_actionable_user_decision_question(llm_user_question)
+                and llm_user_question
+                and llm_user_question not in gate_missing_information
+            ):
+                gate_missing_information = gate_missing_information + [llm_user_question]
+
+            # 용준/Claude(2026-07-23, 요청: "실제 전문가 대안 기반 사용자 선택 게이트") —
+            # 이번 쟁점에서 이미 나온 기획/개발 위원의 실행 대안(proposal 등)에 이번 턴 자신의
+            # proposal도 더해 서로 다른 대안이 실제로 몇 개인지 계산한다. 이 값이 있어야
+            # classify_user_decision_topic이 near_issue_cap만으로 product_direction_choice를
+            # 만들지 않고 "진짜 대안이 2개 이상인지"를 검사할 수 있다. 새 LLM 호출은 없다.
+            distinct_alternatives = extract_distinct_alternatives(
+                messages=state["messages"], active_issue_id=active_issue_id
+            )
+            current_turn_alt_text = (proposal or interim_conclusion or "").strip()
+            if current_turn_alt_text:
+                normalized_current_alt = normalize_issue_text(current_turn_alt_text)
+                if normalized_current_alt and normalized_current_alt not in {
+                    normalize_issue_text(alt["text"]) for alt in distinct_alternatives
+                }:
+                    distinct_alternatives = distinct_alternatives + [
+                        {"speaker": persona_id, "text": current_turn_alt_text, "message_id": message_id}
+                    ]
+
+            gate = resolve_user_input_gate(
+                missing_information=gate_missing_information,
+                issue_id=active_issue_id,
+                issue_title=active_issue_title,
+                issue_turn_count=issue_turn_count,
+                supplemental_attempted_issue_ids=supplemental_attempted_issue_ids,
+                asked_decision_fingerprints=asked_decision_fingerprints,
+                distinct_alternatives=distinct_alternatives,
+            )
+            resolution_mode = gate["resolution_mode"]
+            blocking_reason_code = gate["blocking_reason_code"]
+            decision_topic = gate.get("decision_topic")
+
+            if evidence_exhausted and resolution_mode == "supplemental_retrieval":
+                # 같은 쟁점에서 두 전문가가 이미 동일 근거 세트를 모두 사용했다. 빈 누락
+                # 정보로 "문제 정의" 같은 범용 검색을 한 번 더 실행해도 새 판단 근거가
+                # 생기지 않으므로 진행자에게 넘겨 다음 쟁점으로 이동한다.
+                resolution_mode = "continue_with_expert_judgment"
+                blocking_reason_code = "evidence_set_exhausted"
+                decision_topic = None
+
+            if resolution_mode == "supplemental_retrieval" and active_issue_id:
+                # 문서에서 추가로 확인할 가치가 있는 구체적인 누락 정보가 있으면, 현재
+                # 세션의 target/criteria 문서를 대상으로 보완 검색을 최대 1회 수행한다(요청
+                # 3번). 이 쟁점에는 다시 시도하지 않도록 즉시 기록한다(쟁점당 최대 1회).
+                supplemental_retrieval_attempted_this_turn = True
+                supplemental_attempted_issue_ids = supplemental_attempted_issue_ids + [active_issue_id]
+                supplemental_query = " · ".join(missing_info_normalized[:3]) or (active_issue_title or query)
+                supplemental_raw_evidence = call_evidence_lookup(
+                    evidence_lookup, persona_id, supplemental_query, runtime_scope=runtime_scope
+                )
+                existing_chunk_ids = {
+                    item.get("chunk_id") for item in turn_evidence if isinstance(item, dict) and item.get("chunk_id")
+                }
+                raw_new_evidence_items = [
+                    item
+                    for item in supplemental_raw_evidence
+                    if isinstance(item, dict) and item.get("chunk_id") not in existing_chunk_ids
+                ]
+                planned_supplemental_evidence, supplemental_plan = _plan_supplemental_evidence(
+                    evidence_planner=evidence_planner,
+                    persona_id=persona_id,
+                    effective_issue=effective_issue,
+                    supplemental_query=supplemental_query,
+                    retrieved=raw_new_evidence_items,
+                    runtime_scope=runtime_scope,
+                )
+                # 최초 turn_evidence의 ref namespace는 그대로 보존하고, 보완 근거에만 새 ref를
+                # 부여한다. 기존 claim의 E번호가 보완 검색 때문에 다른 chunk를 가리키는 일을
+                # 차단한다.
+                new_evidence_items = [
+                    {**item, "ref": f"E{len(turn_evidence) + index + 1}"}
+                    for index, item in enumerate(planned_supplemental_evidence)
+                ]
+                supplemental_evidence_count = len(new_evidence_items)
+                grounding_improved = False
+                if new_evidence_items and ground_claims is not None:
+                    # 새로 찾은 근거가 이번 발언의 미검증 document_fact 주장을 실제로
+                    # 뒷받침하는지는 항상 claim_grounding(주입된 ground_claims)이 판정한다
+                    # (요청: "보완 검색으로 찾은 내용은 기존과 동일하게 Planner 선별과 claim
+                    # grounding을 통과해야 합니다") — 여기서는 아직 인용되지 않은 새 근거를
+                    # 미검증 document_fact 주장에 시도 삼아 붙여줄 뿐이고, 관련성 검증을
+                    # 통과하지 못하면 그대로 unsupported로 남는다. 문서에서 찾을 수 없으면
+                    # document_fact를 만들지 않는다 — claims 자체를 조작하지 않고 grounding
+                    # 결과만 재판정한다.
+                    merged_evidence = list(turn_evidence) + new_evidence_items
+                    new_refs = [item["ref"] for item in new_evidence_items]
+                    unsupported_claim_ids = {c["claim_id"] for c in grounding["unsupported_claims"]}
+                    augmented_claims = []
+                    for claim in raw.get("claims") or []:
+                        if not isinstance(claim, dict):
+                            continue
+                        claim_copy = dict(claim)
+                        # claim_id가 없으면 unsupported_claim_ids와 매칭될 수 없다(방어적 —
+                        # 실제로는 항상 claim_grounding._normalize_claims가 채운 claim_id를
+                        # 그대로 들고 있다). evidence_refs가 비어 있던 document_fact뿐 아니라,
+                        # 기존 ref가 있었지만 검증에 실패했던 document_fact도 새 ref를
+                        # 추가로 시도해 본다(기존 ref는 남겨 둔다 — 다른 ref가 맞을 수도
+                        # 있으므로 지우지 않는다).
+                        if claim_copy.get("claim_type") == "document_fact" and (
+                            not claim_copy.get("evidence_refs")
+                            or claim_copy.get("claim_id") in unsupported_claim_ids
+                        ):
+                            existing_refs = claim_copy.get("evidence_refs") or []
+                            claim_copy["evidence_refs"] = list(dict.fromkeys([*existing_refs, *new_refs]))
+                        augmented_claims.append(claim_copy)
+                    previous_linked_count = grounding["linked_evidence_count"]
+                    previous_grounded_count = grounding["grounded_claim_count"]
+                    retry_grounding = ground_claims(persona_id, augmented_claims, merged_evidence)
+                    grounding_improved = (
+                        retry_grounding["linked_evidence_count"] > previous_linked_count
+                        and retry_grounding["grounded_claim_count"] > previous_grounded_count
+                    )
+                    if grounding_improved:
+                        raw = {**raw, "claims": augmented_claims}
+                        grounding = retry_grounding
+                        turn_evidence = merged_evidence
+                        retrieved = retrieved + new_evidence_items
+                        missing_info_normalized = sorted(
+                            {m.strip() for m in grounding["missing_information"] if m and m.strip()}
+                        )
+                trace_event(
+                    "IDEATION_SUPPLEMENTAL_RETRIEVAL",
+                    session_id=state.get("session_id"),
+                    speaker=persona_id,
+                    issue=active_issue_id,
+                    missing_information=missing_info_normalized,
+                    query=sanitize_preview(supplemental_query, limit=160),
+                    raw_new_evidence_count=len(raw_new_evidence_items),
+                    new_evidence_count=supplemental_evidence_count,
+                    planner_selected_evidence_count=supplemental_evidence_count,
+                    planner_empty_reason=(supplemental_plan or {}).get("empty_plan_reason"),
+                    grounding_improved=grounding_improved,
+                    evidence_status_after=grounding["evidence_status"],
+                )
+                if not grounding_improved:
+                    gate = resolve_user_input_gate(
+                        missing_information=missing_info_normalized,
+                        issue_id=active_issue_id,
+                        issue_title=active_issue_title,
+                        issue_turn_count=issue_turn_count,
+                        supplemental_attempted_issue_ids=supplemental_attempted_issue_ids,
+                        asked_decision_fingerprints=asked_decision_fingerprints,
+                        distinct_alternatives=distinct_alternatives,
+                    )
+                    resolution_mode = gate["resolution_mode"]
+                    blocking_reason_code = gate["blocking_reason_code"]
+                    decision_topic = gate.get("decision_topic")
+                else:
+                    resolution_mode = "continue_with_evidence"
+                    blocking_reason_code = None
+                    decision_topic = None
+
+            if resolution_mode == "require_user_decision":
+                needs_user_input = True
+                user_question = gate["decision_question"]
+                decision_options = gate.get("decision_options", [])
+                recommended_next_speaker = "user"
+                needs_counterpart_response = False
+                asked_decision_fingerprints = asked_decision_fingerprints + [gate["fingerprint"]]
+                trace_event(
+                    "IDEATION_USER_DECISION_REQUIRED",
+                    session_id=state.get("session_id"),
+                    speaker=persona_id,
+                    issue=active_issue_id,
+                    missing_information=missing_info_normalized,
+                    decision_topic=decision_topic,
+                    decision_reason=blocking_reason_code,
+                    blocking_reason_code=blocking_reason_code,
+                    decision_question=sanitize_preview(user_question, limit=300),
+                    decision_options=[opt.get("label") for opt in decision_options],
+                    option_count=len(decision_options),
+                    option_labels=[opt.get("label") for opt in decision_options],
+                    source_message_ids=[alt.get("message_id") for alt in distinct_alternatives if alt.get("message_id")],
+                    default_option=gate.get("decision_default"),
+                    alternatives_are_distinct=(decision_topic != "product_direction_choice" or len(distinct_alternatives) >= 2),
+                    next_speaker="user",
+                    user_decision_required=True,
                 )
             else:
-                user_question = (
-                    "같은 전문가 판단이 반복되고 있어 더 진전이 없습니다. "
-                    "판단에 필요한 구체적인 정보를 제공해 주실 수 있나요?"
-                )
-            recommended_next_speaker = "user"
+                needs_user_input = False
+                user_question = None
+                if repetition_triggered:
+                    # 같은 판단이 반복돼 더 진전이 없다 — 진행자가 정리하도록 넘긴다(기존
+                    # 반복 감지 동작과 동일).
+                    recommended_next_speaker = "ideation_facilitator"
+                elif recommended_next_speaker == "user":
+                    recommended_next_speaker = _DISCUSSION_COUNTERPART.get(persona_id, "ideation_facilitator")
+                needs_counterpart_response = recommended_next_speaker != "ideation_facilitator"
+                if blocking_reason_code == "duplicate_question_suppressed":
+                    trace_event(
+                        "IDEATION_USER_QUESTION_SUPPRESSED",
+                        session_id=state.get("session_id"),
+                        speaker=persona_id,
+                        issue=active_issue_id,
+                        reason=gate.get("user_question_suppressed_reason", "duplicate_question_suppressed"),
+                        missing_information=missing_info_normalized,
+                    )
+                elif gate.get("near_issue_cap") and len(distinct_alternatives) < 2:
+                    # 용준/Claude(2026-07-23, 요청: "대안이 부족해 질문하지 않은 경우") —
+                    # 발언 상한에 근접했지만 실제로 서로 다른 실행 대안이 2개 미만이면
+                    # product_direction_choice를 강제로 만들지 않는다(요청: "near_issue_cap
+                    # 이어도 대안이 없으면 만들지 않음"). 왜 묻지 않았는지도 로그로 남긴다.
+                    trace_event(
+                        "IDEATION_USER_DECISION_SKIPPED",
+                        session_id=state.get("session_id"),
+                        speaker=persona_id,
+                        issue_id=active_issue_id,
+                        canonical_family=active_issue_family,
+                        reason_code="no_distinct_alternatives",
+                        candidate_option_count=len(distinct_alternatives),
+                    )
+                    autonomous_assumption_note = (
+                        f"{persona_id}: '{active_issue_title}'은 서로 다른 실행 대안이 충분히 확인되지 않아 "
+                        f"전문가 판단(가정)으로 진행합니다 — {judgment or interim_conclusion}"
+                    )
+                    trace_event(
+                        "IDEATION_AUTONOMOUS_RESOLUTION",
+                        session_id=state.get("session_id"),
+                        speaker=persona_id,
+                        issue=active_issue_id,
+                        missing_information=missing_info_normalized,
+                        resolution_mode=resolution_mode,
+                        blocking_reason_code=blocking_reason_code,
+                        supplemental_retrieval_attempted=supplemental_retrieval_attempted_this_turn,
+                        supplemental_evidence_count=supplemental_evidence_count,
+                        next_speaker=recommended_next_speaker,
+                        user_decision_required=False,
+                    )
+                else:
+                    autonomous_assumption_note = (
+                        f"{persona_id}: '{active_issue_title}'은 문서 근거만으로 확정할 수 없어 "
+                        f"전문가 판단(가정)으로 진행합니다 — {judgment or interim_conclusion}"
+                    )
+                    trace_event(
+                        "IDEATION_AUTONOMOUS_RESOLUTION",
+                        session_id=state.get("session_id"),
+                        speaker=persona_id,
+                        issue=active_issue_id,
+                        missing_information=missing_info_normalized,
+                        resolution_mode=resolution_mode,
+                        blocking_reason_code=blocking_reason_code,
+                        supplemental_retrieval_attempted=supplemental_retrieval_attempted_this_turn,
+                        supplemental_evidence_count=supplemental_evidence_count,
+                        next_speaker=recommended_next_speaker,
+                        user_decision_required=False,
+                    )
         next_action = "await_user_input" if needs_user_input else "continue_discussion"
 
         content = _compose_discussion_content(raw.get("spoken_text", ""))
@@ -2574,6 +4357,17 @@ def make_conv_discussion_node(
                 "issue_resolved": issue_resolved,
                 "needs_user_input": needs_user_input,
                 "user_question": user_question,
+                # 용준/Claude(2026-07-23, 요청: 결정론적 사용자 질문 게이트 진단 필드) —
+                # resolve_user_input_gate가 실제로 무엇을 판단했는지 구조화 상태에 남긴다
+                # (요청: "다음 진단 필드를 구조화 상태나 로그에 남기세요").
+                "user_decision_required": needs_user_input,
+                "resolution_mode": resolution_mode,
+                "blocking_reason_code": blocking_reason_code,
+                "decision_topic": decision_topic,
+                "decision_options": decision_options,
+                "assumptions": [autonomous_assumption_note] if autonomous_assumption_note else [],
+                "supplemental_retrieval_attempted": supplemental_retrieval_attempted_this_turn,
+                "supplemental_evidence_count": supplemental_evidence_count,
                 # 용준/Claude(2026-07-22, 요청: 반복 방지 결과를 로그·다음 라우팅이 참조할 수
                 # 있게 명시적으로 남긴다) — needs_user_input과 항상 일치하는 파생값이지만,
                 # "왜 지금 사용자에게 넘기는지"를 별도 필드로 노출해 로그에서 바로 읽을 수 있다.
@@ -2592,6 +4386,11 @@ def make_conv_discussion_node(
                 # 서버가 만든 구조화 실패 복구 메시지인지 감사·재현 시 구분한다.
                 "safe_fallback": bool(raw.get("safe_fallback")),
                 "safe_fallback_reason": raw.get("safe_fallback_reason"),
+                "evidence_first_skipped": bool(raw.get("evidence_first_skipped")),
+                "evidence_first_fallback": bool(raw.get("evidence_first_fallback")),
+                "repetition_detected": repetition_triggered,
+                "evidence_exhausted": evidence_exhausted,
+                "repetition_matches": restatement_matches,
             },
             message_id=message_id,
         )
@@ -2642,17 +4441,35 @@ def make_conv_discussion_node(
 
         previous_open_ids = {issue.get("issue_id") for issue in (state.get("open_issues") or [])}
         previous_resolved_ids = {issue.get("issue_id") for issue in (state.get("resolved_issues") or [])}
-        open_issues, resolved_issues = _update_issue_records(
-            open_issues=state.get("open_issues") or [],
-            resolved_issues=state.get("resolved_issues") or [],
-            persona_id=persona_id,
-            issue_id=active_issue_id,
-            issue_title=active_issue_title,
-            position_text=proposal or interim_conclusion or judgment,
-            resolved=issue_resolved,
-            resolution_text=proposal or interim_conclusion or judgment,
-        )
-        if active_issue_id not in previous_open_ids and not issue_resolved:
+        if active_issue_id is not None:
+            # 용준/Claude(2026-07-23, 요청: 동일 쟁점 표현 변경 반복 루프 수정) — 이번 턴이
+            # resolve_issue_duplicate에서 중복으로 판정됐지만 로테이션할 다음 공식 쟁점도
+            # 없었다면(active_issue_id=None) 새 레코드를 만들지 않는다 — 이미 다뤄진 쟁점을
+            # 다시 open_issues에 등록하지 않기 위함이다(요청: "신규 쟁점을 다시 등록하지
+            # 않음").
+            open_issues, resolved_issues = _update_issue_records(
+                open_issues=state.get("open_issues") or [],
+                resolved_issues=state.get("resolved_issues") or [],
+                persona_id=persona_id,
+                issue_id=active_issue_id,
+                issue_title=active_issue_title,
+                position_text=proposal or interim_conclusion or judgment,
+                resolved=issue_resolved,
+                resolution_text=proposal or interim_conclusion or judgment,
+                family=active_issue_family,
+            )
+        else:
+            open_issues = state.get("open_issues") or []
+            resolved_issues = state.get("resolved_issues") or []
+        if active_issue_id is None:
+            trace_event(
+                "IDEATION_ISSUE_UPDATE_SKIPPED",
+                session_id=state.get("session_id"),
+                updated_by=persona_id,
+                reason="duplicate_issue_no_rotation_target",
+                remaining_open_issue_count=len(open_issues),
+            )
+        elif active_issue_id not in previous_open_ids and not issue_resolved:
             trace_event(
                 "IDEATION_ISSUE_OPENED",
                 session_id=state.get("session_id"),
@@ -2688,12 +4505,18 @@ def make_conv_discussion_node(
             )
 
         unconfirmed = _as_string_list(raw.get("unconfirmed"))
+        # "unconfirmed" 키 자체가 없으면(구버전 응답 등) 기존 unresolved_issues를 그대로
+        # 둔다 — 키가 있는데 배열이 아니면(타입 오류) 안전하게 빈 배열로 정규화한다.
+        resolved_unresolved_issues = unconfirmed if "unconfirmed" in raw else state["unresolved_issues"]
+        if autonomous_assumption_note and autonomous_assumption_note not in resolved_unresolved_issues:
+            # 용준/Claude(2026-07-23, 요청: expert_judgment 처리 시 가정·한계를 명확히 남김) —
+            # 사용자에게 묻지 않고 전문가 판단으로 진행했다는 사실과 그 가정을 회의록에
+            # 남긴다(요청 6번: "전문가 판단에는 가정, 한계, 추가 검증 사항을 명확히 남깁니다").
+            resolved_unresolved_issues = resolved_unresolved_issues + [autonomous_assumption_note]
         update: dict[str, Any] = {
             "messages": [message],
             "consensus": new_consensus,
-            # "unconfirmed" 키 자체가 없으면(구버전 응답 등) 기존 unresolved_issues를 그대로
-            # 둔다 — 키가 있는데 배열이 아니면(타입 오류) 안전하게 빈 배열로 정규화한다.
-            "unresolved_issues": unconfirmed if "unconfirmed" in raw else state["unresolved_issues"],
+            "unresolved_issues": resolved_unresolved_issues,
             "llm_calls_used": used,
             "open_issues": open_issues,
             "resolved_issues": resolved_issues,
@@ -2722,6 +4545,10 @@ def make_conv_discussion_node(
             # 턴이 이어서 참조할 shadow 선택 이력(세션 범위 state, API 응답에는 노출하지 않는다).
             # evidence_planner가 주입되지 않았으면(기본값) 이 필드는 항상 기존 값 그대로다.
             "evidence_plan_shadow_history": shadow_history_map,
+            # 용준/Claude(2026-07-23, 요청: 근거 기반 자율 토론형 회의로 개편) — 쟁점당 보완
+            # 검색 최대 1회, 같은 결정 질문 반복 금지를 세션 전체에서 추적한다.
+            "supplemental_retrieval_issue_ids": supplemental_attempted_issue_ids,
+            "asked_decision_fingerprints": asked_decision_fingerprints,
         }
         if is_interjection_first_response:
             # 용준/Claude(2026-07-22, 요청: 지정 위원 질문 후 상대 검토 코드 강제) — "검토
@@ -2751,6 +4578,8 @@ def _stop_reason_for(state: IdeationConvState) -> str:
     structured = (last.get("structured") or {}) if last else {}
     if structured.get("needs_user_input"):
         return "user_input_required"
+    if structured.get("repetition_detected"):
+        return "semantic_repetition_detected"
     if state.get("expert_turn_count", 0) >= MAX_EXPERT_TURNS_PER_ROUND:
         return "max_turns_reached"
     active_issue_id = state.get("active_issue_id")
@@ -2779,6 +4608,128 @@ def make_discussion_facilitator_node(llm_call: LLMCall) -> Callable[[IdeationCon
         round_number = state["round"]
         max_rounds = state["max_rounds"]
         open_issues = state.get("open_issues") or []
+        resolved_issues = state.get("resolved_issues") or []
+        parked_issue_id: str | None = None
+
+        # 용준/Claude(2026-07-23, 요청: max_issue_turns_reached 이후 다음 쟁점으로 이동) —
+        # stop_reason="max_turns_reached"는 "라운드 전체 발언 캡"과 "이 쟁점만의 발언 캡" 두
+        # 원인을 모두 나타내는 기존 값이라(state["stop_reason"] 계약은 유지해야 하므로 바꾸지
+        # 않는다), 여기서는 그중 "이 쟁점 자체가 막혔다"만 별도로 다시 확인한다. 라운드 전체
+        # 캡이 원인이면(expert_turn_count가 이미 라운드 캡에 도달) 다른 쟁점도 아직 발언 기회가
+        # 없었을 수 있으므로 강제 종료하지 않는다 — 이 쟁점만 개별적으로 캡에 도달했을 때만
+        # "발언 상한 도달로 강제 종료"하고 다음 라운드가 다른 쟁점을 다루도록 active_issue_id를
+        # 비운다(요청: "특히 max_issue_turns_reached 이후 다음 쟁점으로 이동하는 로직을
+        # 추가하되 기존 테스트를 보존").
+        active_issue_id = state.get("active_issue_id")
+        round_cap_hit = state.get("expert_turn_count", 0) >= MAX_EXPERT_TURNS_PER_ROUND
+        if stop_reason == "semantic_repetition_detected" and active_issue_id:
+            parked_issue_id = active_issue_id
+        elif stop_reason == "max_turns_reached" and not round_cap_hit and active_issue_id:
+            for issue in open_issues:
+                if issue["issue_id"] == active_issue_id and issue.get("turns", 0) >= MAX_EXPERT_TURNS_PER_ISSUE:
+                    parked_issue_id = active_issue_id
+                    break
+
+        parked_family: str | None = None
+        next_issue_family: str | None = None
+        if parked_issue_id:
+            parked_record = next(issue for issue in open_issues if issue["issue_id"] == parked_issue_id)
+            parked_family = parked_record.get("family") or resolve_canonical_issue_family(parked_record.get("title"))
+            closed_reason = (
+                "semantic_repetition_detected"
+                if stop_reason == "semantic_repetition_detected"
+                else "max_issue_turns_reached"
+            )
+            resolution_text = (
+                "새로운 정보 없이 같은 판단이 반복되어 잠정 결론으로 보류하고 다음 쟁점으로 넘어갑니다."
+                if closed_reason == "semantic_repetition_detected"
+                else "발언 상한 도달로 강제 종료 — 전문가 판단으로 잠정 결론을 채택하고 다음 쟁점으로 넘어갑니다."
+            )
+            parked_record = {
+                **parked_record,
+                "status": "resolved",
+                "resolution": resolution_text,
+                "family": parked_family,
+                "closed_reason": closed_reason,
+                "resolution_kind": "parked_expert_judgment",
+            }
+            open_issues = [issue for issue in open_issues if issue["issue_id"] != parked_issue_id]
+            resolved_issues = resolved_issues + [parked_record]
+            trace_event(
+                "IDEATION_ISSUE_RESOLVED",
+                session_id=state.get("session_id"),
+                issue=parked_issue_id,
+                title=parked_record.get("title"),
+                updated_by="ideation_facilitator",
+                previous_status="open",
+                new_status="resolved",
+                resolution=(
+                    "semantic_repetition_forced_close"
+                    if closed_reason == "semantic_repetition_detected"
+                    else "max_issue_turns_reached_forced_close"
+                ),
+                closed_reason=closed_reason,
+                resolution_kind="parked_expert_judgment",
+                remaining_open_issue_count=len(open_issues),
+            )
+            # 용준/Claude(2026-07-23, 요청: "동일 쟁점 표현 변경 반복 루프" 수정 — 발언 상한
+            # 이후 로테이션) — 우선순위: (1) 이미 열려 있는 다른 open_issues의 family,
+            # (2) TOPIC_PRIORITY에서 아직 다루지 않은 다음 공식 쟁점. 다음 쟁점의 family는
+            # 반드시 parked_family와 달라야 한다(_select_next_issue_family가 excluded_family로
+            # 강제한다).
+            next_issue_family = _select_next_issue_family(
+                excluded_family=parked_family,
+                open_issues=open_issues,
+                resolved_issues=resolved_issues,
+                resolved_topics=state.get("resolved_topics") or [],
+            )
+            trace_event(
+                "IDEATION_ISSUE_ROTATED",
+                session_id=state.get("session_id"),
+                previous_issue_id=parked_issue_id,
+                previous_issue_family=parked_family,
+                next_issue_id=(f"topic_{next_issue_family}" if next_issue_family and not open_issues else None),
+                next_issue_family=next_issue_family,
+                rotation_reason=closed_reason,
+                skipped_duplicate_count=0,
+            )
+
+        # 용준/Claude(2026-07-23, 요청: "로테이션 결과를 실제 다음 턴에 강제 반영") —
+        # next_issue_family는 로그로만 남기면 다음 전문가 턴의 검색어/프롬프트/spoken_text가
+        # 여전히 방금 종료된 쟁점을 가리킬 수 있다. 여기서 다음 공식 쟁점을 active_issue_id로
+        # 확정한다(이미 open_issues에 그 family가 있으면 그 issue_id를 그대로 쓰고, 없으면
+        # 공식 레코드를 미리 만든다) — resolve_effective_issue/resolve_retrieval_issue가
+        # active_issue_id를 최우선으로 보므로, 다음 턴은 새 LLM 호출 없이 처음부터 새 family를
+        # 쓰게 된다. 다음 전문가가 그래도 이전 active_issue_id를 반환하면 기존
+        # _validate_discussion_response의 active_issue_id_mismatch 검증이 재시도를 유발해
+        # 신규 쟁점을 덮어쓰지 않는다.
+        next_active_issue_id: str | None = None
+        next_active_issue_title: str | None = None
+        if parked_issue_id and next_issue_family is not None:
+            existing_next_issue = next(
+                (issue for issue in open_issues if issue.get("family") == next_issue_family),
+                None,
+            )
+            if existing_next_issue is not None:
+                next_active_issue_id = existing_next_issue["issue_id"]
+                next_active_issue_title = existing_next_issue.get("title") or next_active_issue_id
+            else:
+                next_active_issue_id = f"topic_{next_issue_family}"
+                next_active_issue_title = _TOPIC_TITLE_KO.get(next_issue_family, next_issue_family)
+                open_issues = open_issues + [
+                    {
+                        "issue_id": next_active_issue_id,
+                        "title": next_active_issue_title,
+                        "status": "open",
+                        "planning_position": None,
+                        "development_position": None,
+                        "resolution": None,
+                        "turns": 0,
+                        "family": next_issue_family,
+                        "closed_reason": None,
+                        "resolution_kind": None,
+                    }
+                ]
 
         if stop_reason == "user_input_required":
             decided_next_action = "await_user_decision"
@@ -2786,6 +4737,12 @@ def make_discussion_facilitator_node(llm_call: LLMCall) -> Callable[[IdeationCon
             decided_next_action = "await_user_decision"
         elif stop_reason == "max_turns_reached" and open_issues:
             decided_next_action = "continue_round"
+        elif parked_issue_id and not open_issues and next_issue_family is None:
+            # 용준/Claude(2026-07-23, 요청: 전체 회의 종료 보장) — 방금 쟁점을 강제 종료했고
+            # 다른 열린 쟁점도 없고 아직 다루지 않은 공식 평가축도 더 없다면, 예전에는 이
+            # 조합이 어느 분기에도 걸리지 않아 "else: continue_round"로 빠지면서 experts가
+            # 매 라운드 새 쟁점을 지어내는 무한 루프의 원인이 됐다 — 이제 회의를 정리한다.
+            decided_next_action = "await_user_decision"
         elif stop_reason == "consensus_reached" and not open_issues:
             decided_next_action = "await_user_decision"
         else:
@@ -2795,6 +4752,14 @@ def make_discussion_facilitator_node(llm_call: LLMCall) -> Callable[[IdeationCon
         dev_msg = _most_recent_message_by(state["messages"], "dev_expert")
         planning_position = planning_msg.get("structured") if planning_msg else None
         development_review = dev_msg.get("structured") if dev_msg else None
+        # 용준/Claude(2026-07-23, 요청: 결정론적 사용자 질문 게이트) — resolve_user_input_gate가
+        # 이미 "정말 사용자 결정이 필요하다"고 판단해 잘 구성된 질문(선택지+기본값 포함)을
+        # 만들어 뒀다면, 진행자가 자기 말로 다시 지어내 형식을 무너뜨리지 않도록 그대로
+        # 이어받는다 — 게이트의 판단이 최종적이다.
+        last_message = state["messages"][-1] if state.get("messages") else None
+        last_structured = (last_message.get("structured") or {}) if last_message else {}
+        gated_decision_required = bool(last_structured.get("user_decision_required"))
+        gated_decision_question = last_structured.get("user_question") if gated_decision_required else None
         message_id = _new_message_id()
         trace_event(
             "IDEATION_TURN_START",
@@ -2819,8 +4784,9 @@ def make_discussion_facilitator_node(llm_call: LLMCall) -> Callable[[IdeationCon
             round_number,
             max_rounds,
             open_issues=open_issues,
-            resolved_issues=state.get("resolved_issues") or [],
+            resolved_issues=resolved_issues,
             stop_reason=stop_reason,
+            next_issue_hint=next_active_issue_title,
         )
         raw, ok, attempts = _safe_call_structured_json(
             llm_call, prompt, _validate_facilitator_response, "discussion_facilitator"
@@ -2834,10 +4800,77 @@ def make_discussion_facilitator_node(llm_call: LLMCall) -> Callable[[IdeationCon
         disagreements = _as_string_list(raw.get("disagreements"))
         needs_user_decision = bool(raw.get("needs_user_decision"))
         user_question = raw.get("user_question") if needs_user_decision else None
+        facilitator_question_suppressed = False
+        if needs_user_decision and not _is_actionable_user_decision_question(user_question):
+            trace_event(
+                "IDEATION_USER_QUESTION_SUPPRESSED",
+                session_id=state.get("session_id"),
+                speaker="ideation_facilitator",
+                issue=state.get("active_issue_id"),
+                reason="facilitator_question_not_actionable",
+                question=sanitize_preview(user_question or ""),
+            )
+            facilitator_question_suppressed = True
+            needs_user_decision = False
+            user_question = None
+
+        if gated_decision_required and gated_decision_question:
+            # 결정론적 게이트가 이미 "진짜 사용자 결정"이라고 판정했다 — 진행자 LLM의 자체
+            # 판단(needs_user_decision/user_question)보다 이 값이 우선한다.
+            needs_user_decision = True
+            user_question = gated_decision_question
+        elif stop_reason == "user_input_required" and not gated_decision_required:
+            # 게이트가 사용자 결정이 필요 없다고(전문가 판단/보완 검색으로 자율 진행) 이미
+            # 판정했다면, 진행자가 스스로 다시 사용자에게 묻지 않는다 — 게이트 판단이
+            # 최종적이다.
+            needs_user_decision = False
+            user_question = None
+
+        if decided_next_action == "await_user_decision" and not (needs_user_decision and user_question):
+            # 실제 결정 질문이 없으면 사용자 대기 상태를 만들지 않는다. 남은 쟁점이 있으면
+            # 다음 라운드로 이동하고, 모두 소진됐으면 synthesis로 정상 종료한다.
+            needs_user_decision = False
+            user_question = None
+            if open_issues and round_number <= max_rounds:
+                decided_next_action = "continue_round"
+                trace_event(
+                    "IDEATION_USER_DECISION_SKIPPED",
+                    session_id=state.get("session_id"),
+                    speaker="ideation_facilitator",
+                    reason="no_actionable_question_with_remaining_issue",
+                    next_issue_id=next_active_issue_id
+                    or (open_issues[0].get("issue_id") if open_issues else None),
+                    next_issue_title=next_active_issue_title
+                    or (open_issues[0].get("title") if open_issues else None),
+                    remaining_open_issue_count=len(open_issues),
+                )
+            else:
+                decided_next_action = "complete_discussion"
+                trace_event(
+                    "IDEATION_DISCUSSION_COMPLETED",
+                    session_id=state.get("session_id"),
+                    speaker="ideation_facilitator",
+                    reason=(
+                        "round_limit_grace_consumed"
+                        if open_issues
+                        else "no_actionable_question_and_no_remaining_issue"
+                    ),
+                    remaining_open_issue_count=len(open_issues),
+                    resolved_issue_count=len(resolved_issues),
+                )
+
         # 용준/Claude(2026-07-22, 요청: 보고서형 메시지 → 자연스러운 회의 발화 전환) — 채팅에
         # 실제로 보이는 content는 spoken_text(1~2문장의 자연스러운 정리, needs_user_decision=
         # true면 질문 자체를 자연스럽게 포함) 그대로다.
         content = raw.get("spoken_text", "").strip()
+        if not needs_user_decision and decided_next_action == "continue_round" and content.endswith("?"):
+            content = summary_text or "현재 논의를 정리하고 다음 세부 쟁점으로 이어가겠습니다."
+        if needs_user_decision and gated_decision_required and gated_decision_question and user_question not in content:
+            # 결정론적 게이트가 만든 선택지+기본값 형식의 질문을 화면에 보이는 문장에도 그대로
+            # 반영한다 — 진행자가 자기 말로 요약하면서 선택지 구조가 사라지는 것을 막는다.
+            content = f"{content}\n\n{user_question}" if content else user_question
+        elif needs_user_decision and user_question and user_question not in content:
+            content = f"{content}\n\n{user_question}" if content else user_question
 
         message = _build_message(
             persona_id="ideation_facilitator",
@@ -2908,6 +4941,16 @@ def make_discussion_facilitator_node(llm_call: LLMCall) -> Callable[[IdeationCon
             "llm_calls_used": used,
             "stop_reason": stop_reason,
         }
+        if parked_issue_id:
+            # 발언 상한으로 강제 종료한 쟁점은 다음 라운드에 다시 등장하지 않는다 —
+            # open_issues/resolved_issues와 active_issue_id를 함께 갱신해야 다음 라운드가
+            # 다른(아직 열려 있는) 쟁점을 다룬다. active_issue_id는 None이 아니라 위에서
+            # 확정한 next_active_issue_id(공식 다음 쟁점, 더 다룰 쟁점이 없으면 None)로
+            # 설정한다 — None으로 비우기만 하면 다음 전문가가 이전 쟁점을 그대로 이어갈 수
+            # 있다.
+            update["open_issues"] = open_issues
+            update["resolved_issues"] = resolved_issues
+            update["active_issue_id"] = next_active_issue_id
         if decided_next_action == "continue_round":
             # 용준/Claude(2026-07-22, 요청: "잠시만" 취소 중 phase 오염 수정) — 다음 라운드로
             # 자동 진행한다(같은 그래프 호출 안에서, 사용자 입력 없이). phase는 항상 이 시점의
@@ -2930,8 +4973,15 @@ def make_discussion_facilitator_node(llm_call: LLMCall) -> Callable[[IdeationCon
             update["next_route"] = None
             update["pending_question"] = user_question
             update["pending_question_topic"] = "facilitator_decision"
+        elif decided_next_action == "complete_discussion":
+            update["phase"] = "discussion_complete"
+            update["next_route"] = None
+            update["pending_question"] = None
+            update["pending_question_topic"] = None
         else:
-            update["phase"] = "awaiting_user_decision"
+            # 불변조건: awaiting_user_decision은 실행 가능한 질문과 항상 함께 존재한다.
+            update["phase"] = "failed"
+            update["failed_node"] = "discussion_facilitator_routing"
             update["next_route"] = None
             update["pending_question"] = None
             update["pending_question_topic"] = None

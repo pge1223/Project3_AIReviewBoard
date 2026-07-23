@@ -14,9 +14,23 @@ from decimal import Decimal
 from typing import Any
 
 from .deductions import _num
+from .personalization import TECHNICAL_PERSONA_IDS
 
 # 판단 심각도(높을수록 심각). 한 항목을 여러 위원이 채점하면 가장 심각한 판단을 대표로 쓴다.
 _JUDGMENT_SEVERITY = {"strong": 0, "acceptable": 1, "needs_improvement": 2, "critical_risk": 3}
+
+# 한 항목을 여러 위원이 겹쳐 채점할 때 "그 항목의 실제 담당 위원"을 고르는 우선순위.
+# 프론트 VersionTrackerTestPage.personaRank와 동일하게 맞춘다: 기술(개발) > 전문 > 종합(완성도).
+# 이 우선순위가 곧 항목의 소속 탭(dev/planning)을 결정한다.
+_GENERALIST_PERSONA_IDS = {"presentation_completeness"}
+
+
+def _persona_rank(persona_id: str | None) -> int:
+    if persona_id in TECHNICAL_PERSONA_IDS:
+        return 2
+    if persona_id in _GENERALIST_PERSONA_IDS:
+        return 0
+    return 1
 
 
 def _issues_by_criterion(document: dict[str, Any]) -> dict[str, set[str]]:
@@ -46,6 +60,84 @@ def _scores_by_criterion(document: dict[str, Any]) -> dict[str, Any]:
 
 def _criteria_meta(document: dict[str, Any]) -> dict[str, dict]:
     return {c["criterion_id"]: c for c in document["rubric"]["criteria"]}
+
+
+def _detail_by_criterion(document: dict[str, Any]) -> dict[str, dict]:
+    """항목마다 "대표 위원"(우선순위 최상위)의 지적·개선안·소속을 고른다.
+    한 항목을 여러 위원이 겹쳐 채점하면 _persona_rank가 높은 위원을 대표로 삼는다."""
+    detail: dict[str, dict] = {}
+    for r in document.get("reviewer_results", []):
+        pid = r.get("persona_id")
+        for s in r.get("rubric_scores", []):
+            cid = s.get("criterion_id")
+            if cid is None:
+                continue
+            cur = detail.get(cid)
+            if cur is None or _persona_rank(pid) > _persona_rank(cur["persona_id"]):
+                detail[cid] = {
+                    "persona_id": pid,
+                    "issues": list(s.get("issues", []) or []),
+                    "suggestions": list(s.get("suggestions", []) or []),
+                }
+    return detail
+
+
+def build_version_history(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """오래된→최신 순 회의(meeting) 문서 리스트를 v1.0, v1.1, v1.2 … 버전 히스토리로 만든다.
+
+    "다음 수정본 제출"로 회의가 하나씩 쌓일 때마다 버전이 하나씩 늘어난다(덮어쓰지 않는다).
+    각 버전은 총점 + 항목별(점수·판정·소속 위원·지적·개선안)과, 직전 버전 대비 지적 상태
+    (new=이번에 새로 생김 / resolved=이번에 해결됨)를 담아 프론트가 그대로 그릴 수 있게 한다.
+    build_revision_comparison(2개 비교)과 달리 N개 전체 히스토리를 다룬다."""
+    versions: list[dict[str, Any]] = []
+    prev_issues: dict[str, set[str]] | None = None
+    for idx, doc in enumerate(documents):
+        meta = _criteria_meta(doc)
+        scores = _scores_by_criterion(doc)
+        issues = _issues_by_criterion(doc)
+        judgments = _representative_judgment_by_criterion(doc)
+        detail = _detail_by_criterion(doc)
+        sr = doc.get("score_result") or {}
+
+        criteria: list[dict[str, Any]] = []
+        for b in sr.get("breakdown", []) or []:
+            cid = b.get("criterion_id")
+            m = meta.get(cid, {})
+            d = detail.get(cid, {})
+            cur_iss = issues.get(cid, set())
+            prev_iss = prev_issues.get(cid, set()) if prev_issues is not None else set()
+            new_iss = (cur_iss - prev_iss) if prev_issues is not None else set()
+            resolved_iss = (prev_iss - cur_iss) if prev_issues is not None else set()
+            committee = "dev" if d.get("persona_id") in TECHNICAL_PERSONA_IDS else "planning"
+            criteria.append(
+                {
+                    "criterion_id": cid,
+                    "criterion_name": m.get("criterion_name", cid),
+                    "committee": committee,
+                    "score": b.get("raw_score", 0),
+                    "max": b.get("max_score", m.get("max_score")),
+                    "judgment": judgments.get(cid) or "acceptable",
+                    "issues": d.get("issues", []),
+                    "suggestions": d.get("suggestions", []),
+                    "new_issues": sorted(new_iss),
+                    "resolved_issues": sorted(resolved_iss),
+                }
+            )
+
+        versions.append(
+            {
+                "version": f"v1.{idx}",
+                "index": idx,
+                "label": "최초 제출" if idx == 0 else f"{idx}차 수정본",
+                "meeting_id": doc.get("meeting_id"),
+                "submitted_at": doc.get("created_at"),
+                "total_score": sr.get("total_score", 0),
+                "max_score": sr.get("max_score", 100),
+                "criteria": criteria,
+            }
+        )
+        prev_issues = issues
+    return versions
 
 
 def build_revision_comparison(
