@@ -1,0 +1,25 @@
+name: Deploy to NCP
+on:
+  push:
+    branches:
+      - dev
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to NCP Server
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: 101.79.25.179
+          username: root
+          key: ${{ secrets.NCP_SSH_KEY }}
+          script: |
+            cd /home/Project3_AIReviewBoard
+            git pull origin dev --no-rebase
+            venv/bin/pip install -r requirements.txt --quiet
+            systemctl restart review-board
+            cd frontend
+            npm run build
+            systemctl reload nginx
+            echo "배포 완료!"

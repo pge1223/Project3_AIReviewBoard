@@ -29,6 +29,7 @@ class DocumentModel:
         # 쓸지 구분할 방법이 없었다. 프론트 DocumentUploadPage.jsx의 두 드롭존(왼쪽 "평가
         # 대상 문서" / 오른쪽 "기준 문서·공고문")과 1:1로 대응시켰다.
         document_role: str = "target",
+        document_type: Optional[str] = None,
         # parsed_text: RAG-001(파싱) 결과 블록을 이어붙인 원문 텍스트. 색인(Chroma)은
         # 벡터/청크 단위라 "이 문서 전체 원문"을 그대로 돌려주는 용도로는 안 맞아서,
         # analyze_project()가 submission.text로 바로 쓸 수 있게 문서 레코드에 같이 저장한다.
@@ -59,6 +60,7 @@ class DocumentModel:
         self.created_at = created_at or datetime.utcnow()
         self.updated_at = updated_at or datetime.utcnow()
         self.source_type = source_type
+        self.document_type = document_type
         self.document_role = document_role
         self.parsed_text = parsed_text
         self.conversion_metadata = conversion_metadata
@@ -76,6 +78,7 @@ class DocumentModel:
             "status": self.status,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "document_type": self.document_type,
             "source_type": self.source_type,
             "document_role": self.document_role,
             "parsed_text": self.parsed_text,

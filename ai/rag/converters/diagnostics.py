@@ -314,7 +314,7 @@ def run_hwp_diagnostics(config: Optional[HwpConversionConfig] = None) -> HwpDiag
         checks.append((temp_dir_writable, None if temp_dir_writable else _REASON_TEMP_DIR_NOT_WRITABLE))
 
         libreoffice_ok = libreoffice_found and libreoffice_ready
-        available = libreoffice_ok and h2orestart_ready and java_ready and temp_dir_writable
+        available = libreoffice_ok and java_ready and temp_dir_writable
 
         reason: Optional[str] = None
         if not available:

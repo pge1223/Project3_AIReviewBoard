@@ -20,6 +20,7 @@ class DocumentResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     document_role: str = "target"
+    document_type: Optional[str] = None
     # 가은/Claude(2026-07-16): HWP/HWPX 변환 결과(성공/실패/불필요) — 프론트가 실패 시
     # conversion_metadata.conversion_error(user_message)를 그대로 보여준다.
     conversion_metadata: Optional[dict] = None
