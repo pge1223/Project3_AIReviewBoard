@@ -114,7 +114,7 @@ def test_user_answer_calls_index_target_evidence_before_next_expert_turn():
     )
     # 라운드테이블 한 라운드가 끝나 awaiting_user_decision에서 멈췄다 — 이제 사용자가
     # 자유롭게 한 마디 더 남기면(구체적인 개입) 그 답변이 색인 대상이다.
-    assert state["phase"] == "awaiting_user_decision"
+    assert state["phase"] == "discussion_complete"
     indexer.calls.clear()
 
     substantial_message = "학교 주변 통학로의 실시간 혼잡도와 사고 이력을 함께 반영해야 합니다."

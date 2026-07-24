@@ -11,6 +11,7 @@
       "gold_relevant_chunk_ids": [],
       "retrieved_chunk_ids": [],
       "selected_chunk_ids": [],
+      "planner_relevant_selected_chunk_ids": [],
       "claims": [
         {
           "text": "REPLACE_WITH_ACTUAL_CLAIM",
@@ -23,6 +24,8 @@
       "issue_match": false,
       "planner_fallback": false,
       "human_verified": false,
+      "reviewer_id": "",
+      "reviewed_at": "",
       "reviewer_notes": "검색·선택 청크가 현재 쟁점을 직접 뒷받침하는지 사람이 확인"
     }
   ]

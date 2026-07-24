@@ -343,7 +343,7 @@ def test_initial_idea_present_starts_refinement_mode():
         llm_call=llm,
     )
     assert state["ideation_mode"] == "refinement"
-    assert state["phase"] == "awaiting_user_decision"
+    assert state["phase"] == "discussion_complete"
     assert state["initial_idea"] == "동네 가게 챗봇"
     assert not any(m["message_type"] == "question" for m in state["messages"])
     # discovery 노드는 전혀 호출되지 않는다.
@@ -416,7 +416,7 @@ def test_numeric_candidate_selection_switches_to_refinement_without_llm_interpre
     state = _start_discovery(llm)
     state = reply_ideation_conversation(previous_state=state, user_message="1번", llm_call=llm)
 
-    assert state["phase"] == "awaiting_user_decision"
+    assert state["phase"] == "discussion_complete"
     assert state["ideation_mode"] == "discovery"  # 모드 자체는 바뀌지 않는다.
     assert state["selected_idea"]["candidate_id"] == "candidate_1"
     assert state["selected_idea"]["source"] == "select"
@@ -576,7 +576,7 @@ def test_regenerate_request_after_selection_returns_to_new_candidate_list():
     state = reply_ideation_conversation(previous_state=state, user_message="1번", llm_call=llm)
     # 용준/Claude(2026-07-21, 요청: 전문가 라운드테이블 전환) — 선택 직후 라운드테이블이
     # 같은 요청 안에서 끝까지 실행돼 "awaiting_user_decision"으로 멈춘다.
-    assert state["phase"] == "awaiting_user_decision"
+    assert state["phase"] == "discussion_complete"
     assert state["selected_idea"] is not None
 
     sufficiency_calls_before = sum("[판정 규칙]" in prompt for prompt in llm.captured_prompts)
@@ -685,7 +685,7 @@ def test_discovery_final_result_includes_13_fields_and_discovery_history():
     llm = DiscoveryScriptedLLM(dev_next_action="await_user_decision")
     state = _start_discovery(llm)
     state = reply_ideation_conversation(previous_state=state, user_message="1번", llm_call=llm)
-    assert state["phase"] == "awaiting_user_decision"
+    assert state["phase"] == "discussion_complete"
 
     state = finalize_ideation_conversation(previous_state=state, llm_call=llm)
     assert state["phase"] == "finalized"
@@ -872,7 +872,7 @@ def test_combine_high_fit_finalizes_selection_normally():
     state = _start_discovery(llm)
     state = reply_ideation_conversation(previous_state=state, user_message="1번과 2번 결합", llm_call=llm)
 
-    assert state["phase"] == "awaiting_user_decision"
+    assert state["phase"] == "discussion_complete"
     assert state["selected_idea"] is not None
     assert state["merge_analysis"]["fit"] == "high"
 
@@ -888,7 +888,7 @@ def test_combine_medium_fit_finalizes_and_preserves_primary_secondary_features()
     # 용준/Claude(2026-07-21, 요청: 전문가 라운드테이블 전환) — 결합 확정 직후 라운드테이블
     # 이 곧바로 실행돼 "awaiting_user_decision"으로 멈춘다("[핵심 질문]" 형식의 1:1 인터뷰
     # 질문은 더 이상 생성되지 않는다).
-    assert state["phase"] == "awaiting_user_decision"
+    assert state["phase"] == "discussion_complete"
     assert state["selected_idea"] is not None
     assert state["merge_analysis"]["fit"] == "medium"
     assert state["merge_analysis"]["primary_features"] == ["문의 자동응답"]

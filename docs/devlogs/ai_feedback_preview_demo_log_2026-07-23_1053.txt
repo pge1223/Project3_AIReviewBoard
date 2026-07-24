@@ -1,0 +1,56 @@
+대상 기획서: 리스킬_고용노동AI공모전_아이디어제안서 (1).docx
+
+--- 1단계: 공고문(criteria) URL 입력 -> RAG 색인 ---
+10:50:13 [fetch-url] 색인(백그라운드) 시작 document_id=...fbe05 url=https://www.2026datacontest.co.kr/
+10:50:13 rag.indexing.start chunk_count=17
+10:50:13 rag.embed.encode_start text_count=17 total_chars=5645
+10:50:31 rag.embed.encode_done elapsed_ms=18500
+10:50:32 rag.chroma.upsert_done count=17
+10:50:32 rag.indexing.store_done status=SUCCESS stored_count=17
+10:50:32 [fetch-url] === 색인(백그라운드) 완료 === elapsed=18.7s stored_count=17
+
+--- 2단계: 기획서(target) 파일 업로드 -> RAG 색인 ---
+10:50:42 [upload] 색인(백그라운드) 시작 document_id=...fbe06 filename=리스킬_고용노동AI공모전_아이디어제안서 (1).docx
+10:50:43 rag.indexing.start chunk_count=24
+10:50:43 rag.embed.encode_start text_count=24 total_chars=7159
+10:51:01 rag.embed.encode_done elapsed_ms=18750
+10:51:02 rag.chroma.upsert_done count=24
+10:51:02 rag.indexing.store_done status=SUCCESS stored_count=24
+10:51:02 [upload] === 색인(백그라운드) 완료 === elapsed=19.2s stored_count=24
+
+--- 3단계: "AI 피드백" 화면 진입 -> 4가지 체크 병렬 시작 (document_id=...fbe06) ---
+
+[분량 체크] 공고문에서 요구 페이지 수 LLM 추출
+10:53:01 [format-check] 공고문(criteria) 문서=...fbe05(제5회 고용노동 공공데이터·AI 활용 공모전) 참고해 요구 분량 LLM 추출 시작 (원문 앞 12000자만 프롬프트에 사용)
+10:53:02 [format-check] 요구 분량 추출 완료(1047ms): min=10 max=10 근거="아이디어 제안서 또는 사업계획서는 A4 10페이지 이내로 작성"
+
+[맥락 이상 체크] GPT 3회 독립 샘플링 + 다수결 투표
+10:53:02 [context-check] 문단 50개 추출 완료 - GPT가 문서 전체를 한 번에 읽고 temperature=0.5로 3회 독립 샘플링(다수결 투표, 임계값 2표) 시작
+10:53:04 [context-check] 샘플링 완료(1764ms) - 3회 중 2개 문단이 최소 1표 이상 득표 (문단별 득표: {4: 3, 49: 3})
+10:53:04 [context-check]   -> 4번 문단(3표) 후보 사유: 청년 구직자와 40~50대 중장년 재취업 희망자를 언급하면서 특정 연령대에 초점을 맞추고 있지만, 이후 문단에서는 다양한 집단을 대상으로 하는 내용으로 확장되어 불일치가 발생한다.
+                 | 원문: "코로나19 이후 산업 구조 전환이 빨라지면서 기존 직무가 사라지거나 요구 역량이 급격히 바뀌는 현상이 뚜렷해지고 있다. 특히 청년 구직자와 40..."
+10:53:04 [context-check]   -> 49번 문단(3표) 후보 사유: 초기 대상이 청년·중장년 재취업 희망자로 한정되었다가, 이후 경력단절여성 및 특화 취업지원이 필요한 계층으로 확대될 수 있다는 언급이 있어, 대상 독자가 일관되지 않다.
+                 | 원문: "- 초기에는 청년·중장년 재취업 희망자를 우선 대상으로 시작하되, 데이터가 축적되면 경력단절여성, 특화 취업지원이 필요한 계층 등으로 대상을 확..."
+10:53:04 [context-check] 다수결 판정 완료 - 임계값(2표) 이상 득표한 맥락 이상 2건 확정
+
+[오탈자 체크] 문단 배치 병렬 LLM 호출
+10:53:02 [typo-check] 문서 파싱 완료 - 문단 50개, 3개씩 묶어 배치 병렬 LLM 호출 시작
+10:53:06 [typo-check] LLM 응답 완료(3733ms, 17개 배치 병렬 호출) - 오탈자 후보 8건, 필터링(중복/공백만 다름/PUA 문자) 시작
+10:53:06 [typo-check] 필터링 완료 - 최종 오탈자 1건 확정 (후보 8건 중)
+10:53:06 [typo-check]   -> '추천을 맹목적으로 따르지 않고' → '추천을 맹목적으로 따르지 않도록' (문맥상 '않도록'이 더 적절합니다.)
+
+[밀도 체크] 원본을 라이브레오피스로 PDF 변환 -> 페이지별 커버리지 측정
+10:53:02 [format-check] 원본(.docx)을 PDF로 열어 페이지 수·페이지별 밀도 측정 시작
+10:53:03 [PREVIEW_PDF_CONVERSION_START] 라이브레오피스 요청: soffice.exe --headless --norestore -env:UserInstallation=... --convert-to pdf --outdir ... de4008025b834ee1bd313bf9f8b35e8a.docx
+10:53:05 [PREVIEW_PDF_CONVERSION_RESPONSE] 종료 코드=0, 2921ms, stdout="convert ... using filter : writer_pdf_Export"
+10:53:05 [PREVIEW_PDF_CONVERSION_COMPLETE] 결과 PDF=de4008025b834ee1bd313bf9f8b35e8a.pdf (165KB)
+10:53:06 [format-check] 측정 완료 - 실제 9페이지, 페이지별 커버리지=[0.172, 0.345, 0.395, 0.093, 0.422, 0.338, 0.22, 0.402, 0.044]
+10:53:06 [format-check] 최종 판정 - 분량: 부족 (요구 10p, 실제 9p), 밀도: 평균 30%(부족), 여백 많음 페이지=[1,2,3,4,5,6,7,8]
+
+--- 4단계: 원문 미리보기(하이라이트용 PDF) 렌더링 ---
+10:53:02 [PREVIEW_PDF_CONVERSION_START] 라이브레오피스 요청: soffice.exe --headless --norestore -env:UserInstallation=... --convert-to pdf --outdir ... b7e5c2cde0c24a618c477e3b814d7a8b.docx
+10:53:05 [PREVIEW_PDF_CONVERSION_RESPONSE] 종료 코드=0, 2952ms, stdout="convert ... using filter : writer_pdf_Export"
+10:53:05 [PREVIEW_PDF_CONVERSION_COMPLETE] 결과 PDF=b7e5c2cde0c24a618c477e3b814d7a8b.pdf (165KB) - 프론트가 이 파일을 pdf.js로 그대로 그림
+      (같은 문서를 화면 두 곳 - 하이라이트 뷰 + 밀도 측정용 - 에서 각각 독립적으로 다시 변환하므로 요청이 2번 나감)
+
+

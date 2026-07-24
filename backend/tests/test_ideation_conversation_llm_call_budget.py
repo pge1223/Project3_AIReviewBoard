@@ -360,7 +360,7 @@ def test_cap_trips_gracefully_instead_of_looping_forever(client: TestClient, mon
     별개로, 상한(_MAX_LLM_CALLS_PER_REQUEST)은 "그 자기 제어 로직이 고장 나거나 max_rounds가
     비정상적으로 크게 설정된 경우"에도 무한 반복에 빠지지 않는다는 마지막 방어선이다.
 
-    정상적인 첫 요청(단일 라운드, next_action="await_user_decision")은 낮은 상한에서도
+    정상적인 첫 요청(단일 라운드, 실행 가능한 질문이 없어 discussion_complete)은 낮은 상한에서도
     문제없이 끝나지만, 이어지는 요청에서 LLM이 계속 continue_round를 반환하는 폭주
     시나리오를 흉내내면 상한이 이를 502로 안전하게 끊어내야 한다."""
     normal_responder = _comprehensive_responder(
@@ -378,7 +378,7 @@ def test_cap_trips_gracefully_instead_of_looping_forever(client: TestClient, mon
     )
     assert start_resp.status_code == 200
     session_id = start_resp.json()["session_id"]
-    assert start_resp.json()["phase"] == "awaiting_user_decision"
+    assert start_resp.json()["phase"] == "discussion_complete"
 
     # 이제부터 LLM이 항상 continue_round를 반환하는 폭주 시나리오로 바꾸고, 상한을 낮춘다
     # (라운드 하나당 planning+dev+facilitator=3회 — 상한 5로는 두 번째 라운드의 진행자
@@ -398,7 +398,7 @@ def test_cap_trips_gracefully_instead_of_looping_forever(client: TestClient, mon
     # 성공한 라운드 결과 — 그대로 남아있는지)도 확인한다.
     get_resp = client.get(f"/ideation-conversation/{session_id}")
     assert get_resp.status_code == 200
-    assert get_resp.json()["phase"] == "awaiting_user_decision"
+    assert get_resp.json()["phase"] == "discussion_complete"
 
 
 if __name__ == "__main__":

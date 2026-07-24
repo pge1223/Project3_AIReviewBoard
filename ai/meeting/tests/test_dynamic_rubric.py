@@ -16,7 +16,7 @@ import pytest
 MEETING_DIR = Path(__file__).resolve().parents[1]  # ai/meeting
 sys.path.insert(0, str(MEETING_DIR))
 
-from graph import build_dynamic_rubric_mapping  # noqa: E402
+from graph import build_dynamic_rubric_mapping, build_rubric, combine_criteria_documents  # noqa: E402
 
 COMPETITION_MAPPING_PATH = MEETING_DIR / "personas" / "rubric_mapping_competition.json"
 PERSONA_CARDS_PATH = MEETING_DIR / "personas" / "persona_cards.json"
@@ -88,6 +88,80 @@ def test_source_document_id_and_meta_dynamic_flag_are_set():
     assert merged["meta"]["dynamic"] is True
     # committee/default_supplementary_perspectives는 base_mapping 그대로 유지된다.
     assert merged["committee"] == base_mapping["committee"]
+
+
+def test_explicit_required_keywords_are_preserved_for_score_calibration():
+    base_mapping = _load_base_mapping()
+    persona_cards = _load_persona_cards()
+    items = _valid_items()
+    items[0]["description"] = "공고문에 적힌 세부 평가내용"
+    items[0]["required_keywords"] = ["공공데이터 활용"]
+    items[0]["required_keyword_groups"] = [["웹", "모바일"]]
+
+    merged = build_dynamic_rubric_mapping(
+        base_mapping=base_mapping,
+        extracted_items=items,
+        source_document_id="doc-required",
+        persona_cards=persona_cards,
+    )
+
+    assert merged["rubric"][0]["required_keywords"] == ["공공데이터 활용"]
+    assert merged["rubric"][0]["required_keyword_groups"] == [["웹", "모바일"]]
+    assert merged["rubric"][0]["description"] == "공고문에 적힌 세부 평가내용"
+    runtime_rubric = build_rubric(merged)
+    assert runtime_rubric["criteria"][0]["description"] == "공고문에 적힌 세부 평가내용"
+    assert runtime_rubric["criteria"][0]["required_keywords"] == ["공공데이터 활용"]
+    assert runtime_rubric["criteria"][0]["required_keyword_groups"] == [["웹", "모바일"]]
+
+
+def test_dynamic_bonus_rules_are_preserved_separately_from_base_score():
+    base_mapping = _load_base_mapping()
+    persona_cards = _load_persona_cards()
+    rules = [
+        {
+            "bonus_id": "priority_data",
+            "name": "국가중점데이터 활용",
+            "points": 2,
+            "description": "주최기관이 지정한 국가중점데이터를 활용한 경우",
+            "evidence_keywords": ["국가중점데이터"],
+            "requires_verification": True,
+        }
+    ]
+    merged = build_dynamic_rubric_mapping(
+        base_mapping=base_mapping,
+        extracted_items=_valid_items(),
+        source_document_id="doc-bonus",
+        persona_cards=persona_cards,
+        bonus_rules=rules,
+        bonus_max_score=2,
+    )
+    runtime_rubric = build_rubric(merged)
+
+    assert merged["meta"]["rubric_extraction_version"] == 2
+    assert runtime_rubric["total_max_score"] == 100
+    assert runtime_rubric["bonus_max_score"] == 2
+    assert runtime_rubric["bonus_rules"] == rules
+
+
+def test_multiple_criteria_documents_share_prompt_budget_and_keep_all_source_ids():
+    documents = [
+        {
+            "_id": "url-doc",
+            "source_url": "https://contest.example/notice",
+            "parsed_text": "웹 공고 " + "가" * 5000,
+        },
+        {
+            "_id": "table-doc",
+            "original_filename": "평가기준.docx",
+            "parsed_text": "배점표 AI 혁신성 25점 데이터 활용성 20점",
+        },
+    ]
+    combined, source_ids = combine_criteria_documents(documents, max_chars=1000)
+
+    assert source_ids == ["url-doc", "table-doc"]
+    assert "웹 공고" in combined
+    assert "배점표 AI 혁신성 25점" in combined
+    assert len(combined) <= 1000
 
 
 def test_duplicate_criterion_id_is_rejected():

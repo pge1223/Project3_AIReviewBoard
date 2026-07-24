@@ -327,31 +327,38 @@ class _RepeatedExpertJudgmentOnlyLLM:
         )
 
 
-def test_two_consecutive_zero_linked_turns_converts_to_user_question_before_issue_cap():
-    """linked_evidence_count=0인 턴이 같은 쟁점에서 2회 연속되면(기획 1회 + 개발 1회),
-    max_issue_turns_reached(6회 캡)까지 기다리지 않고 사용자에게 되묻는 흐름으로 전환된다."""
+def test_repeated_expert_judgment_turns_close_issue_without_forcing_user_research():
+    """문서 인용이 없는 expert_judgment는 정상적인 전문가 역할이다.
+
+    문서 인용이 없다는 이유만으로 사용자를 부르지는 않는다. 다만 같은 의미의 판단이 실제
+    발언에서 반복되면 6턴 상한을 모두 소모하지 않고 진행자가 잠정 정리해야 한다.
+    """
     llm = _RepeatedExpertJudgmentOnlyLLM()
     state = _start(llm, _real_ground_claims)
 
     expert_messages = [m for m in state["messages"] if m["speaker_id"] in ("planning_expert", "dev_expert")]
-    assert len(expert_messages) == 2  # 캡(6회)까지 반복되지 않고 2턴 만에 전환됨.
+    issue_message_counts: dict[str, int] = {}
+    for message in expert_messages:
+        issue_id = message["structured"]["active_issue_id"]
+        issue_message_counts[issue_id] = issue_message_counts.get(issue_id, 0) + 1
+    assert issue_message_counts
+    assert all(2 <= count < 6 for count in issue_message_counts.values())
 
     dev_message = expert_messages[-1]
     assert dev_message["evidence_status"] == "expert_judgment_only"
     assert dev_message["linked_evidence_refs"] == []
-    assert dev_message["structured"]["needs_user_input"] is True
-    assert dev_message["structured"]["recommended_next_speaker"] == "user"
-    assert dev_message["structured"]["next_action"] == "await_user_input"
+    assert all(m["structured"]["needs_user_input"] is False for m in expert_messages)
+    assert all(m["structured"]["recommended_next_speaker"] != "user" for m in expert_messages)
+    assert all(m["structured"]["next_action"] == "continue_discussion" for m in expert_messages)
+    assert any(m["structured"]["repetition_detected"] for m in expert_messages)
 
-    assert state["phase"] == "awaiting_user_decision"
-    assert state["pending_question"] == "활용하려는 공공데이터 API나 협력기관이 정해져 있나요?"
-    facilitator_message = next(m for m in reversed(state["messages"]) if m["speaker_id"] == "ideation_facilitator")
-    assert "확인할 수 없어" in facilitator_message["content"] or "추가" in facilitator_message["content"]
+    assert state["phase"] == "discussion_complete"
+    assert state["pending_question"] is None
 
 
-def test_repeated_missing_information_also_triggers_user_question():
+def test_repeated_missing_information_closes_early_without_generic_user_question():
     """document_fact 주장이 매번 같은 missing_information으로 실패(unsupported)해도,
-    같은 정보가 2회 연속 반복되면 곧바로 사용자에게 되묻는다(무한 반복 방지)."""
+    같은 정보가 반복되면 포괄적인 자료 제공 요청을 만들지 않고 조기에 진행자가 정리한다."""
 
     def _make_response(prompt: str):
         if "[진행자 정리 규칙]" in prompt:
@@ -382,6 +389,9 @@ def test_repeated_missing_information_also_triggers_user_question():
 
     state = _start(_make_response, _real_ground_claims)
     expert_messages = [m for m in state["messages"] if m["speaker_id"] in ("planning_expert", "dev_expert")]
-    # ungrounded 즉시-전환 규칙과 반복 규칙이 함께 적용될 수 있어 2턴 이내에 전환된다.
-    assert len(expert_messages) <= 2
-    assert state["phase"] == "awaiting_user_decision"
+    assert 1 <= len(expert_messages) < 6
+    assert all(m["structured"]["needs_user_input"] is False for m in expert_messages)
+    assert all(m["structured"]["recommended_next_speaker"] != "user" for m in expert_messages)
+    assert any(m["structured"]["repetition_detected"] for m in expert_messages)
+    assert state["phase"] == "discussion_complete"
+    assert state["pending_question"] is None

@@ -109,8 +109,7 @@ def build_version_history(documents: list[dict[str, Any]]) -> list[dict[str, Any
             new_iss = (cur_iss - prev_iss) if prev_issues is not None else set()
             resolved_iss = (prev_iss - cur_iss) if prev_issues is not None else set()
             committee = "dev" if d.get("persona_id") in TECHNICAL_PERSONA_IDS else "planning"
-            criteria.append(
-                {
+            criterion_version = {
                     "criterion_id": cid,
                     "criterion_name": m.get("criterion_name", cid),
                     "committee": committee,
@@ -122,7 +121,9 @@ def build_version_history(documents: list[dict[str, Any]]) -> list[dict[str, Any
                     "new_issues": sorted(new_iss),
                     "resolved_issues": sorted(resolved_iss),
                 }
-            )
+            if b.get("calibration"):
+                criterion_version["calibration"] = b["calibration"]
+            criteria.append(criterion_version)
 
         versions.append(
             {

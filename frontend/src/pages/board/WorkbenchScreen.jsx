@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { AlertCircle, AlertTriangle, Lightbulb, MessageSquare, PenLine, Sparkles } from 'lucide-react'
+import { AlertCircle, AlertTriangle, ArrowRight, Lightbulb, MessageSquare, PenLine, Sparkles } from 'lucide-react'
 import { getDocuments } from '../../api/documentApi'
 import { getQuoteMatches, getContextCheck, getTypoCheck, getFormatCheck } from '../../api/workbenchApi'
 import { getProjectReport } from '../../api/projectApi'
@@ -178,7 +178,7 @@ const KIND_BADGE = {
   typo: { label: '오탈자', bg: 'var(--rose-dim)', fg: 'var(--rose)', icon: <PenLine size={12} /> },
 }
 
-export default function WorkbenchScreen({ projectId }) {
+export default function WorkbenchScreen({ projectId, onNext }) {
   const [pdfUrl, setPdfUrl] = useState(null)
   const [docError, setDocError] = useState('')
   const [reviewOutput, setReviewOutput] = useState(null)
@@ -500,6 +500,24 @@ export default function WorkbenchScreen({ projectId }) {
           })}
         </div>
       </div>
+
+      {/* 경이/Claude(2026-07-24): AI 피드백 → 완성 리포트 이동 버튼. WorkbenchScreen에 다음
+          버튼이 없어 사이드바로만 넘어갈 수 있었다("안 넘어간다" 제보). 스크롤과 무관하게
+          항상 보이도록 우하단 고정 배치. onNext(=goNext)로 report 단계로 진행한다. */}
+      {onNext && (
+        <button
+          type="button"
+          className="btn-primary"
+          onClick={onNext}
+          style={{
+            position: 'fixed', right: 28, bottom: 24, zIndex: 50,
+            display: 'inline-flex', alignItems: 'center', gap: 8,
+            boxShadow: '0 6px 20px rgba(124,92,234,0.35)',
+          }}
+        >
+          완성 리포트로 <ArrowRight size={16} />
+        </button>
+      )}
     </div>
   )
 }

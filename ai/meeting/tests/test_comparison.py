@@ -9,7 +9,7 @@ from pathlib import Path
 MEETING_DIR = Path(__file__).resolve().parents[1]  # ai/meeting
 sys.path.insert(0, str(MEETING_DIR))
 
-from scoring import build_revision_comparison  # noqa: E402
+from scoring import build_revision_comparison, build_version_history  # noqa: E402
 
 
 def _doc(meeting_id: str, criteria_meta: list[dict], breakdown: list[dict], reviewer_scores: list[dict], total: int) -> dict:
@@ -139,3 +139,21 @@ def test_comparison_flags_max_score_change_as_not_comparable():
     assert cards["B"]["comparable"] is True
     assert report["rubric_changed"] is True
     assert any("배점" in w for w in report["warnings"])
+
+
+def test_version_history_preserves_score_calibration_trace():
+    document = _before()
+    calibration = {
+        "original_score": 35,
+        "cap_score": 20,
+        "cap_ratio": 0.4,
+        "signals": [{"code": "S2", "reason": "숫자 또는 정량 표현이 없음"}],
+    }
+    document["score_result"]["breakdown"][0]["raw_score"] = 20
+    document["score_result"]["breakdown"][0]["calibration"] = calibration
+
+    versions = build_version_history([document])
+    criterion = next(c for c in versions[0]["criteria"] if c["criterion_id"] == "A")
+
+    assert criterion["score"] == 20
+    assert criterion["calibration"] == calibration

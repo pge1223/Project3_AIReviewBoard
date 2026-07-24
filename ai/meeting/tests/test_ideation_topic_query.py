@@ -17,6 +17,7 @@ from graph.ideation_conv_nodes import (  # noqa: E402
     _active_issue_title,
     _idea_core_summary,
     _topic_query,
+    resolve_effective_issue,
     resolve_retrieval_issue,
 )
 from graph.ideation_conv_state import initial_conv_state  # noqa: E402
@@ -82,6 +83,38 @@ def test_topic_query_changes_when_active_issue_changes():
     assert query_a != query_b
     assert "데이터 갱신 주기" in query_b
     assert "데이터 갱신 주기" not in query_a
+
+
+def test_user_interjection_overrides_existing_issue_and_leads_retrieval_query():
+    state = _state_with_issue(issue_id="problem", issue_title="문제 정의")
+    question = "유지보수 문제를 어떻게 해결해야 하지?"
+    state["messages"].append(
+        {
+            "message_id": "MSG-user-maintenance",
+            "speaker_id": "user",
+            "speaker_name": "사용자",
+            "role": "사용자",
+            "round": 1,
+            "message_type": "interjection",
+            "content": question,
+            "referenced_message_ids": [],
+            "evidence": [],
+            "created_at": "2026-07-23T00:00:00+00:00",
+            "structured": {"target_speaker_id": "dev_expert", "active_issue_id": "problem"},
+        }
+    )
+    state["interjection_target_speaker_id"] = "dev_expert"
+    state["required_counterpart_speaker_id"] = "planning_expert"
+    state["counterpart_review_completed"] = False
+
+    effective = resolve_effective_issue(state, "dev_expert")
+    query = _topic_query(state, "dev_expert")
+
+    assert effective["issue_id"] == "problem"
+    assert effective["title"] == question
+    assert effective["source"] == "user_interjection"
+    assert query.startswith(f"사용자 직접 질문: {question}")
+    assert f"현재 쟁점: {question}" in query
 
 
 def test_topic_query_differs_between_planning_and_dev_for_same_state():

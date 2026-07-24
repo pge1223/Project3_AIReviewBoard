@@ -14,15 +14,14 @@
    ("target"=평가 대상 문서/기획서, "criteria"=공고문). role 필드는 이번에 새로 추가했다
    (app/models/document.py) — 이게 없으면 어떤 문서를 실제로 채점할지 구분할 방법이
    없었다.
-3. rubric/committee는 ai/meeting/personas/rubric_mapping_{domain}.json을 그대로 쓴다
-   (경이의 build_rubric(), 가은의 PER-002 매핑). 공고문에서 평가기준을 자동 추출하는
-   기능은 아직 없어서(용준 담당, notice_criteria 추출 자체가 미착수) 이 정적 템플릿을
-   기본값으로 채택했다 — Q1/Q2 논의에서 나온 대로 "당장은 rubric_mapping을 docType으로
-   바로 골라 쓰는" 방식.
+3. rubric/committee는 ai/meeting/personas/rubric_mapping_{domain}.json을 기본값으로 삼고,
+   competition 프로젝트는 색인된 모든 criteria 문서(URL·공고문 파일)를 결합해 평가항목,
+   세부 평가내용, 배점, 필수요건, 가점 규칙을 동적으로 추출한다. 추출·검증에 실패할 때만
+   정적 템플릿으로 폴백한다.
    **rubric_mapping_startup.json은 아직 없다** — startup 도메인 프로젝트는 지금 400으로
    막힌다. competition/government_support만 됨(우선순위도 competition이 1순위로 정해짐).
-4. submission은 document_role="target"인 첫 문서의 parsed_text를 쓴다(문서가 여러 개면
-   첫 번째만 — 여러 문서를 어떻게 합칠지는 정해진 바 없어서 협의 필요).
+4. submission은 document_role="target"인 문서 중 created_at 기준 최신 수정본의
+   parsed_text를 쓴다.
 5. [2026-07-17 갱신] evidence_context/evidence_callback은 MeetingEvidenceOrchestrationService
    (ai/rag/orchestration, RAG-003 RoleAwareRetrievalService·RAG-004 EvidenceLinkingService·
    RAG-005 EvidenceSufficiencyService 조립, README.md 참고)가 만든다 — persona_id마다
@@ -44,7 +43,8 @@
 
 [아직 협의가 필요한 것 — 정리]
 - rubric_mapping_startup.json이 없음 (담당: 가은/경이, PER-002 확장 필요)
-- submission이 여러 target 문서를 어떻게 합칠지 (지금은 첫 문서만 사용)
+- 여러 target 문서를 합산 평가할지 여부는 별도 정책이 필요하다. 현재는 버전 추적 목적에
+  맞춰 최신 수정본 한 건을 평가한다.
 - [2026-07-17 해결] retrieved_evidence를 위원별로 다르게 줄지 — MeetingEvidenceOrchestrationService
   (ai/rag/orchestration, RAG-003·004·005) + run_meeting()의 evidence_context/evidence_callback
   연동으로 해결됨(아래 analyze_project() 실제 흐름 5번 참고). 단, domain="government_support"는
@@ -170,6 +170,7 @@ if str(_MEETING_DIR) not in sys.path:
 from graph import (  # noqa: E402
     build_dynamic_rubric_mapping,
     build_rubric,
+    combine_criteria_documents,
     rerun_reviewer,
     run_chair_phase,
     run_meeting,
@@ -409,6 +410,7 @@ def _load_rubric_mapping(domain: str) -> dict:
 # (government_support는 role_mapping.py 미확정 등으로 아직 범위 밖, PER-002 우선순위
 # 합의 참고).
 _RUBRIC_EXTRACTION_MAX_ITEMS = 8
+_RUBRIC_EXTRACTION_VERSION = 2
 
 
 def _build_rubric_extraction_prompt(
@@ -450,9 +452,20 @@ def _build_rubric_extraction_prompt(
   배정하세요. 새 위원을 만들지 마세요. 서로 다른 평가항목이 같은 위원(primary_persona_id)에
   배정되는 것은 정상입니다(위원 한 명이 여러 항목을 볼 수 있음) — 이때도 criterion_id는
   반드시 서로 달라야 합니다.
+- description에는 공고문 배점표의 '세부 평가내용'을 빠뜨리지 말고 원문 의미 그대로
+  요약하세요. 항목명만 반복하지 말고, 무엇을 충족해야 하는지 채점 가능한 문장으로 적으세요.
 - primary_perspective_id는 반드시 그 위원의 평가관점(perspective_id) 목록 중 하나를
   그대로 쓰세요. 목록에 없는 값을 지어내지 마세요.
 - 필요하면 secondary_persona_id를 다른 위원 한 명으로 추가할 수 있습니다(선택, 없으면 null).
+- required_keywords에는 공고문이 해당 평가항목에서 제출물에 반드시 포함하라고 명시한 구체
+  요소만 원문 표현으로 넣으세요. 단순 권장사항이나 평가항목명 자체는 넣지 말고, 명시된 필수
+  요소가 없으면 빈 배열로 두세요.
+- 여러 표현 중 하나만 충족하면 되는 필수요건은 required_keyword_groups에 OR 그룹으로
+  넣으세요(예: [["웹", "모바일"]]). 그런 요건이 없으면 빈 배열로 두세요.
+- 공고문에 가점이 있으면 bonus_rules에 각각 추출하세요. points는 해당 규칙의 가점,
+  bonus_max_score는 중복 불가·최대 가점 제한을 반영한 전체 상한입니다. 신청자 자격이나
+  수상 이력처럼 별도 증빙이 필요한 규칙은 requires_verification=true로 두세요.
+  가점이 없으면 bonus_rules=[]와 bonus_max_score=0으로 응답하세요.
 - 공고문에서 평가항목 자체를 찾을 수 없으면 "criteria": []로 응답하세요.
 
 [기본 4범주 — 위원 배정 참고용(criterion_id 복사 금지, 위원 배정만 참고)]
@@ -466,9 +479,15 @@ def _build_rubric_extraction_prompt(
 
 다음 JSON 형식으로만 응답하세요:
 {{"criteria": [
-  {{"criterion_id": "...", "criterion_name": "...", "max_score": 25, "required": true,
-    "primary_persona_id": "...", "primary_perspective_id": "...", "secondary_persona_id": null}}
-]}}"""
+  {{"criterion_id": "...", "criterion_name": "...", "description": "세부 평가내용", "max_score": 25, "required": true,
+    "primary_persona_id": "...", "primary_perspective_id": "...", "secondary_persona_id": null,
+    "required_keywords": [], "required_keyword_groups": []}}
+],
+"bonus_rules": [
+  {{"bonus_id": "snake_case", "name": "가점명", "points": 2,
+    "description": "가점 조건", "evidence_keywords": [], "requires_verification": true}}
+],
+"bonus_max_score": 2}}"""
 
 
 def _call_rubric_extraction_llm(prompt: str) -> str:
@@ -491,8 +510,31 @@ async def _get_or_build_rubric_mapping(project: dict, project_id: str, domain: s
     if domain != "competition":
         return base_mapping
 
+    documents = await document_repo.find_by_project_id(project_id)
+    criteria_docs = [
+        d for d in documents if d.get("document_role") == "criteria" and d.get("parsed_text")
+    ]
+    criteria_docs.sort(key=lambda d: (str(d.get("created_at") or ""), str(d.get("_id") or "")))
+    if not criteria_docs:
+        logger.info(
+            "[rubric] project_id=%s 공고문(criteria) 문서가 없어 정적 템플릿으로 진행합니다.",
+            project_id,
+        )
+        return base_mapping
+
+    criteria_text, source_document_ids = combine_criteria_documents(
+        criteria_docs, max_chars=_SUBMISSION_TRUNCATE_CHARS
+    )
     cached = project.get("dynamic_rubric_mapping")
-    if cached:
+    cached_ids = (cached or {}).get("meta", {}).get("source_document_ids")
+    if cached_ids is None and cached:
+        cached_ids = [cached.get("meta", {}).get("source_document_id")]
+    if (
+        cached
+        and cached.get("meta", {}).get("rubric_extraction_version", 1)
+        >= _RUBRIC_EXTRACTION_VERSION
+        and cached_ids == source_document_ids
+    ):
         logger.info(
             "[rubric] project_id=%s 캐시된 동적 rubric 재사용 criteria=%d개 source_document_id=%s",
             project_id,
@@ -501,19 +543,9 @@ async def _get_or_build_rubric_mapping(project: dict, project_id: str, domain: s
         )
         return cached
 
-    documents = await document_repo.find_by_project_id(project_id)
-    criteria_docs = [d for d in documents if d.get("document_role") == "criteria" and d.get("parsed_text")]
-    if not criteria_docs:
-        logger.info(
-            "[rubric] project_id=%s 공고문(criteria) 문서가 없어 정적 템플릿으로 진행합니다.",
-            project_id,
-        )
-        return base_mapping
-    criteria_doc = criteria_docs[0]
-
     try:
         persona_cards = {pid: get_persona_card(pid) for pid in base_mapping["committee"]}
-        prompt = _build_rubric_extraction_prompt(criteria_doc["parsed_text"], base_mapping, persona_cards)
+        prompt = _build_rubric_extraction_prompt(criteria_text, base_mapping, persona_cards)
         raw = await run_in_threadpool(_call_rubric_extraction_llm, prompt)
         parsed = json.loads(raw)
         extracted_items = parsed.get("criteria")
@@ -522,8 +554,11 @@ async def _get_or_build_rubric_mapping(project: dict, project_id: str, domain: s
         dynamic_mapping = build_dynamic_rubric_mapping(
             base_mapping=base_mapping,
             extracted_items=extracted_items,
-            source_document_id=str(criteria_doc["_id"]),
+            source_document_id=source_document_ids[0],
+            source_document_ids=source_document_ids,
             persona_cards=persona_cards,
+            bonus_rules=parsed.get("bonus_rules") or [],
+            bonus_max_score=parsed.get("bonus_max_score") or 0,
         )
     except Exception as e:
         logger.warning(
@@ -627,7 +662,12 @@ async def _load_target_submission(project_id: str) -> tuple[dict, dict]:
         raise HTTPException(
             status_code=400, detail="평가 대상 문서(기획서)를 먼저 업로드하고 색인이 끝난 뒤 분석을 시작하세요."
         )
-    target_doc = target_docs[0]
+    # 수정본 업로드 화면은 기존 target을 지우지만, 삭제 실패·다른 업로드 경로에서도
+    # 과거 문서를 다시 채점하지 않도록 created_at 기준 최신 문서를 명시적으로 고른다.
+    target_doc = max(
+        target_docs,
+        key=lambda d: (str(d.get("created_at") or ""), str(d.get("_id") or "")),
+    )
     submission = {"document_name": target_doc["original_filename"], "text": target_doc["parsed_text"]}
     return target_doc, submission
 

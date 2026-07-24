@@ -35,6 +35,7 @@ ConvPhase = Literal[
     "awaiting_developer_answer",
     "expert_discussion",
     "awaiting_user_decision",
+    "discussion_complete",
     "finalized",
     "failed",
     # 내부 전이용 값 — API/프론트에 노출되는 공개 상태에는 포함되지 않는다.
@@ -71,7 +72,7 @@ IdeationMode = Literal["refinement", "discovery"]
 ExpectedAnswerType = Literal["preference", "selection", "definition", "constraint", "evidence", "specification"]
 
 # 용준/Claude(2026-07-21, 질문 주제 구조화): 실제 사용자 테스트에서 "문제·목표 사용자·핵심
-# 가치·공모전 적합성이 정리되지 않았는데 로드맵부터 질문"하거나 "한 질문에서 여러 쟁점을
+# 가치가 정리되지 않았는데 로드맵부터 질문"하거나 "한 질문에서 여러 쟁점을
 # 동시에 묻는" 문제가 확인됐다. 이를 막기 위해 질문 하나가 다루는 주제를 명시적인 값
 # (question_topic)으로 구조화하고, 그 우선순위를 코드가 강제한다 — 이 순서는 "문제 정의가
 # 안 됐는데 확장 로드맵부터 묻는" 실패를 원천적으로 막기 위한 것이다(요청 목표 1~9번 순서
@@ -93,9 +94,18 @@ TOPIC_PRIORITY: tuple[str, ...] = (
     "roadmap",
 )
 
-# roadmap(확장 기능/도입 순서)은 이 5개 주제가 모두 resolved_topics에 있어야만 질문할 수
-# 있다(요청 2번 — "확장 기능과 로드맵을 너무 일찍 질문"하는 문제의 직접적인 원인 제거).
-ROADMAP_PREREQUISITE_TOPICS: frozenset[str] = frozenset({"problem", "target_user", "core_value", "contest_fit", "mvp"})
+# 공모전 적합성(contest_fit)은 후보 생성·최종 캔버스에는 계속 보존하지만, 전문가 회의의
+# 자동 의제로는 열지 않는다. 공고문의 결과 발표·접수 일정 같은 행정 문장을 심사 기준으로
+# 오인해 억지로 인용하는 실사용 실패가 확인됐기 때문이다. TOPIC_PRIORITY는 과거 세션의
+# issue_id 해석과 canonical family 판정을 위해 그대로 두고, 자동 질문·로테이션만 이 목록을
+# 사용한다.
+DISCUSSION_TOPIC_PRIORITY: tuple[str, ...] = tuple(
+    topic for topic in TOPIC_PRIORITY if topic != "contest_fit"
+)
+
+# roadmap(확장 기능/도입 순서)은 문제·사용자·가치·MVP가 모두 정리된 뒤에만 질문한다.
+# contest_fit은 자동 회의 의제에서 빠졌으므로 선행 조건에서도 제외한다.
+ROADMAP_PREREQUISITE_TOPICS: frozenset[str] = frozenset({"problem", "target_user", "core_value", "mvp"})
 
 
 def remaining_topics_for(resolved_topics: list[str] | None) -> list[str]:
@@ -105,7 +115,7 @@ def remaining_topics_for(resolved_topics: list[str] | None) -> list[str]:
     "질문 규칙으로만 금지"하는 것보다 더 확실한 강제 방법이다. resolved_topics가 None이면
     (구버전 state) 빈 리스트로 취급한다(하위 호환)."""
     resolved_set = set(resolved_topics or [])
-    remaining = [topic for topic in TOPIC_PRIORITY if topic not in resolved_set]
+    remaining = [topic for topic in DISCUSSION_TOPIC_PRIORITY if topic not in resolved_set]
     if "roadmap" in remaining and not ROADMAP_PREREQUISITE_TOPICS.issubset(resolved_set):
         remaining = [topic for topic in remaining if topic != "roadmap"]
     return remaining
@@ -166,6 +176,16 @@ class IssueRecord(TypedDict):
     development_position: str | None
     resolution: str | None
     turns: int
+    # 용준/Claude(2026-07-23, 요청: 동일 쟁점 표현 변경 반복 루프 수정) — 이 쟁점이 속한
+    # 결정론적 canonical family(TOPIC_PRIORITY 슬러그 또는 "custom:<정규화 텍스트>").
+    # resolve_canonical_issue_family가 채우며, 표현만 바뀐 재등록을 이 값으로 판별한다.
+    # 구버전 저장 레코드에는 없을 수 있으므로 읽는 쪽은 항상 `.get("family")`로 접근한다.
+    family: str
+    # 강제 종료(발언 상한 도달)인지 실제 합의 해결인지 구분한다 — status="resolved"가 된
+    # 이유를 코드·로그·후속 라우팅이 구분할 수 있게 한다(요청: "강제 종료와 합의 완료
+    # 구분"). status가 "open"인 동안은 둘 다 None이다.
+    closed_reason: str | None  # None | "consensus_reached" | "max_issue_turns_reached" | "semantic_repetition_detected"
+    resolution_kind: str | None  # None | "agreed_resolution" | "parked_expert_judgment"
 
 
 class DiscussionRoundRecord(TypedDict):
@@ -441,6 +461,18 @@ class IdeationConvState(TypedDict):
     # {})`로 접근한다(하위 호환).
     evidence_plan_shadow_history: dict[str, list[dict]]
 
+    # 용준/Claude(2026-07-23, 요청: 근거 기반 자율 토론형 회의로 개편) — 쟁점(issue_id)별로
+    # 보완 RAG 검색을 이미 시도했는지 기록한다("쟁점당 최대 1회"). 세션 전체에 걸쳐
+    # 누적되고(라운드/이슈 변경으로 리셋되지 않는다), 같은 이슈가 다시 열려도 이미 시도한
+    # 검색을 반복하지 않는다. 구버전 저장 state에는 이 키가 없을 수 있으므로 읽는 쪽은
+    # 항상 `.get("supplemental_retrieval_issue_ids", [])`로 접근한다(하위 호환).
+    supplemental_retrieval_issue_ids: list[str]
+    # 이미 사용자에게 물은 결정 질문의 지문(issue_id+주제+missing_information 기반 해시) —
+    # 같은 쟁점에서 같은(또는 의미상 유사한) 사유로 반복 질문하지 않도록 막는다(요청:
+    # "세션 내 질문 fingerprint 또는 reason code를 기록"). 구버전 저장 state에는 이 키가
+    # 없을 수 있으므로 읽는 쪽은 항상 `.get("asked_decision_fingerprints", [])`로 접근한다.
+    asked_decision_fingerprints: list[str]
+
 
 def _extract_initial_idea_text(user_idea: dict | str | None) -> str:
     """user_idea에서 trim된 초기 아이디어 텍스트를 뽑아낸다. dict({"description": ...})와
@@ -553,6 +585,8 @@ def initial_conv_state(
         last_new_information_text="",
         consecutive_no_new_information_turns=0,
         evidence_plan_shadow_history={},
+        supplemental_retrieval_issue_ids=[],
+        asked_decision_fingerprints=[],
     )
 
 
@@ -577,7 +611,7 @@ def apply_user_answer(previous_state: IdeationConvState, answer_message: ConvMes
         next_phase = "developer_question"
     elif prev_phase == "awaiting_developer_answer":
         next_phase = "expert_discussion"
-    elif prev_phase == "awaiting_user_decision":
+    elif prev_phase in {"awaiting_user_decision", "discussion_complete"}:
         # 요청 8번 "필요한 경우 추가 질문 라운드" — 시스템이 스스로 판단해 다음 라운드로
         # 넘어가는 경우(next_action="continue_round")와 별개로, 사용자가 확정 버튼을
         # 누르지 않고 자유롭게 한 마디 더 남기면 그 발언도 두 전문가의 보완 의견 대상이
@@ -615,9 +649,10 @@ def request_finalize(previous_state: IdeationConvState) -> IdeationConvState:
     """사용자가 '주제 확정하고 초안 받기'를 눌렀을 때만 호출된다(요구 9~10번 —
     전문가/진행자가 임의로 최종 확정하지 않는다). phase="awaiting_user_decision"이 아니면
     호출부(API)가 이 함수를 부르기 전에 이미 막아야 한다."""
-    if previous_state["phase"] != "awaiting_user_decision":
+    if previous_state["phase"] not in {"awaiting_user_decision", "discussion_complete"}:
         raise ValueError(
-            f"awaiting_user_decision 상태에서만 최종 확정할 수 있습니다(현재: {previous_state['phase']!r})."
+            "awaiting_user_decision 또는 discussion_complete 상태에서만 최종 확정할 수 "
+            f"있습니다(현재: {previous_state['phase']!r})."
         )
     return IdeationConvState(**{**previous_state, "phase": "finalizing"})
 

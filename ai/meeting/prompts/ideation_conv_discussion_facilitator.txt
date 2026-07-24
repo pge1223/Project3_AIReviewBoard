@@ -90,6 +90,10 @@ structured 안에 있음, planning_position/development_review 중 needs_user_in
     아이디어 또는 회의 중 사용자가 추가로 제공한 답변)은 서로 다른 질문에 답하는 별개의
     자료입니다. "공모전이 무엇을 요구하는지"(criteria)와 "이 아이디어가 실제로 무엇을
     하는지"(target)를 같은 사실처럼 섞어 정리하지 않습니다.
+12. 용준/Claude(2026-07-23, 요청: "진행자에게 갱신된 쟁점 상태 전달") — next_issue_hint가
+    비어 있지 않다면, 방금 다룬 쟁점은 발언 상한으로 이미 강제 종료된 것입니다. 그 쟁점을
+    더 논의하자고 요구하거나 추가 정보를 다시 요청하지 말고, facilitator_summary와
+    spoken_text 모두에서 다음 논의 주제가 next_issue_hint라는 것을 자연스럽게 알립니다.
 
 [자연스러운 발언 규칙 — spoken_text 전용]
 spoken_text는 사용자 화면에 실제로 보이는 유일한 문장입니다. facilitator_summary(3~5문장
@@ -185,3 +189,6 @@ round=<<ROUND_NUMBER>> / max_rounds=<<MAX_ROUNDS>>
 
 [개입 이유 stop_reason]
 <<STOP_REASON>>
+
+[다음 다룰 공식 쟁점 next_issue_hint — 비어 있으면 로테이션 없음]
+<<NEXT_ISSUE_HINT>>

@@ -78,10 +78,25 @@ export async function replyIdeationConversation(sessionId, message, model) {
 // 회의를 재개한다. content 문자열을 분석해 대상을 추측하지 않고, 버튼 선택 결과를 그대로
 // 필드로 전달한다(요청 사항 그대로) — 값이 없으면 기존 /reply/stream과 완전히 동일하게 동작한다
 // (하위 호환, optional 필드).
+// 재인/Claude(2026-07-23, 아바타 페이싱 연동 — 실측: "진행자 2번·기획 1번·개발 1번이 2초
+// 간격으로 그냥 다 나왔다"): singleTurn=true면 이 reply가 새 라운드를 여는 경우에도(예:
+// 아이디어 후보 선택 직후) 첫 위원 발언 1건에서 멈춘다(백엔드 ReplyRequest.single_turn).
+// 아바타가 있는 화면은 항상 true로 보내야, 라운드의 첫 발언부터 페이싱(끝나기 3초 전
+// 다음 요청)이 걸린다 — 첫 턴만 통째로 오고 그 다음부터만 끊기는 반쪽짜리가 되지 않는다.
 export async function replyIdeationConversationStream(
   sessionId,
   message,
-  { model, signal, onEvent, targetSpeakerId, interruptedRequestId, activeIssueId } = {},
+  {
+    model,
+    signal,
+    onEvent,
+    targetSpeakerId,
+    opinionTargetSpeakerId,
+    interruptedSpeakerId,
+    interruptedRequestId,
+    activeIssueId,
+    singleTurn,
+  } = {},
 ) {
   const res = await fetch(`${API_BASE_URL}/ideation-conversation/${sessionId}/reply/stream`, {
     method: 'POST',
@@ -90,8 +105,11 @@ export async function replyIdeationConversationStream(
       message,
       model: model || undefined,
       target_speaker_id: targetSpeakerId || undefined,
+      opinion_target_speaker_id: opinionTargetSpeakerId || undefined,
+      interrupted_speaker_id: interruptedSpeakerId || undefined,
       interrupted_request_id: interruptedRequestId || undefined,
       active_issue_id: activeIssueId || undefined,
+      single_turn: singleTurn || undefined,
     }),
     signal,
   })
@@ -129,6 +147,23 @@ export async function startIdeationConversationStream(
       model: model || undefined,
       application_form_items: applicationFormItems || undefined,
     }),
+    signal,
+  })
+  await readNdjsonStream(res, onEvent)
+}
+
+// 재인/Claude(2026-07-23, 아바타 페이싱 연동): POST /continue-turn/stream — 새 사용자
+// 발언 없이, 진행 중인 라운드에서 다음 위원(기획/개발) 발언 딱 1건만 더 요청한다. 아바타가
+// 방금 발언을 재생하는 도중(재생 끝나기 3초 전, avatarPacingTimer.js) "다음 위원 미리
+// 준비" 신호로 호출하는 용도 — message 필드가 아예 없다(reply와의 차이). 세션 phase가
+// "expert_discussion"이 아니면(라운드가 이미 끝났거나 진행자 차례로 넘어간 경우) 백엔드가
+// 400을 반환한다 — 호출부(IdeationConversationScreen)가 그 경우 그냥 무시하면 된다(다음
+// 라운드는 사용자의 실제 reply로 시작되므로).
+export async function continueIdeationExpertTurnStream(sessionId, { model, signal, onEvent } = {}) {
+  const res = await fetch(`${API_BASE_URL}/ideation-conversation/${sessionId}/continue-turn/stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ model: model || undefined }),
     signal,
   })
   await readNdjsonStream(res, onEvent)

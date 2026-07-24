@@ -10,6 +10,36 @@ from __future__ import annotations
 from typing import Any
 
 
+def combine_criteria_documents(
+    documents: list[dict[str, Any]],
+    *,
+    max_chars: int,
+) -> tuple[str, list[str]]:
+    """URL·공문 파일 등 여러 criteria 문서를 같은 비중으로 합친다.
+
+    첫 문서가 긴 웹페이지라는 이유로 뒤에 업로드한 배점표가 잘리지 않도록 문서별 문자
+    예산을 균등 배분한다. 반환 ID 목록은 캐시 무효화에도 사용한다.
+    """
+    usable = [document for document in documents if document.get("parsed_text")]
+    if not usable:
+        return "", []
+    per_document = max(500, max_chars // len(usable))
+    parts: list[str] = []
+    source_ids: list[str] = []
+    for document in usable:
+        source_id = str(document.get("_id") or document.get("document_id") or "")
+        source_ids.append(source_id)
+        source_name = (
+            document.get("original_filename")
+            or document.get("source_url")
+            or source_id
+            or "공고 자료"
+        )
+        excerpt = str(document["parsed_text"])[:per_document]
+        parts.append(f"[출처: {source_name}]\n{excerpt}")
+    return "\n\n".join(parts)[:max_chars], source_ids
+
+
 def build_rubric(mapping: dict[str, Any]) -> dict[str, Any]:
     """rubric_mapping_*.json의 rubric[] 배열을 v2 rubric 객체로 변환한다.
 
@@ -18,22 +48,38 @@ def build_rubric(mapping: dict[str, Any]) -> dict[str, Any]:
     rubric, build_dynamic_rubric_mapping() 참고) 그 값을 쓰고, 없으면(정적 템플릿)
     None이다.
     """
-    criteria = [
-        {
+    criteria = []
+    for item in mapping["rubric"]:
+        criterion = {
             "criterion_id": item["criterion_id"],
             "criterion_name": item["criterion_name"],
             "max_score": item["max_score"],
             "required": item["required"],
         }
-        for item in mapping["rubric"]
-    ]
+        if item.get("description"):
+            criterion["description"] = item["description"]
+        # 공고문에 명시된 필수 요소가 동적 rubric 추출 결과에 있을 때만 전달한다.
+        # 값이 없는 정적 rubric에는 필드를 만들지 않아 기존 v2 결과를 그대로 유지한다.
+        if item.get("required_keywords"):
+            criterion["required_keywords"] = list(item["required_keywords"])
+        if item.get("required_keyword_groups"):
+            criterion["required_keyword_groups"] = [
+                list(group) for group in item["required_keyword_groups"]
+            ]
+        criteria.append(criterion)
     domain = mapping["meta"]["domain"]
-    return {
+    rubric = {
         "rubric_id": f"RUBRIC-{domain.upper()}",
         "source_document_id": mapping.get("meta", {}).get("source_document_id"),
         "total_max_score": mapping["total_max_score"],
         "criteria": criteria,
     }
+    if mapping.get("meta", {}).get("source_document_ids"):
+        rubric["source_document_ids"] = list(mapping["meta"]["source_document_ids"])
+    if mapping.get("bonus_rules"):
+        rubric["bonus_rules"] = [dict(rule) for rule in mapping["bonus_rules"]]
+        rubric["bonus_max_score"] = mapping.get("bonus_max_score", 0)
+    return rubric
 
 
 # 가은/Claude(2026-07-18): PER-002 동적 rubric — 공고문(criteria 문서)에서 LLM으로
@@ -55,6 +101,9 @@ def build_dynamic_rubric_mapping(
     extracted_items: list[dict[str, Any]],
     source_document_id: str,
     persona_cards: dict[str, dict[str, Any]],
+    bonus_rules: list[dict[str, Any]] | None = None,
+    bonus_max_score: float | int = 0,
+    source_document_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """base_mapping(정적 템플릿)의 committee/default_supplementary_perspectives는
     그대로 두고, rubric[]만 extracted_items로 교체한 새 mapping을 반환한다."""
@@ -72,10 +121,13 @@ def build_dynamic_rubric_mapping(
     for item in extracted_items:
         criterion_id = item.get("criterion_id")
         criterion_name = item.get("criterion_name")
+        description = item.get("description")
         max_score = item.get("max_score")
         primary_persona_id = item.get("primary_persona_id")
         primary_perspective_id = item.get("primary_perspective_id")
         secondary_persona_id = item.get("secondary_persona_id")
+        required_keywords = item.get("required_keywords") or []
+        required_keyword_groups = item.get("required_keyword_groups") or []
 
         if not isinstance(criterion_id, str) or not criterion_id:
             raise ValueError(f"criterion_id가 올바르지 않습니다: {item!r}")
@@ -85,8 +137,21 @@ def build_dynamic_rubric_mapping(
 
         if not isinstance(criterion_name, str) or not criterion_name:
             raise ValueError(f"criterion_name이 올바르지 않습니다: {item!r}")
+        if description is not None and (not isinstance(description, str) or not description.strip()):
+            raise ValueError(f"description이 올바르지 않습니다: {item!r}")
         if not isinstance(max_score, (int, float)) or max_score <= 0:
             raise ValueError(f"max_score가 올바르지 않습니다: {item!r}")
+        if not isinstance(required_keywords, list) or not all(
+            isinstance(keyword, str) and keyword.strip() for keyword in required_keywords
+        ):
+            raise ValueError(f"required_keywords가 올바르지 않습니다: {item!r}")
+        if not isinstance(required_keyword_groups, list) or not all(
+            isinstance(group, list)
+            and group
+            and all(isinstance(keyword, str) and keyword.strip() for keyword in group)
+            for group in required_keyword_groups
+        ):
+            raise ValueError(f"required_keyword_groups가 올바르지 않습니다: {item!r}")
 
         if primary_persona_id not in committee:
             raise ValueError(
@@ -102,8 +167,7 @@ def build_dynamic_rubric_mapping(
                 f"evaluation_perspectives에 없습니다."
             )
 
-        normalized.append(
-            {
+        normalized_item = {
                 "criterion_id": criterion_id,
                 "criterion_name": criterion_name,
                 "max_score": max_score,
@@ -115,16 +179,64 @@ def build_dynamic_rubric_mapping(
                 "primary_perspective_id": primary_perspective_id,
                 "secondary_persona_id": secondary_persona_id,
             }
-        )
+        if description:
+            normalized_item["description"] = description.strip()
+        if required_keywords:
+            normalized_item["required_keywords"] = required_keywords
+        if required_keyword_groups:
+            normalized_item["required_keyword_groups"] = required_keyword_groups
+        normalized.append(normalized_item)
 
     total_max_score = sum(item["max_score"] for item in normalized)
+    normalized_bonus_rules: list[dict[str, Any]] = []
+    seen_bonus_ids: set[str] = set()
+    for rule in bonus_rules or []:
+        bonus_id = rule.get("bonus_id")
+        name = rule.get("name")
+        points = rule.get("points")
+        if not isinstance(bonus_id, str) or not bonus_id or bonus_id in seen_bonus_ids:
+            raise ValueError(f"bonus_id가 올바르지 않거나 중복되었습니다: {rule!r}")
+        if not isinstance(name, str) or not name:
+            raise ValueError(f"가점 name이 올바르지 않습니다: {rule!r}")
+        if not isinstance(points, (int, float)) or points <= 0:
+            raise ValueError(f"가점 points가 올바르지 않습니다: {rule!r}")
+        seen_bonus_ids.add(bonus_id)
+        normalized_bonus_rules.append(
+            {
+                "bonus_id": bonus_id,
+                "name": name,
+                "points": points,
+                "description": str(rule.get("description") or ""),
+                "evidence_keywords": [
+                    str(keyword)
+                    for keyword in (rule.get("evidence_keywords") or [])
+                    if str(keyword).strip()
+                ],
+                # 가점은 데이터 언급만으로 확정하지 않고 증빙 확인을 기본으로 한다.
+                "requires_verification": bool(rule.get("requires_verification", True)),
+            }
+        )
+    if not isinstance(bonus_max_score, (int, float)) or bonus_max_score < 0:
+        raise ValueError(f"bonus_max_score가 올바르지 않습니다: {bonus_max_score!r}")
+    if normalized_bonus_rules and bonus_max_score <= 0:
+        raise ValueError("bonus_rules가 있으면 bonus_max_score는 0보다 커야 합니다.")
 
-    return {
+    result = {
         **base_mapping,
-        "meta": {**base_mapping["meta"], "source_document_id": source_document_id, "dynamic": True},
+        "meta": {
+            **base_mapping["meta"],
+            "source_document_id": source_document_id,
+            "source_document_ids": source_document_ids or [source_document_id],
+            "dynamic": True,
+            "rubric_extraction_version": 2,
+        },
         "total_max_score": total_max_score,
         "rubric": normalized,
     }
+    if normalized_bonus_rules:
+        result["bonus_rules"] = normalized_bonus_rules
+        result["bonus_max_score"] = bonus_max_score
+    return result
 
 
 def build_routing(mapping: dict[str, Any]) -> dict[str, dict[str, str | None]]:

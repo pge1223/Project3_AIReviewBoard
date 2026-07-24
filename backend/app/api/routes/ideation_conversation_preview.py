@@ -54,6 +54,7 @@ from graph import (  # noqa: E402
     active_stage_for,
     bind_trace_context,
     configure_ideation_trace,
+    continue_ideation_expert_turn,
     finalize_ideation_conversation,
     is_late_request_event,
     reset_trace_context,
@@ -748,8 +749,24 @@ class ReplyRequest(BaseModel):
     # /reply, /reply/stream 호출과 하위 호환) — 값이 있으면 지정 위원이 먼저 답하는
     # reply_to_interjection 경로로 라우팅한다(아래 reply_conversation_stream 참고).
     target_speaker_id: Optional[str] = None
+    # 사용자가 누구의 발언에 반응하는지와 누가 먼저 답할지는 의미가 다르므로 별도 보존한다.
+    opinion_target_speaker_id: Optional[str] = None
+    interrupted_speaker_id: Optional[str] = None
     interrupted_request_id: Optional[str] = None
     active_issue_id: Optional[str] = None
+    # 재인/Claude(2026-07-23, 아바타 페이싱 연동 — 실측: "진행자 2번·기획 1번·개발 1번이
+    # 2초 간격으로 그냥 다 나왔다"): true면 이 reply가 새 라운드의 첫 위원 발언을 만들
+    # 때도(예: 아이디어 후보 선택 직후) 그 발언 1건에서 멈춘다 — reply_ideation_conversation의
+    # stop_after_expert_turn 그대로. 기본값 False로 기존 클라이언트(아바타 없는 테스트 등)는
+    # 전혀 영향받지 않는다 — 아바타가 있는 화면만 매번 true로 보낸다.
+    single_turn: bool = False
+
+
+class ContinueTurnRequest(BaseModel):
+    # 재인/Claude(2026-07-23, 아바타 페이싱 연동): 새 사용자 발언이 없는 호출이라
+    # ReplyRequest와 달리 message 필드가 없다 — 아바타가 방금 발언 재생 도중(끝나기 3초
+    # 전) "다음 위원 미리 준비" 신호로 부르는 용도.
+    model: str = Field(default="")
 
 
 class FinalizeRequest(BaseModel):
@@ -830,7 +847,11 @@ async def reply_conversation(session_id: str, request: ReplyRequest):
     try:
         message = _clamp_text(request.message, "message")
         trace_event("IDEATION_REQUEST_STARTED", mode="sync", user_message=sanitize_preview(message))
-        if previous_state.get("phase") in ("expert_discussion", "awaiting_user_decision"):
+        if previous_state.get("phase") in (
+            "expert_discussion",
+            "awaiting_user_decision",
+            "discussion_complete",
+        ):
             trace_event(
                 "IDEATION_USER_INTERJECTION",
                 issue=previous_state.get("active_issue_id"),
@@ -870,6 +891,7 @@ async def reply_conversation(session_id: str, request: ReplyRequest):
                 ground_claims=ground_claims,
                 index_target_evidence=index_target_evidence,
                 evidence_planner=evidence_planner,
+                stop_after_expert_turn=request.single_turn,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
@@ -917,6 +939,25 @@ async def reply_conversation_stream(session_id: str, request: ReplyRequest, http
     target_speaker_id = request.target_speaker_id
     if target_speaker_id is not None and target_speaker_id not in ("planning_expert", "dev_expert", "both"):
         raise HTTPException(status_code=400, detail="target_speaker_id는 planning_expert/dev_expert/both 중 하나여야 합니다.")
+    opinion_target_speaker_id = request.opinion_target_speaker_id
+    if opinion_target_speaker_id is not None and opinion_target_speaker_id not in (
+        "planning_expert",
+        "dev_expert",
+        "both",
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="opinion_target_speaker_id는 planning_expert/dev_expert/both 중 하나여야 합니다.",
+        )
+    interrupted_speaker_id = request.interrupted_speaker_id
+    if interrupted_speaker_id is not None and interrupted_speaker_id not in (
+        "planning_expert",
+        "dev_expert",
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="interrupted_speaker_id는 planning_expert/dev_expert 중 하나여야 합니다.",
+        )
 
     try:
         record = _acquire_session_record_or_404(session_id)
@@ -970,16 +1011,21 @@ async def reply_conversation_stream(session_id: str, request: ReplyRequest, http
                 "IDEATION_REQUEST_STARTED",
                 mode="stream",
                 target_speaker=target_speaker_id,
+                opinion_target_speaker=opinion_target_speaker_id,
+                interrupted_speaker=interrupted_speaker_id,
                 user_message=sanitize_preview(message),
             )
             is_user_interjection = target_speaker_id is not None or previous_state.get("phase") in (
                 "expert_discussion",
                 "awaiting_user_decision",
+                "discussion_complete",
             )
             if is_user_interjection:
                 trace_event(
                     "IDEATION_USER_INTERJECTION",
                     target_speaker=target_speaker_id,
+                    opinion_target_speaker=opinion_target_speaker_id,
+                    interrupted_speaker=interrupted_speaker_id,
                     issue=previous_state.get("active_issue_id"),
                     interrupted_request_id=None,
                     content_length=len(message),
@@ -996,6 +1042,8 @@ async def reply_conversation_stream(session_id: str, request: ReplyRequest, http
                     previous_state=previous_state,
                     user_message=message,
                     target_speaker_id=target_speaker_id,
+                    opinion_target_speaker_id=opinion_target_speaker_id or target_speaker_id,
+                    interrupted_speaker_id=interrupted_speaker_id,
                     llm_call=llm_call,
                     evidence_lookup=evidence_lookup,
                     ground_claims=ground_claims,
@@ -1011,6 +1059,7 @@ async def reply_conversation_stream(session_id: str, request: ReplyRequest, http
                     ground_claims=ground_claims,
                     index_target_evidence=index_target_evidence,
                     evidence_planner=evidence_planner,
+                    stop_after_expert_turn=request.single_turn,
                 )
             _store.update(session_id, state)
             sink({"type": "state", "state": _serialize_state(state)})
@@ -1070,6 +1119,140 @@ async def reply_conversation_stream(session_id: str, request: ReplyRequest, http
             return event_queue.get(timeout=_DISCONNECT_POLL_SECONDS)
         except queue.Empty:
             return None  # 타임아웃 — 아직 다음 이벤트가 없다(정상, disconnect 재확인용).
+
+    async def event_generator():
+        loop = asyncio.get_event_loop()
+        while True:
+            if await http_request.is_disconnected():
+                break
+            item = await loop.run_in_executor(None, _get_next_event)
+            if item is None:
+                continue
+            if item is _STREAM_DONE_SENTINEL:
+                break
+            yield (json.dumps(item, ensure_ascii=False) + "\n").encode("utf-8")
+
+    return StreamingResponse(event_generator(), media_type="application/x-ndjson; charset=utf-8")
+
+
+@router.post("/{session_id}/continue-turn/stream")
+async def continue_expert_turn_stream(session_id: str, request: ContinueTurnRequest, http_request: Request):
+    """재인/Claude(2026-07-23, 아바타 페이싱 연동): 새 사용자 발언 없이, 지금 진행 중인
+    라운드에서 다음 위원(기획/개발) 발언 딱 1건만 더 만들어 스트리밍한다 — POST
+    /reply/stream과 같은 NDJSON/세션 락/취소 메커니즘을 그대로 재사용하되, 사용자 입력을
+    반영하는 대신 continue_ideation_expert_turn(그래프의 기존 _route_next_expert_turn 결과를
+    그대로 따르는 함수 — 회의 로직은 바뀌지 않는다)을 부른다.
+
+    아바타가 방금 위원 발언을 재생하는 도중(재생 끝나기 3초 전) "다음 위원 미리 준비"
+    신호로 호출하는 용도다. previous_state["phase"]가 "expert_discussion"이 아니면(라운드가
+    이미 끝났거나 사용자 입력 대기 중) 400을 반환한다 — 프론트가 avatarPacingTimer를 잘못된
+    시점에 걸었다는 뜻이므로 방어적으로 막는다."""
+    _require_preview_enabled()
+    _require_streaming_enabled()
+
+    try:
+        record = _acquire_session_record_or_404(session_id)
+    except _SessionBusyError:
+        raise HTTPException(status_code=409, detail="이 세션은 이미 다른 요청을 처리하고 있습니다.")
+    previous_state = record.state
+
+    if previous_state.get("phase") != "expert_discussion":
+        _store.release(session_id)
+        raise HTTPException(
+            status_code=400,
+            detail=f"continue-turn은 phase가 'expert_discussion'일 때만 호출할 수 있습니다(현재: {previous_state.get('phase')!r}).",
+        )
+
+    model = _effective_model(request.model)
+    event_queue: "queue.Queue[object]" = queue.Queue()
+
+    request_id = f"REQ-{uuid.uuid4().hex[:10]}"
+    cancel_event = threading.Event()
+    record.active_request_id = request_id
+    record.cancel_event = cancel_event
+
+    def sink(event: dict) -> None:
+        if is_late_request_event(event.get("request_id"), request_id):
+            return
+        event.setdefault("request_id", request_id)
+        event_queue.put(event)
+
+    evidence_lookup = _evidence_lookup_for(
+        record.use_rag,
+        record.project_id,
+        session_id=session_id,
+        selected_candidate_document_id=previous_state.get("selected_idea_document_id"),
+    )
+    ground_claims = _ground_claims_for(record.use_rag)
+    index_target_evidence = _index_target_evidence_for(record.use_rag, record.project_id)
+    evidence_planner = _evidence_planner_for(record.use_rag)
+
+    def worker() -> None:
+        trace_tokens = bind_trace_context(session_id, request_id)
+        try:
+            stream_chat_completion, call_chat_completion = _build_streaming_backends(session_id, model)
+            llm_call = make_streaming_llm_call(
+                session_id,
+                sink,
+                stream_chat_completion=stream_chat_completion,
+                call_chat_completion=call_chat_completion,
+                max_calls=_MAX_LLM_CALLS_PER_REQUEST,
+                cancel_event=cancel_event,
+                request_id=request_id,
+            )
+            sink({"type": "request_started", "request_id": request_id})
+            trace_event("IDEATION_REQUEST_STARTED", mode="continue_turn")
+            state = continue_ideation_expert_turn(
+                previous_state=previous_state,
+                llm_call=llm_call,
+                evidence_lookup=evidence_lookup,
+                ground_claims=ground_claims,
+                index_target_evidence=index_target_evidence,
+                evidence_planner=evidence_planner,
+            )
+            _store.update(session_id, state)
+            sink({"type": "state", "state": _serialize_state(state)})
+            if state.get("phase") == "failed":
+                failed_node = state.get("failed_node")
+                sink(
+                    {
+                        "type": "error",
+                        "code": "IDEATION_CONV_NODE_FAILED",
+                        "message": f"{failed_node or '알 수 없는'} 노드에서 회의 처리가 실패했습니다.",
+                        "failed_node": failed_node,
+                    }
+                )
+        except IdeationCancelled as exc:
+            logger.info("[%s] continue-turn 요청이 사용자에 의해 취소됨 request_id=%s", session_id, request_id)
+            if exc.partial_state is not None:
+                _store.update(session_id, exc.partial_state)
+            sink({"type": "cancelled", "request_id": request_id})
+        except ValueError as exc:
+            sink({"type": "error", "code": "invalid_request", "message": str(exc)})
+        except Exception:
+            logger.exception("[ideation-conversation] continue-turn 처리 실패 session_id=%s", session_id)
+            sink(
+                {
+                    "type": "error",
+                    "code": "llm_failure",
+                    "message": "답변 처리 중 오류가 발생했습니다. 서버 로그를 확인하세요.",
+                }
+            )
+        finally:
+            record.active_request_id = None
+            record.cancel_event = None
+            _store.release(session_id)
+            trace_event("IDEATION_SESSION_UNLOCKED", mode="continue_turn")
+            reset_trace_context(trace_tokens)
+            event_queue.put(_STREAM_DONE_SENTINEL)
+
+    threading.Thread(target=worker, daemon=True).start()
+
+    def _get_next_event() -> object:
+        try:
+            return event_queue.get(timeout=_DISCONNECT_POLL_SECONDS)
+        except queue.Empty:
+            return None
 
     async def event_generator():
         loop = asyncio.get_event_loop()
@@ -1284,6 +1467,33 @@ async def finalize_conversation(session_id: str, request: FinalizeRequest):
         return _serialize_state(state)
     finally:
         _store.release(session_id)
+
+
+@router.get("/_debug/sessions")
+async def _debug_list_sessions():
+    """재인/Claude(2026-07-23) — 임시 디버그 전용 라우트. 실측 중복 메시지/멈춤 버그를
+    브라우저 devtools 없이 서버 쪽에서 직접 확인하려고 추가했다. 조사 끝나면 지운다."""
+    _require_preview_enabled()
+    with _store._lock:
+        items = sorted(_store._sessions.items(), key=lambda kv: kv[1].last_active_at, reverse=True)
+        out = []
+        for sid, rec in items[:10]:
+            msgs = rec.state.get("messages", [])
+            out.append(
+                {
+                    "session_id": sid,
+                    "phase": rec.state.get("phase"),
+                    "last_active_at": rec.last_active_at,
+                    "message_count": len(msgs),
+                    "forced_next_speaker": rec.state.get("forced_next_speaker"),
+                    "active_request_id": rec.active_request_id,
+                    "messages": [
+                        {"message_id": m["message_id"], "speaker_id": m["speaker_id"], "content": (m.get("content") or "")[:60]}
+                        for m in msgs
+                    ],
+                }
+            )
+        return out
 
 
 @router.get("/{session_id}")

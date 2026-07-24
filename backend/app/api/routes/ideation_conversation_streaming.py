@@ -183,13 +183,21 @@ def make_streaming_llm_call(
     말풍선을 정리할 수 있게 하되, canonical 텍스트로 이어지지 않는다."""
     call_count = 0
     reset_tokens: dict[str, str] = {}  # _prompt_key(prompt) -> 그 프롬프트로 시작했던 stream message_id
+    # 용준/Claude(2026-07-23, 요청: 스트리밍 UX 버그 수정) — 방금 discard된(하지만 아직 그
+    # 자리를 이어받을 새 message_start가 나오지 않은) stream message_id. 다음 message_start가
+    # 이 값을 supersedes_message_id로 실어 보내면, 프런트는 "새 말풍선을 새로 추가"하는 대신
+    # "검토 중이던 자리에 그대로 이어붙이는" 교체로 처리할 수 있다. discard_streamed_prompt와
+    # llm_call은 항상 같은 그래프 노드 호출 흐름 안에서(중간에 다른 논리적 발언이 끼어들 수
+    # 없게) 짝지어 호출되므로, 이 값을 소비하자마자 즉시 비워도 다른 위원의 발언을 잘못
+    # 이어받을 위험이 없다.
+    pending_supersede_id: str | None = None
 
     def _check_cancelled() -> None:
         if cancel_event is not None and cancel_event.is_set():
             raise IdeationCancelled(session_id, request_id)
 
     def llm_call(prompt: str) -> str:
-        nonlocal call_count
+        nonlocal call_count, pending_supersede_id
         _check_cancelled()
         call_count += 1
         if call_count > max_calls:
@@ -213,22 +221,36 @@ def make_streaming_llm_call(
         previous_stream_id = reset_tokens.get(key)
         if previous_stream_id:
             # 정확히 같은 prompt가 다시 왔다 — 이전 시도의 구조화 응답이 검증에 실패해
-            # 재시도하는 중이다. 화면에 남아있는 임시 텍스트를 지운다(요청: "같은 답변이
-            # 화면에 중복으로 쌓이면 안 됩니다").
-            sink({"type": "message_reset", "message_id": previous_stream_id})
+            # 재시도하는 중이다. 보통은 discard_streamed_prompt가 먼저 불려 reset_tokens에서
+            # 이미 pop된 뒤라 이 분기를 타지 않지만(중복 reset 방지), 방어적으로 남겨둔다.
+            sink(
+                {
+                    "type": "message_reset",
+                    "message_id": previous_stream_id,
+                    "reason": "retry_same_prompt",
+                    "will_retry": True,
+                    "request_id": request_id,
+                }
+            )
+            pending_supersede_id = previous_stream_id
 
         stream_id = f"STREAM-{uuid.uuid4().hex[:10]}"
         reset_tokens[key] = stream_id
         sink({"type": "phase", "label": f"{display_name}이(가) 응답을 작성하고 있습니다"})
-        sink(
-            {
-                "type": "message_start",
-                "message_id": stream_id,
-                "speaker_id": persona_id,
-                "speaker_name": display_name,
-                "request_id": request_id,
-            }
-        )
+        message_start_event = {
+            "type": "message_start",
+            "message_id": stream_id,
+            "speaker_id": persona_id,
+            "speaker_name": display_name,
+            "request_id": request_id,
+        }
+        if pending_supersede_id:
+            # 직전에 discard된(검토 중 상태로 남아있는) 말풍선의 자리를 이 새 스트림이
+            # 이어받는다는 것을 프런트에 명시적으로 알린다 — speaker_id 일치만으로 추정하지
+            # 않기 위함이다.
+            message_start_event["supersedes_message_id"] = pending_supersede_id
+            pending_supersede_id = None
+        sink(message_start_event)
         trace_event(
             "IDEATION_STREAM_MESSAGE_STARTED",
             speaker=persona_id,
@@ -300,21 +322,37 @@ def make_streaming_llm_call(
             raise IdeationCancelled(session_id, request_id)
         return "".join(full_raw_parts)
 
-    def discard_streamed_prompt(prompt: str, reason: str) -> None:
-        """검증에 실패한 임시 초안을 프런트에서 제거한다.
+    def discard_streamed_prompt(prompt: str, reason: str, will_retry: bool = True) -> None:
+        """검증에 실패한(또는 grounding 재시도로 대체될) 임시 초안을 프런트에서 제거하지
+        않고 "검토 중" 상태로 전환시킨다.
 
-        canonical state에는 원래 저장되지 않지만 두 번째 실패 뒤에는 다음 재시도가 없어
-        화면에 남을 수 있으므로, 명시적인 reset 이벤트를 보낸다.
+        will_retry=True면 바로 이어서 같은 논리적 발언의 재시도 스트림이 시작될 예정이라는
+        뜻이고(프런트는 검토 중 표시를 유지하다가 다음 message_start로 교체), False면 더 이상
+        재시도가 없고(구조화 검증 2회 실패) 서버가 만든 안전한 fallback 발언이 담긴 canonical
+        state가 도착할 때까지 검토 중 표시를 유지해야 한다는 뜻이다. 어느 쪽이든 canonical
+        state에는 원래 이 임시 초안이 저장되지 않는다 — reset은 화면 표시만 바꾼다.
         """
+        nonlocal pending_supersede_id
         # pop해서 다음 재시도 시작 시 같은 메시지에 reset을 중복 전송하지 않는다.
         stream_id = reset_tokens.pop(_prompt_key(prompt), None)
         if not stream_id:
             return
-        sink({"type": "message_reset", "message_id": stream_id})
+        sink(
+            {
+                "type": "message_reset",
+                "message_id": stream_id,
+                "reason": reason,
+                "will_retry": will_retry,
+                "request_id": request_id,
+            }
+        )
+        if will_retry:
+            pending_supersede_id = stream_id
         trace_event(
             "IDEATION_STREAM_MESSAGE_DISCARDED",
             message_id=stream_id,
             reason=reason,
+            will_retry=will_retry,
         )
 
     setattr(llm_call, "discard_streamed_prompt", discard_streamed_prompt)

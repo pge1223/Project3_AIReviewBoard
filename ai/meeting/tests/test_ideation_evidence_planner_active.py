@@ -153,12 +153,21 @@ class _ClaimAwareLLM:
     import re as _re
 
     _REF_RE = _re.compile(r'"ref":\s*"([^"]+)"')
+    _CLAIM_TYPE_RE = _re.compile(r'"claim_type":\s*"([^"]+)"')
+    _ACTIVE_ISSUE_RE = _re.compile(r"\[active_issue_id\]\s*\n([^\r\n]+)")
 
-    def __init__(self, cite_ref=None, active_issue_id="issue_active", force_no_claims=False):
+    def __init__(
+        self,
+        cite_ref=None,
+        active_issue_id=None,
+        force_no_claims=False,
+        claim_type_override=None,
+    ):
         self.captured_prompts: list[str] = []
         self.cite_ref = cite_ref
         self.active_issue_id = active_issue_id
         self.force_no_claims = force_no_claims
+        self.claim_type_override = claim_type_override
 
     def __call__(self, prompt: str) -> str:
         self.captured_prompts.append(prompt)
@@ -194,10 +203,26 @@ class _ClaimAwareLLM:
             )
 
         refs_in_prompt = self._REF_RE.findall(prompt)
+        issue_match = self._ACTIVE_ISSUE_RE.search(prompt)
+        active_issue_id = self.active_issue_id or (
+            issue_match.group(1).strip() if issue_match else "problem"
+        )
+        selected_claim_type = (
+            self.claim_type_override
+            or (
+                "user_provided_fact"
+                if '"document_role": "target"' in prompt
+                else "document_fact"
+            )
+        )
         # 실제 ai.rag.evidence_linking.relevance.is_relevant_candidate는 claim 텍스트와 인용된
         # 청크 본문의 키워드가 겹쳐야 관련성 있다고 판단한다 — 두 마커 단어를 모두 claim
         # 텍스트에 담아, 실제로 prompt에 주입된 쪽(target 또는 criteria)과는 항상 겹치게 한다.
-        claim_text = "TARGET_ONLY_MARKER CRITERIA_ONLY_MARKER 관련 사실이 문서에서 확인됩니다"
+        claim_text = (
+            "TARGET_ONLY_MARKER 사용자가 선택한 아이디어의 실제 내용입니다."
+            if selected_claim_type == "user_provided_fact"
+            else "CRITERIA_ONLY_MARKER 공모전 평가기준의 실제 내용입니다."
+        )
         claims = []
         if self.force_no_claims:
             claims = []
@@ -206,7 +231,7 @@ class _ClaimAwareLLM:
                 {
                     "claim_id": "claim_1",
                     "text": claim_text,
-                    "claim_type": "document_fact",
+                    "claim_type": selected_claim_type,
                     "evidence_refs": [self.cite_ref],
                 }
             ]
@@ -215,7 +240,7 @@ class _ClaimAwareLLM:
                 {
                     "claim_id": "claim_1",
                     "text": claim_text,
-                    "claim_type": "document_fact",
+                    "claim_type": selected_claim_type,
                     "evidence_refs": [refs_in_prompt[0]],
                 }
             ]
@@ -223,7 +248,7 @@ class _ClaimAwareLLM:
         return json.dumps(
             {
                 "stance": "보완",
-                "spoken_text": f"발화: {speaker}의 판단입니다",
+                "spoken_text": f"문제와 영향에 관한 {speaker}의 판단입니다",
                 "judgment": "판단",
                 "reason": "근거를 반영한 판단",
                 "suggestion": "제안",
@@ -236,7 +261,7 @@ class _ClaimAwareLLM:
                 "referenced_message_ids": [],
                 "claims": claims,
                 "next_action": None,
-                "active_issue_id": self.active_issue_id,
+                "active_issue_id": active_issue_id,
                 "active_issue_title": "활성 쟁점",
                 "new_information": ["새로운 판단 근거"],
                 "proposal": None,
@@ -452,6 +477,63 @@ def test_valid_empty_plan_does_not_fall_back_to_full_evidence():
     assert "CRITERIA_ONLY_MARKER" not in prompt
 
 
+def test_valid_empty_plan_skips_freeform_expert_generation_when_grounding_is_active(monkeypatch):
+    def empty_plan_factory(persona_id, effective_issue, retrieved_evidence, runtime_scope, shadow_history):
+        return {
+            "plan_id": "EP-valid-empty-strict",
+            "policy_version": "test-v1",
+            "persona_id": persona_id,
+            "issue": {
+                "issue_id": effective_issue["issue_id"],
+                "title": effective_issue["title"],
+                "query": effective_issue.get("query", ""),
+            },
+            "eligible_evidence_count": 0,
+            "grounded_claim_required": False,
+            "expert_judgment_required": True,
+            "selected_evidence": [],
+            "empty_plan_reason": "no_issue_relevant_evidence",
+            "validation": {"valid": True, "errors": []},
+        }
+
+    events: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "graph.ideation_conv_nodes.trace_event",
+        lambda name, **fields: events.append((name, fields)),
+    )
+    llm = _ClaimAwareLLM()
+    state = start_ideation_conversation(
+        session_id="S-P2-VALID-EMPTY-STRICT",
+        notice_and_criteria=NOTICE_AND_CRITERIA,
+        user_idea=USER_IDEA,
+        llm_call=llm,
+        evidence_lookup=_multi_item_lookup(),
+        evidence_planner=_FakeActiveEvidencePlanner(
+            plan_factory=empty_plan_factory,
+            active=True,
+        ),
+        ground_claims=_real_ground_claims(),
+    )
+
+    expert_messages = [
+        message
+        for message in state["messages"]
+        if message["speaker_id"] in ("planning_expert", "dev_expert")
+    ]
+    assert expert_messages
+    assert expert_messages[0]["structured"]["evidence_first_skipped"] is True
+    assert expert_messages[0]["claims"] == []
+    assert expert_messages[0]["linked_evidence_refs"] == []
+    assert "근거를 찾지 못해" in expert_messages[0]["content"]
+    assert not [prompt for prompt in llm.captured_prompts if "[의견 규칙]" in prompt]
+    supplemental_events = [
+        fields for name, fields in events if name == "IDEATION_SUPPLEMENTAL_RETRIEVAL"
+    ]
+    assert supplemental_events
+    assert all(event["grounding_improved"] is False for event in supplemental_events)
+    assert all(event["new_evidence_count"] == 0 for event in supplemental_events)
+
+
 # ---------------------------------------------------------------------------
 # 9)+10)+11) prompt와 grounding이 동일한 selected evidence 집합을 쓰고, ref가 실제
 # chunk_id로 변환되며, criteria/target 둘 다 정상 연결된다.
@@ -486,6 +568,29 @@ def test_prompt_and_grounding_share_same_selected_evidence_and_ref_resolves_to_c
     assert first["claims"][0]["evidence_refs"] == [selected_ref]
 
 
+def test_active_turn_without_llm_claims_is_replaced_by_grounded_evidence_anchor():
+    llm = _ClaimAwareLLM(force_no_claims=True)
+    state = start_ideation_conversation(
+        session_id="S-P2-EVIDENCE-FIRST-FALLBACK",
+        notice_and_criteria=NOTICE_AND_CRITERIA,
+        user_idea=USER_IDEA,
+        llm_call=llm,
+        evidence_lookup=_multi_item_lookup(),
+        evidence_planner=_FakeActiveEvidencePlanner(active=True),
+        ground_claims=_real_ground_claims(),
+    )
+
+    first = next(
+        message
+        for message in state["messages"]
+        if message["speaker_id"] in ("planning_expert", "dev_expert")
+    )
+    assert first["structured"]["evidence_first_fallback"] is True
+    assert first["linked_evidence_refs"] == ["CHUNK-TARGET-1"]
+    assert first["grounded_claim_count"] == 1
+    assert "근거 자료에는" in first["content"]
+
+
 def test_criteria_and_target_evidence_both_link_when_selected():
     """target/criteria를 각각 별도로 선택하는 두 세션을 돌려, 두 role 모두 grounding이
     정상적으로 chunk_id를 연결하는지 확인한다(요청 11번)."""
@@ -517,7 +622,10 @@ def test_grounding_retry_does_not_re_invoke_planner_or_change_evidence():
     최초 prompt와 동일한지 확인한다."""
     lookup = _multi_item_lookup()
     planner = _FakeActiveEvidencePlanner(active=True)
-    llm = _ClaimAwareLLM(cite_ref="E-DOES-NOT-EXIST")
+    llm = _ClaimAwareLLM(
+        cite_ref="E-DOES-NOT-EXIST",
+        claim_type_override="document_fact",
+    )
 
     state = start_ideation_conversation(
         session_id="S-P2-RETRY", notice_and_criteria=NOTICE_AND_CRITERIA, user_idea=USER_IDEA,
@@ -530,9 +638,15 @@ def test_grounding_retry_does_not_re_invoke_planner_or_change_evidence():
     assert _evidence_section(discussion_prompts[0]) == _evidence_section(discussion_prompts[1]), (
         "재시도에서도 동일한 evidence가 주입돼야 한다"
     )
-    # planner는 첫 발언당 정확히 한 번만 호출된다(재시도로 추가 호출되지 않는다).
-    planning_calls = [c for c in planner.calls if c["persona_id"] == "planning_expert"]
-    assert len(planning_calls) == 1
+    # planner는 각 기획 발언당 정확히 한 번만 호출된다(grounding 재시도로 추가 호출되지 않는다).
+    planning_calls = [
+        c
+        for c in planner.calls
+        if c["persona_id"] == "planning_expert"
+        and c["effective_issue"].get("planner_stage") != "supplemental_retrieval"
+    ]
+    planning_messages = [m for m in state["messages"] if m["speaker_id"] == "planning_expert"]
+    assert len(planning_calls) == len(planning_messages)
 
 
 # ---------------------------------------------------------------------------
@@ -540,7 +654,7 @@ def test_grounding_retry_does_not_re_invoke_planner_or_change_evidence():
 # ---------------------------------------------------------------------------
 
 
-def test_issue_mismatch_logs_compliance_and_does_not_block_turn(caplog):
+def test_issue_mismatch_is_rejected_and_safe_fallback_keeps_effective_issue(caplog):
     lookup = _multi_item_lookup()
     planner = _FakeActiveEvidencePlanner(active=True)
     # effective_issue의 issue_id는 resolve_effective_issue가 결정하는 결정적 값이라
@@ -560,7 +674,13 @@ def test_issue_mismatch_logs_compliance_and_does_not_block_turn(caplog):
     assert state["phase"] != "failed"
     rendered = "\n".join(r.getMessage() for r in caplog.records)
     assert "[IDEATION_EVIDENCE_PLAN_COMPLIANCE]" in rendered
-    assert "issue_match=false" in rendered
+    assert 'reason="active_issue_id_mismatch"' in rendered
+    assert "issue_match=true" in rendered
+    first = next(
+        message for message in state["messages"]
+        if message["speaker_id"] in ("planning_expert", "dev_expert")
+    )
+    assert first["structured"]["active_issue_id"] == "problem"
 
 
 def test_active_evidence_plan_logs_active_and_compliance_events(caplog):
@@ -610,7 +730,7 @@ def test_fallback_logs_fallback_event_with_reason(caplog):
 # ---------------------------------------------------------------------------
 
 
-def test_active_planner_still_invoked_exactly_once_per_turn():
+def test_active_primary_planner_invoked_once_per_turn_and_supplemental_calls_are_marked():
     """SHADOW+DISCUSSION이 동시에 켜진 상황을 흉내낸다 — backend에서는 같은 _evidence_planner_for
     콜러블 하나가 두 플래그를 동시에 반영해 active=True로 세팅될 뿐, 콜러블 자체가 두 개
     주입되는 일은 없다(요청: 중복 실행 금지). ai/meeting 레이어에서는 "콜러블 하나가 턴당
@@ -627,7 +747,18 @@ def test_active_planner_still_invoked_exactly_once_per_turn():
     # planner는 유일한 호출 지점(_run_shadow_evidence_planner)에서만 불린다 — SHADOW와
     # DISCUSSION이 동시에 켜져 있어도(이 fake는 두 플래그가 함께 켜졌을 때와 동일하게
     # active=True다) discussion 발언 한 건당 정확히 한 번만 호출돼야 한다(중복 실행 없음).
-    assert len(planner.calls) == len(discussion_turns)
+    primary_calls = [
+        call
+        for call in planner.calls
+        if call["effective_issue"].get("planner_stage") != "supplemental_retrieval"
+    ]
+    supplemental_calls = [
+        call
+        for call in planner.calls
+        if call["effective_issue"].get("planner_stage") == "supplemental_retrieval"
+    ]
+    assert len(primary_calls) == len(discussion_turns)
+    assert len(supplemental_calls) <= len(discussion_turns)
 
 
 # ---------------------------------------------------------------------------

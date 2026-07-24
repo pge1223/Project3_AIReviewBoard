@@ -497,6 +497,16 @@ function CriterionCard({ c, before, index, animKey, isDev, profile, accent, real
 
       <CompareBars before={before} after={c.score} max={c.max ?? CRITERION_MAX} animKey={animKey} accent={accent?.bar} />
 
+      {c.calibration && (
+        <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 10, background: 'rgba(224,96,61,0.08)', border: '1px solid rgba(224,96,61,0.2)', color: '#7a442f', fontSize: 12.5, lineHeight: 1.55 }}>
+          <b>근거 기반 점수 상한 적용:</b>{' '}
+          위원 제안 {c.calibration.original_score}점 → 상한 {c.calibration.cap_score}점
+          {(c.calibration.signals || []).length > 0 && (
+            <span> · {(c.calibration.signals || []).map((s) => s.reason).join(' · ')}</span>
+          )}
+        </div>
+      )}
+
       {c.feedback.length > 0 ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 14 }}>
           {c.feedback.map((f, fi) => <FeedbackItem key={f.id} f={f} guide={guideFor(f, fi)} />)}
@@ -668,6 +678,7 @@ function reportToVersions(report) {
       committee,
       score: b.raw_score ?? 0,
       max: b.max_score ?? CRITERION_MAX,
+      calibration: b.calibration || null,
       judgment: d.judgment || 'acceptable',
       feedback,
     }
@@ -722,6 +733,7 @@ function buildVersionsFromHistory(versions) {
         committee: c.committee || 'planning',
         score: c.score ?? 0,
         max: c.max ?? CRITERION_MAX,
+        calibration: c.calibration || null,
         judgment: c.judgment || 'acceptable',
         feedback,
       }

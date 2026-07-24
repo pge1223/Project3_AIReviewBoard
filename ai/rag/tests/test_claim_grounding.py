@@ -106,7 +106,139 @@ def test_irrelevant_chunk_citation_is_filtered_by_relevance():
     ]
     result = ground_claims(claims, EVIDENCE)
     assert result["unsupported_claim_count"] == 1
-    assert result["unsupported_claims"][0]["reason"] == "evidence_not_relevant"
+    assert result["unsupported_claims"][0]["reason"] in {
+        "evidence_not_relevant",
+        "insufficient_claim_coverage",
+    }
+
+
+def test_general_criteria_question_cannot_prove_specific_product_effect():
+    evidence = [
+        {
+            "chunk_id": "CRITERIA-1",
+            "document_role": "criteria",
+            "document_name": "WSCE2026 공고문",
+            "section": "평가 기준",
+            "text": "AI 기술을 활용한 도시 운영 혁신이 이루어졌는가?",
+        }
+    ]
+    claims = [
+        {
+            "claim_id": "claim_1",
+            "text": "AI 경고 시스템은 도시 범죄를 예측하고 시민 안전을 향상시킨다.",
+            "claim_type": "document_fact",
+            "evidence_refs": ["CRITERIA-1"],
+        }
+    ]
+    result = ground_claims(claims, evidence)
+    assert result["evidence_status"] == "ungrounded"
+    assert result["unsupported_claims"][0]["reason"] == "criteria_scope_overreach"
+
+
+def test_criteria_chunk_can_support_fact_about_the_evaluation_criterion():
+    evidence = [
+        {
+            "chunk_id": "CRITERIA-1",
+            "document_role": "criteria",
+            "document_name": "WSCE2026 공고문",
+            "section": "평가 기준",
+            "text": "AI 기술을 활용한 도시 운영 혁신이 이루어졌는가?",
+        }
+    ]
+    claims = [
+        {
+            "claim_id": "claim_1",
+            "text": "AI 기술을 활용한 도시 운영 혁신 여부가 평가 항목에 포함된다.",
+            "claim_type": "document_fact",
+            "evidence_refs": ["CRITERIA-1"],
+        }
+    ]
+    result = ground_claims(claims, evidence)
+    assert result["evidence_status"] == "grounded"
+
+
+def test_exact_criteria_question_quote_is_not_mistaken_for_product_capability():
+    evidence = [
+        {
+            "chunk_id": "CRITERIA-1",
+            "document_role": "criteria",
+            "text": "AI 기술이 실제 도시 문제 해결 및 다양한 서비스에 적용 가능한가?",
+        }
+    ]
+    claims = [
+        {
+            "claim_id": "claim_1",
+            "text": "AI 기술이 실제 도시 문제 해결 및 다양한 서비스에 적용 가능한가?",
+            "claim_type": "document_fact",
+            "evidence_refs": ["CRITERIA-1"],
+        }
+    ]
+    result = ground_claims(claims, evidence)
+    assert result["evidence_status"] == "grounded"
+
+
+def test_document_role_and_claim_type_must_match():
+    evidence = [
+        {
+            "chunk_id": "TARGET-1",
+            "document_role": "target",
+            "text": "사용자는 IoT 센서로 대기질 데이터를 수집하는 아이디어를 제안했다.",
+        }
+    ]
+    claims = [
+        {
+            "claim_id": "claim_1",
+            "text": "사용자는 IoT 센서로 대기질 데이터를 수집하는 아이디어를 제안했다.",
+            "claim_type": "document_fact",
+            "evidence_refs": ["TARGET-1"],
+        }
+    ]
+    result = ground_claims(claims, evidence)
+    assert result["unsupported_claims"][0]["reason"] == "claim_type_document_role_mismatch"
+
+
+def test_expert_judgment_cannot_be_counted_as_document_grounded():
+    evidence = [
+        {
+            "chunk_id": "CRITERIA-1",
+            "document_role": "criteria",
+            "text": "혁신성과 실현 가능성을 평가한다.",
+        }
+    ]
+    claims = [
+        {
+            "claim_id": "claim_1",
+            "text": "혁신성을 높이려면 실시간 분석 기능을 추가하는 편이 좋다.",
+            "claim_type": "expert_judgment",
+            "evidence_refs": ["CRITERIA-1"],
+        }
+    ]
+    result = ground_claims(claims, evidence)
+    assert result["linked_evidence_count"] == 0
+    assert result["unsupported_claims"][0]["reason"] == "expert_judgment_cannot_be_document_grounded"
+
+
+def test_factual_claim_requires_coverage_beyond_one_shared_keyword():
+    evidence = [
+        {
+            "chunk_id": "CRITERIA-1",
+            "document_role": "criteria",
+            "text": "사업의 실현 가능성을 평가한다.",
+        }
+    ]
+    claims = [
+        {
+            "claim_id": "claim_1",
+            "text": "사업은 전국 지자체의 실시간 교통 데이터를 자동 수집한다.",
+            "claim_type": "document_fact",
+            "evidence_refs": ["CRITERIA-1"],
+        }
+    ]
+    result = ground_claims(claims, evidence)
+    assert result["unsupported_claims"][0]["reason"] in {
+        "criteria_scope_overreach",
+        "insufficient_claim_coverage",
+    }
 
 
 def test_numbers_not_in_document_are_unsupported():
@@ -119,9 +251,35 @@ def test_numbers_not_in_document_are_unsupported():
         }
     ]
     result = ground_claims(claims, EVIDENCE)
-    # C1에는 "6개월" 관련 내용이 없으므로 관련성 검사에서 걸러진다.
+    # C1에는 "6개월" 관련 내용이 없으므로 수치 정합성 검사에서 걸러진다.
     assert result["unsupported_claim_count"] == 1
+    assert result["unsupported_claims"][0]["reason"] == "evidence_missing_numeric_detail"
     assert result["evidence_status"] == "ungrounded"
+
+
+def test_year_in_document_name_is_not_treated_as_missing_product_metric():
+    evidence = [
+        {
+            "ref": "E1",
+            "chunk_id": "C1",
+            "document_role": "criteria",
+            "document_name": "WSCE2026_어워즈_공고문.pdf",
+            "quote": "사회적 가치성은 평가 항목이다.",
+        }
+    ]
+    claims = [
+        {
+            "claim_id": "claim_1",
+            "text": "사회적 가치성은 WSCE 2026 Awards의 평가 항목이다.",
+            "claim_type": "document_fact",
+            "evidence_refs": ["E1"],
+        }
+    ]
+
+    result = ground_claims(claims, evidence)
+
+    assert result["linked_evidence_count"] == 1
+    assert result["unsupported_claim_count"] == 0
 
 
 def test_partially_grounded_when_some_claims_supported_and_some_not():

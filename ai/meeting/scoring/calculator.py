@@ -10,6 +10,7 @@ from collections import defaultdict
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
+from .calibration import build_score_cap
 from .deductions import compute_penalties, _num
 from .weights import criterion_max_scores, resolve_weights, total_max_score
 
@@ -34,7 +35,8 @@ def calculate_score(
     rubric: dict[str, Any],
     reviewer_results: list[dict[str, Any]],
     *,
-    calculation_version: str = "score_v2",
+    submission: dict[str, Any] | None = None,
+    calculation_version: str | None = None,
     method: str = "criterion_owner",
     missing_required_penalty: float | int | Decimal = 0,
 ) -> dict[str, Any]:
@@ -43,6 +45,7 @@ def calculate_score(
     criterion_owner: 각 기준을 담당 위원이 채점(보통 1명). 여러 위원이 같은 기준을 채점하면 평균한다.
     총점 = Σ(항목 점수) - Σ(penalty). 배점(max_score)이 곧 가중치다.
     """
+    effective_version = calculation_version or ("score_v3" if submission is not None else "score_v2")
     max_scores = criterion_max_scores(rubric)
     weights = resolve_weights(rubric, method)
     by_criterion = _collect_scores(reviewer_results)
@@ -58,26 +61,41 @@ def calculate_score(
         entries = by_criterion.get(cid, [])
 
         if entries:
-            raw = sum((s for _, s in entries), Decimal(0)) / Decimal(len(entries))
-            raw = raw.quantize(_QUANT, rounding=ROUND_HALF_UP)
-            raw = min(max(raw, Decimal(0)), max_score)  # [0, max_score] 로 클램프
+            proposed_raw = sum((s for _, s in entries), Decimal(0)) / Decimal(len(entries))
+            proposed_raw = proposed_raw.quantize(_QUANT, rounding=ROUND_HALF_UP)
+            proposed_raw = min(max(proposed_raw, Decimal(0)), max_score)  # [0, max_score] 로 클램프
             source_ids = [rid for rid, _ in entries]
         else:
-            raw = Decimal(0)
+            proposed_raw = Decimal(0)
             source_ids = []
 
+        calibration = build_score_cap(rubric, c, submission)
+        if calibration is not None:
+            raw = min(proposed_raw, calibration["cap_score"])
+        else:
+            raw = proposed_raw
+
         running_total += raw
-        breakdown.append(
-            {
-                "criterion_id": cid,
-                "raw_score": _num(raw),
-                "max_score": _num(max_score),
-                "weight": _num(weights[cid]),
-                "weighted_score": _num(raw),
-                "penalty": 0,
-                "source_review_ids": source_ids,
+        item = {
+            "criterion_id": cid,
+            "raw_score": _num(raw),
+            "max_score": _num(max_score),
+            "weight": _num(weights[cid]),
+            "weighted_score": _num(raw),
+            "penalty": 0,
+            "source_review_ids": source_ids,
+        }
+        if calibration is not None and raw < proposed_raw:
+            item["calibration"] = {
+                "original_score": _num(proposed_raw),
+                "cap_score": _num(calibration["cap_score"]),
+                "cap_ratio": _num(calibration["cap_ratio"]),
+                "signals": [
+                    {"code": signal["code"], "reason": signal["reason"]}
+                    for signal in calibration["signals"]
+                ],
             }
-        )
+        breakdown.append(item)
 
     penalties = compute_penalties(rubric, set(by_criterion.keys()), penalty_amount)
     penalty_total = sum((Decimal(str(p["amount"])) for p in penalties), Decimal(0))
@@ -89,7 +107,7 @@ def calculate_score(
         "total_score": _num(total),
         "max_score": _num(total_max_score(rubric)),
         "score_label": SCORE_LABEL,
-        "calculation_version": calculation_version,
+        "calculation_version": effective_version,
         "calculation_method": method,
         "breakdown": breakdown,
         "penalties": penalties,
