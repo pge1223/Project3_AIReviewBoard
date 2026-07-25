@@ -410,7 +410,11 @@ def _load_rubric_mapping(domain: str) -> dict:
 # (government_support는 role_mapping.py 미확정 등으로 아직 범위 밖, PER-002 우선순위
 # 합의 참고).
 _RUBRIC_EXTRACTION_MAX_ITEMS = 8
-_RUBRIC_EXTRACTION_VERSION = 6  # v6: 배점을 원문 첫 부문 열로 결정론 보정(열 혼용 재발 차단) — 캐시 무효화
+_RUBRIC_EXTRACTION_VERSION = 7  # v7: 균등배분 금지+배점 숫자 원문 확인 필수(양식 제목 지어내기 차단) — 캐시 무효화
+
+# 공고문(criteria) 텍스트 예산 — 배점표가 뒤쪽에 있거나 공고 자료가 여러 개(공고문+신청서식)여도
+# 배점표가 잘리지 않도록 submission(6000자)보다 넉넉하게 잡는다.
+_CRITERIA_TEXT_MAX_CHARS = 12000
 
 
 def _normalize_for_match(text: str) -> str:
@@ -438,17 +442,22 @@ def _criteria_text_looks_like_notice(criteria_text: str) -> bool:
 _SCORE_LINE_RE = re.compile(r"^\d{1,3}(?:\.\d+)?\s*점?$")
 
 
-def _align_scores_with_notice_first_column(criteria_text: str, extracted_items: list) -> list[str]:
+def _align_scores_with_notice_first_column(
+    criteria_text: str, extracted_items: list
+) -> tuple[list[str], list[str]]:
     """배점을 공고문 원문의 '항목명 다음 첫 번째 숫자'(=첫 부문 열)로 결정론적으로 보정한다.
 
     실측(2026-07-25): 부문별 배점 열이 2개인 표(실증·PoC/우수사례)가 텍스트로 풀리면 항목마다
     숫자가 두 줄로 나온다("10" 다음 "25"). 프롬프트로 '첫 열만 사용'을 지시해도 LLM이 일부
     항목에서 두 번째 숫자를 집는 사고가 재발해(확산성·효과성 10→25), 원문 기반으로 강제 정렬한다.
-    항목명이 등장한 줄 이후의 '순수 숫자 줄'들을 모아, 추출된 max_score가 그 안에 있으나
-    첫 번째가 아니면 첫 번째 숫자로 교체한다(원문에 없는 값이면 손대지 않음 — 이름 검증이 별도로 막음).
-    보정 내역 문자열 리스트를 반환한다(로그용)."""
+    항목명이 등장한 줄 이후의 '순수 숫자 줄'들을 모아 첫 번째 숫자로 배점을 강제한다(공고문
+    원문이 배점의 유일한 진실 — LLM이 다른 열/지어낸 값을 넣어도 원문 값으로 교체).
+    반환: (보정 내역, 원문에서 배점 숫자를 찾지 못한 항목명 목록). 후자가 과반이면 호출부가
+    "배점표 없는 자료(신청서 양식 등)에서 지어낸 추출"로 보고 거부한다(2026-07-25 실측:
+    붙임2 신청 서식의 작성 항목 제목 4개에 균등 배분 25점씩 지어낸 사고)."""
     lines = [ln.strip() for ln in (criteria_text or "").splitlines()]
     corrections: list[str] = []
+    unmatched: list[str] = []
     for item in extracted_items:
         name = str(item.get("criterion_name") or "")
         name_norm = _normalize_for_match(name)
@@ -473,13 +482,14 @@ def _align_scores_with_notice_first_column(criteria_text: str, extracted_items: 
             if numbers:
                 break
         if not numbers:
+            unmatched.append(name)
             continue
         first = numbers[0]
         current = item.get("max_score")
-        if current != first and current in numbers:
+        if current != first:
             corrections.append(f"{name}: {current}→{first}(원문 첫 부문 열)")
             item["max_score"] = first
-    return corrections
+    return corrections, unmatched
 
 
 def _validate_extracted_names(criteria_text: str, extracted_items: list) -> None:
@@ -518,16 +528,20 @@ def _build_rubric_extraction_prompt(
         f'평가관점(perspective_id): {[p["perspective_id"] for p in persona_cards[pid]["evaluation_perspectives"]]}'
         for pid in committee
     )
-    truncated = criteria_text[:_SUBMISSION_TRUNCATE_CHARS]
+    truncated = criteria_text[:_CRITERIA_TEXT_MAX_CHARS]
     return f"""당신은 공모전 공고문(모집요강)에서 실제 심사 평가항목을 추출하는 보조입니다.
 아래 [공고문 내용]을 읽고, 이 공모전의 평가항목을 최대 {_RUBRIC_EXTRACTION_MAX_ITEMS}개까지
 추출하세요.
 
 규칙:
-- 공고문에 명시된 평가항목을 최우선으로 사용하세요. 배점(가중치)이 공고문에 있으면 **그
-  숫자를 그대로** 쓰세요 — 합을 100으로 억지로 맞추기 위해 배점을 바꾸거나 다른 열의 배점을
-  가져오는 것은 금지입니다(가점이 별도라 합이 95점 등 100 미만이어도 정상). 공고문에 배점이
-  아예 없을 때만 전체 100점을 항목 수로 균등 배분하세요.
+- 평가항목은 공고문의 **"평가 항목 및 배점" 표(배점 숫자가 명시된 표)에서만** 추출하세요.
+  배점(가중치)은 **그 숫자를 그대로** 쓰세요 — 합을 100으로 억지로 맞추기 위해 배점을 바꾸거나
+  다른 열의 배점을 가져오는 것은 금지입니다(가점이 별도라 합이 95점 등 100 미만이어도 정상).
+- [배점 없는 항목 금지] 배점 숫자가 명시되지 않은 항목은 절대 criteria에 넣지 마세요 —
+  균등 배분으로 배점을 지어내는 것은 금지입니다. 특히 **참가 신청서·수행보고서 양식의 작성
+  항목 제목**(예: "현안 및 문제정의", "과제 목표 및 기대 방향", "작성 요령")은 평가항목이
+  아니라 작성 양식이므로 절대 평가항목으로 추출하지 마세요. 배점표를 찾을 수 없으면
+  "criteria": []로 응답하세요.
 - [부문별 배점 열 혼용 금지] 배점표가 공모 부문마다 배점을 다르게 매긴 경우(예: "실증·PoC"
   열과 "우수사례" 열이 나란히 있는 표), 항목마다 다른 부문의 배점을 섞지 말고 **한 부문의
   배점 열만 일관되게** 사용하세요. 어느 부문인지 판단이 애매하면 배점표에서 첫 번째(왼쪽)
@@ -633,7 +647,7 @@ async def _get_or_build_rubric_mapping(project: dict, project_id: str, domain: s
         return base_mapping
 
     criteria_text, source_document_ids = combine_criteria_documents(
-        criteria_docs, max_chars=_SUBMISSION_TRUNCATE_CHARS
+        criteria_docs, max_chars=_CRITERIA_TEXT_MAX_CHARS
     )
     # 사전 가드 — 공고문 텍스트에 평가기준이 있을 리 없는 내용(스크랩 실패·잡문)이면
     # LLM을 부르지 않는다(지어내기 원천 차단).
@@ -674,8 +688,16 @@ async def _get_or_build_rubric_mapping(project: dict, project_id: str, domain: s
         # 사후 검증(결정론) — 항목명이 공고문 원문에 실제로 등장하지 않으면 지어낸 것으로
         # 보고 거부한다(기본 4범주 복사·상식 창작 차단).
         _validate_extracted_names(criteria_text, extracted_items)
-        # 배점 보정(결정론) — 부문별 배점 열이 여러 개일 때 원문의 첫 부문 열 값으로 강제 정렬.
-        score_corrections = _align_scores_with_notice_first_column(criteria_text, extracted_items)
+        # 배점 보정(결정론) — 원문의 첫 부문 열 값으로 강제 정렬. 원문에서 배점 숫자를 확인
+        # 못 한 항목이 과반이면 "배점표 없는 자료(신청서 양식 등)에서 지어낸 추출"로 보고 거부.
+        score_corrections, unmatched = _align_scores_with_notice_first_column(
+            criteria_text, extracted_items
+        )
+        if len(unmatched) > len(extracted_items) // 2:
+            raise ValueError(
+                f"공고문 원문에서 배점 숫자를 확인하지 못한 항목이 과반입니다(배점표 부재/"
+                f"양식 제목 추출 의심): {unmatched}"
+            )
         if score_corrections:
             logger.info(
                 "[rubric] project_id=%s 배점을 공고문 첫 부문 열로 보정: %s",
