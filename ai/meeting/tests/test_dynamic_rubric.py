@@ -137,7 +137,7 @@ def test_dynamic_bonus_rules_are_preserved_separately_from_base_score():
     )
     runtime_rubric = build_rubric(merged)
 
-    assert merged["meta"]["rubric_extraction_version"] == 2
+    assert merged["meta"]["rubric_extraction_version"] == 3
     assert runtime_rubric["total_max_score"] == 100
     assert runtime_rubric["bonus_max_score"] == 2
     assert runtime_rubric["bonus_rules"] == rules

@@ -73,9 +73,17 @@ def build_rubric(mapping: dict[str, Any]) -> dict[str, Any]:
         "source_document_id": mapping.get("meta", {}).get("source_document_id"),
         "total_max_score": mapping["total_max_score"],
         "criteria": criteria,
+        # 정직한 출처 표기(2026-07-25 사고 재발 방지): 공고문에서 실제로 추출된 rubric인지,
+        # 추출 실패/공고문 없음으로 정적 템플릿 폴백인지를 프론트가 구분해 표시한다 —
+        # 폴백을 "공고문 배점표에서 자동 추출"로 보여주는 것은 사용자를 속이는 것.
+        "extracted_from_notice": bool(mapping.get("meta", {}).get("dynamic")),
     }
     if mapping.get("meta", {}).get("source_document_ids"):
         rubric["source_document_ids"] = list(mapping["meta"]["source_document_ids"])
+    # 측정 불가(주관적) 항목 — 채점 대상은 아니지만 종합 리포트 "점수 체계표"에서 배제
+    # 사유와 함께 보여주기 위해 rubric 객체에 보존한다(회의 스냅샷에 저장됨).
+    if mapping.get("excluded_criteria"):
+        rubric["excluded_criteria"] = [dict(item) for item in mapping["excluded_criteria"]]
     if mapping.get("bonus_rules"):
         rubric["bonus_rules"] = [dict(rule) for rule in mapping["bonus_rules"]]
         rubric["bonus_max_score"] = mapping.get("bonus_max_score", 0)
@@ -118,6 +126,13 @@ def build_dynamic_rubric_mapping(
 
     seen_ids: set[str] = set()
     normalized: list[dict[str, Any]] = []
+    # 경이/Claude(2026-07-25): 측정 가능 항목만 채점 — 공고문 평가항목 중 심사위원의 정성·
+    # 가치 판단이 필요한 항목(예: 안전성·윤리성)은 자동 채점이 주관적일 수밖에 없어 점수에서
+    # 배제하되, 배제 사유를 excluded_criteria로 보존해 종합 리포트의 "점수 체계표"에 함께
+    # 보여준다(사용자가 "왜 이 항목은 점수에 없지?"를 납득할 수 있게). 가점(bonus_rules)은
+    # 공모전마다 변동이 커 이미 별도 분리돼 채점 대상이 아니다. total_max_score는 측정 가능
+    # 항목의 배점 합으로만 계산된다(예: 100점 배점표에서 주관 항목 10점 제외 시 90점 만점).
+    excluded: list[dict[str, Any]] = []
     for item in extracted_items:
         criterion_id = item.get("criterion_id")
         criterion_name = item.get("criterion_name")
@@ -128,6 +143,8 @@ def build_dynamic_rubric_mapping(
         secondary_persona_id = item.get("secondary_persona_id")
         required_keywords = item.get("required_keywords") or []
         required_keyword_groups = item.get("required_keyword_groups") or []
+        measurable = bool(item.get("measurable", True))
+        measurability_reason = str(item.get("measurability_reason") or "").strip()
 
         if not isinstance(criterion_id, str) or not criterion_id:
             raise ValueError(f"criterion_id가 올바르지 않습니다: {item!r}")
@@ -141,6 +158,18 @@ def build_dynamic_rubric_mapping(
             raise ValueError(f"description이 올바르지 않습니다: {item!r}")
         if not isinstance(max_score, (int, float)) or max_score <= 0:
             raise ValueError(f"max_score가 올바르지 않습니다: {item!r}")
+
+        if not measurable:
+            excluded.append(
+                {
+                    "criterion_id": criterion_id,
+                    "criterion_name": criterion_name,
+                    "max_score": max_score,
+                    "reason": measurability_reason
+                    or "심사위원의 정성 판단이 필요한 항목이라 자동 채점에서 제외됩니다.",
+                }
+            )
+            continue
         if not isinstance(required_keywords, list) or not all(
             isinstance(keyword, str) and keyword.strip() for keyword in required_keywords
         ):
@@ -187,6 +216,10 @@ def build_dynamic_rubric_mapping(
             normalized_item["required_keyword_groups"] = required_keyword_groups
         normalized.append(normalized_item)
 
+    if not normalized:
+        # 측정 가능 항목이 하나도 없으면 채점 자체가 불가 — 호출부가 정적 템플릿으로 폴백한다.
+        raise ValueError("측정 가능한(measurable) 평가항목이 하나도 없습니다.")
+
     total_max_score = sum(item["max_score"] for item in normalized)
     normalized_bonus_rules: list[dict[str, Any]] = []
     seen_bonus_ids: set[str] = set()
@@ -228,11 +261,13 @@ def build_dynamic_rubric_mapping(
             "source_document_id": source_document_id,
             "source_document_ids": source_document_ids or [source_document_id],
             "dynamic": True,
-            "rubric_extraction_version": 2,
+            "rubric_extraction_version": 3,
         },
         "total_max_score": total_max_score,
         "rubric": normalized,
     }
+    if excluded:
+        result["excluded_criteria"] = excluded
     if normalized_bonus_rules:
         result["bonus_rules"] = normalized_bonus_rules
         result["bonus_max_score"] = bonus_max_score

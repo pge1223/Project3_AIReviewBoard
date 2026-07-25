@@ -72,6 +72,21 @@
         "bonus_rules": {
           "type": "array",
           "items": { "$ref": "#/$defs/bonusRule" }
+        },
+        "extracted_from_notice": { "type": "boolean" },
+        "excluded_criteria": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["criterion_id", "criterion_name", "max_score", "reason"],
+            "properties": {
+              "criterion_id": { "type": "string" },
+              "criterion_name": { "type": "string" },
+              "max_score": { "type": "number", "exclusiveMinimum": 0 },
+              "reason": { "type": "string" }
+            }
+          }
         }
       }
     },
@@ -193,6 +208,20 @@
         "evidence_status": {
           "type": "string",
           "enum": ["sufficient", "partial", "insufficient"]
+        },
+        "issue_refs": {
+          "$comment": "선택 필드(v1.1 규칙, 2026-07-25) — issues와 인덱스 정렬된 지적별 인용. 지적 텍스트의 (p.N)·'인용'을 파싱하고 제출 문서 원문 존재를 검증(verified)한 결과. verified=false는 원문에 없는 인용(할루시네이션 의심)이므로 화면에 근거로 쓰지 않는다.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["quote", "page", "verified"],
+            "properties": {
+              "quote": { "type": ["string", "null"] },
+              "page": { "type": ["number", "null"] },
+              "verified": { "type": "boolean" }
+            }
+          }
         }
       }
     },
