@@ -4,11 +4,11 @@
 #       회의를 끝까지 돌림)와 달리, 이 라우터는 질문 하나마다 사용자 응답을 기다리는
 #       구조를 검증하기 위한 것이다 — 역시 정식 API가 아니다.
 #
-# 정식 기능과의 차이(요청 범위 그대로):
-#   - MongoDB에 저장하지 않는다. 세션은 프로세스 메모리에만 있는 in-memory 저장소
-#     (_SessionStore)에 보관되며, 서버가 재시작되면 모든 세션이 사라진다.
-#   - TTL(_SESSION_TTL_SECONDS)이 지난 세션은 자동 만료되고, 세션 수가 상한
-#     (_MAX_SESSIONS)을 넘으면 가장 오래된 세션부터 제거한다(둘 다 메모리 누수 방지).
+# 저장 구조:
+#   - MongoDB ideation_conversation_sessions 컬렉션에 그래프 상태와 메시지를 영속화한다.
+#   - 프로세스 메모리의 _SessionStore는 실행 중 락·취소 이벤트를 관리하는 캐시다. TTL 또는
+#     서버 재시작으로 캐시가 사라져도 MongoDB에서 다시 읽어 회의를 이어간다.
+#   - TTL(_SESSION_TTL_SECONDS)과 _MAX_SESSIONS는 메모리 캐시에만 적용된다.
 #   - 기존 배치형 /ideation-preview, 심사형 analyze_project()/run_meeting()은 전혀
 #     건드리지 않는다.
 #
@@ -29,7 +29,8 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from openai import OpenAI
 
@@ -38,6 +39,9 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from app.config import settings
+from app.repositories.ideation_conversation_session_repository import (
+    IdeationConversationSessionRepository,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +75,7 @@ configure_ideation_trace(
     stream_deltas=settings.IDEATION_TRACE_STREAM_DELTAS,
 )
 
-from app.api.routes.meetings import _role_retrieval_service  # noqa: E402
+from app.api.routes.meetings import GUEST_USER_EMAIL, _role_retrieval_service, get_current_user  # noqa: E402
 # 용준/Claude(2026-07-21, 요청: 실시간 스트리밍) — 스트리밍 llm_call 생성 로직은 별도
 # 모듈(ideation_conversation_streaming.py)로 분리했다(FastAPI/OpenAI 클라이언트 배선은
 # 이 파일이, "프롬프트를 보고 어떻게 스트리밍할지 결정"하는 순수 로직은 그 모듈이 맡는다
@@ -106,9 +110,17 @@ class _SessionRecord:
         "cancel_event",
         "use_rag",
         "project_id",
+        "user_email",
     )
 
-    def __init__(self, state: IdeationConvState, *, use_rag: bool = False, project_id: Optional[str] = None):
+    def __init__(
+        self,
+        state: IdeationConvState,
+        *,
+        use_rag: bool = False,
+        project_id: Optional[str] = None,
+        user_email: str = GUEST_USER_EMAIL,
+    ):
         self.state = state
         # 용준/Claude(2026-07-22, RAG 근거 유실 수정 2탄): /start 시점의 use_rag/project_id를
         # 세션에 보관한다 — evidence_lookup은 콜러블이라 그래프 state(dict, 체크포인터가
@@ -119,6 +131,7 @@ class _SessionRecord:
         # 결정된 값을 세션에 저장해두고 재사용한다.
         self.use_rag = use_rag
         self.project_id = project_id
+        self.user_email = user_email
         now = time.time()
         self.created_at = now
         self.last_active_at = now
@@ -137,9 +150,8 @@ class _SessionRecord:
 
 
 class _SessionStore:
-    """개발용 인메모리 세션 저장소. 스레드 세이프하게(threading.Lock) TTL 만료와 최대
-    세션 수 제한을 처리한다 — 정식 서비스에서는 MongoDB 등 영속 저장소로 교체돼야 한다
-    (최종 보고서 "정식 전환 시 교체할 임시 코드" 참고)."""
+    """실행 중 세션 캐시. MongoDB가 영속 상태를 맡고 이 저장소는 스레드 락·취소 이벤트와
+    자주 접근하는 state를 메모리에 보관한다."""
 
     def __init__(self, ttl_seconds: int, max_sessions: int):
         self._ttl_seconds = ttl_seconds
@@ -160,11 +172,23 @@ class _SessionStore:
             oldest_id = min(self._sessions, key=lambda sid: self._sessions[sid].last_active_at)
             del self._sessions[oldest_id]
 
-    def create(self, state: IdeationConvState, *, use_rag: bool = False, project_id: Optional[str] = None) -> None:
+    def create(
+        self,
+        state: IdeationConvState,
+        *,
+        use_rag: bool = False,
+        project_id: Optional[str] = None,
+        user_email: str = GUEST_USER_EMAIL,
+    ) -> None:
         with self._lock:
             self._sweep_expired_locked()
             self._evict_oldest_locked()
-            self._sessions[state["session_id"]] = _SessionRecord(state, use_rag=use_rag, project_id=project_id)
+            self._sessions[state["session_id"]] = _SessionRecord(
+                state,
+                use_rag=use_rag,
+                project_id=project_id,
+                user_email=user_email,
+            )
 
     def get(self, session_id: str) -> IdeationConvState:
         with self._lock:
@@ -189,6 +213,7 @@ class _SessionStore:
         참조만 반환한다(취소 API는 "지금 이 세션을 처리 중"이어도 신호를 보낼 수 있어야
         하므로 try_acquire와 달리 락을 요구하지 않는다)."""
         with self._lock:
+            self._sweep_expired_locked()
             return self._sessions.get(session_id)
 
     def try_acquire(self, session_id: str) -> _SessionRecord | None:
@@ -225,6 +250,88 @@ class _SessionBusyError(Exception):
 
 
 _store = _SessionStore(_SESSION_TTL_SECONDS, _MAX_SESSIONS)
+_session_repo = IdeationConversationSessionRepository()
+
+
+def _assert_session_owner(record: _SessionRecord, user_email: str) -> None:
+    if record.user_email != user_email:
+        # 세션 존재 여부를 다른 사용자에게 노출하지 않는다.
+        raise HTTPException(status_code=404, detail="세션을 찾을 수 없거나 만료되었습니다.")
+
+
+async def _persist_session_record(record: _SessionRecord) -> bool:
+    """현재 canonical state를 MongoDB에 저장한다.
+
+    Mongo 장애가 회의 응답 자체를 실패시키지는 않도록 fail-open하되, 로그로 명확히 남긴다.
+    다음 요청은 인메모리 state로 계속 진행할 수 있다.
+    """
+    try:
+        await _session_repo.upsert(
+            session_id=record.state["session_id"],
+            state=jsonable_encoder(record.state),
+            use_rag=record.use_rag,
+            project_id=record.project_id,
+            user_email=record.user_email,
+        )
+        logger.info(
+            "[IDEATION_SESSION_PERSISTED] session=%s project_id=%s phase=%s messages=%d",
+            record.state["session_id"],
+            record.project_id,
+            record.state.get("phase"),
+            len(record.state.get("messages") or []),
+        )
+        return True
+    except Exception:
+        logger.exception(
+            "[IDEATION_SESSION_PERSIST_FAILED] session=%s phase=%s",
+            record.state.get("session_id"),
+            record.state.get("phase"),
+        )
+        return False
+
+
+async def _restore_session_record(session_id: str, user_email: str) -> _SessionRecord | None:
+    """메모리 캐시에 없으면 MongoDB에서 전체 그래프 state와 RAG 범위를 복원한다."""
+    existing = _store.get_record(session_id)
+    if existing is not None:
+        _assert_session_owner(existing, user_email)
+        return existing
+
+    try:
+        stored = await _session_repo.find_by_session_id(session_id)
+    except Exception:
+        logger.exception("[IDEATION_SESSION_RESTORE_FAILED] session=%s", session_id)
+        return None
+    if not stored or stored.get("user_email") != user_email or not isinstance(stored.get("state"), dict):
+        return None
+
+    state = stored["state"]
+    _store.create(
+        state,
+        use_rag=bool(stored.get("use_rag")),
+        project_id=stored.get("project_id"),
+        user_email=stored.get("user_email") or GUEST_USER_EMAIL,
+    )
+    logger.info(
+        "[IDEATION_SESSION_RESTORED] session=%s project_id=%s phase=%s messages=%d",
+        session_id,
+        stored.get("project_id"),
+        state.get("phase"),
+        len(state.get("messages") or []),
+    )
+    return _store.get_record(session_id)
+
+
+def _persist_from_worker(record: _SessionRecord, loop: asyncio.AbstractEventLoop) -> None:
+    """워커 스레드에서 Motor를 직접 호출하지 않고 원래 API 이벤트 루프에 저장을 예약한다."""
+    try:
+        future = asyncio.run_coroutine_threadsafe(_persist_session_record(record), loop)
+        future.result(timeout=10)
+    except Exception:
+        logger.exception(
+            "[IDEATION_SESSION_PERSIST_DISPATCH_FAILED] session=%s",
+            record.state.get("session_id"),
+        )
 
 
 def _require_preview_enabled() -> None:
@@ -787,8 +894,12 @@ def _effective_model(requested: str) -> str:
 
 
 @router.post("/start")
-async def start_conversation(request: StartRequest):
+async def start_conversation(
+    request: StartRequest,
+    authorization: Optional[str] = Header(None, alias="authorization"),
+):
     _require_preview_enabled()
+    user_email = get_current_user(authorization)
     if request.use_rag and not request.project_id:
         raise HTTPException(status_code=400, detail="use_rag=true이면 project_id가 필요합니다.")
 
@@ -830,13 +941,25 @@ async def start_conversation(request: StartRequest):
 
     # 용준/Claude(2026-07-22, RAG 근거 유실 수정 2탄): 이후 /reply·/reply/stream이 evidence_lookup을
     # 다시 만들 수 있도록 이번 세션의 use_rag/project_id를 함께 저장한다.
-    _store.create(state, use_rag=request.use_rag, project_id=request.project_id)
+    _store.create(
+        state,
+        use_rag=request.use_rag,
+        project_id=request.project_id,
+        user_email=user_email,
+    )
+    await _persist_session_record(_store.get_record(session_id))
     return _serialize_state(state)
 
 
 @router.post("/{session_id}/reply")
-async def reply_conversation(session_id: str, request: ReplyRequest):
+async def reply_conversation(
+    session_id: str,
+    request: ReplyRequest,
+    authorization: Optional[str] = Header(None, alias="authorization"),
+):
     _require_preview_enabled()
+    user_email = get_current_user(authorization)
+    await _restore_session_record(session_id, user_email)
     try:
         record = _acquire_session_record_or_404(session_id)
     except _SessionBusyError:
@@ -900,6 +1023,7 @@ async def reply_conversation(session_id: str, request: ReplyRequest):
             raise HTTPException(status_code=502, detail="답변 처리 중 오류가 발생했습니다. 서버 로그를 확인하세요.")
 
         _store.update(session_id, state)
+        await _persist_session_record(record)
         return _serialize_state(state)
     finally:
         _store.release(session_id)
@@ -917,7 +1041,12 @@ _DISCONNECT_POLL_SECONDS = 1.0
 
 
 @router.post("/{session_id}/reply/stream")
-async def reply_conversation_stream(session_id: str, request: ReplyRequest, http_request: Request):
+async def reply_conversation_stream(
+    session_id: str,
+    request: ReplyRequest,
+    http_request: Request,
+    authorization: Optional[str] = Header(None, alias="authorization"),
+):
     """POST /reply와 같은 일(사용자 답변 반영)을 하지만, 응답을 한 번에 돌려주는 대신
     NDJSON(application/x-ndjson) 한 줄마다 이벤트 하나씩 흘려보낸다 — 사용자에게 보이는
     메시지를 만드는 LLM 호출은 실제 OpenAI 토큰이 도착하는 즉시 message_delta로 나간다
@@ -935,6 +1064,8 @@ async def reply_conversation_stream(session_id: str, request: ReplyRequest, http
     질문한 경우) reply_ideation_conversation 대신 reply_to_interjection으로 라우팅한다."""
     _require_preview_enabled()
     _require_streaming_enabled()
+    user_email = get_current_user(authorization)
+    await _restore_session_record(session_id, user_email)
     message = _clamp_text(request.message, "message")
     target_speaker_id = request.target_speaker_id
     if target_speaker_id is not None and target_speaker_id not in ("planning_expert", "dev_expert", "both"):
@@ -967,6 +1098,7 @@ async def reply_conversation_stream(session_id: str, request: ReplyRequest, http
 
     model = _effective_model(request.model)
     event_queue: "queue.Queue[object]" = queue.Queue()
+    persistence_loop = asyncio.get_running_loop()
 
     request_id = f"REQ-{uuid.uuid4().hex[:10]}"
     cancel_event = threading.Event()
@@ -1062,6 +1194,7 @@ async def reply_conversation_stream(session_id: str, request: ReplyRequest, http
                     stop_after_expert_turn=request.single_turn,
                 )
             _store.update(session_id, state)
+            _persist_from_worker(record, persistence_loop)
             sink({"type": "state", "state": _serialize_state(state)})
             if state.get("phase") == "failed":
                 failed_node = state.get("failed_node")
@@ -1081,6 +1214,7 @@ async def reply_conversation_stream(session_id: str, request: ReplyRequest, http
             logger.info("[%s] 스트리밍 요청이 사용자에 의해 취소됨 request_id=%s", session_id, request_id)
             if exc.partial_state is not None:
                 _store.update(session_id, exc.partial_state)
+                _persist_from_worker(record, persistence_loop)
                 trace_event(
                     "IDEATION_PARTIAL_STATE_SAVED",
                     phase=exc.partial_state.get("phase"),
@@ -1136,7 +1270,12 @@ async def reply_conversation_stream(session_id: str, request: ReplyRequest, http
 
 
 @router.post("/{session_id}/continue-turn/stream")
-async def continue_expert_turn_stream(session_id: str, request: ContinueTurnRequest, http_request: Request):
+async def continue_expert_turn_stream(
+    session_id: str,
+    request: ContinueTurnRequest,
+    http_request: Request,
+    authorization: Optional[str] = Header(None, alias="authorization"),
+):
     """재인/Claude(2026-07-23, 아바타 페이싱 연동): 새 사용자 발언 없이, 지금 진행 중인
     라운드에서 다음 위원(기획/개발) 발언 딱 1건만 더 만들어 스트리밍한다 — POST
     /reply/stream과 같은 NDJSON/세션 락/취소 메커니즘을 그대로 재사용하되, 사용자 입력을
@@ -1149,6 +1288,8 @@ async def continue_expert_turn_stream(session_id: str, request: ContinueTurnRequ
     시점에 걸었다는 뜻이므로 방어적으로 막는다."""
     _require_preview_enabled()
     _require_streaming_enabled()
+    user_email = get_current_user(authorization)
+    await _restore_session_record(session_id, user_email)
 
     try:
         record = _acquire_session_record_or_404(session_id)
@@ -1165,6 +1306,7 @@ async def continue_expert_turn_stream(session_id: str, request: ContinueTurnRequ
 
     model = _effective_model(request.model)
     event_queue: "queue.Queue[object]" = queue.Queue()
+    persistence_loop = asyncio.get_running_loop()
 
     request_id = f"REQ-{uuid.uuid4().hex[:10]}"
     cancel_event = threading.Event()
@@ -1211,6 +1353,7 @@ async def continue_expert_turn_stream(session_id: str, request: ContinueTurnRequ
                 evidence_planner=evidence_planner,
             )
             _store.update(session_id, state)
+            _persist_from_worker(record, persistence_loop)
             sink({"type": "state", "state": _serialize_state(state)})
             if state.get("phase") == "failed":
                 failed_node = state.get("failed_node")
@@ -1226,6 +1369,7 @@ async def continue_expert_turn_stream(session_id: str, request: ContinueTurnRequ
             logger.info("[%s] continue-turn 요청이 사용자에 의해 취소됨 request_id=%s", session_id, request_id)
             if exc.partial_state is not None:
                 _store.update(session_id, exc.partial_state)
+                _persist_from_worker(record, persistence_loop)
             sink({"type": "cancelled", "request_id": request_id})
         except ValueError as exc:
             sink({"type": "error", "code": "invalid_request", "message": str(exc)})
@@ -1270,7 +1414,11 @@ async def continue_expert_turn_stream(session_id: str, request: ContinueTurnRequ
 
 
 @router.post("/start/stream")
-async def start_conversation_stream(request: StartRequest, http_request: Request):
+async def start_conversation_stream(
+    request: StartRequest,
+    http_request: Request,
+    authorization: Optional[str] = Header(None, alias="authorization"),
+):
     """가은/Claude(2026-07-22, 요청: 회의 시작 대기 체감 개선 1단계): POST /start와 같은
     일(세션 생성 + 첫 그래프 실행)을 하지만, reply/stream과 같은 NDJSON 통로로 진행
     이벤트를 흘려보낸다. 후보 생성/실현 가능성 검토 호출은 화면 메시지를 만들지 않는
@@ -1282,16 +1430,16 @@ async def start_conversation_stream(request: StartRequest, http_request: Request
     쓰기 때문에 추가 구현 없이 따라온다.
 
     reply/stream과의 차이: 새 세션이므로 세션 락(acquire/release)이 없고, state는 그래프가
-    끝까지 성공했을 때만 _store.create로 저장한다. 스트리밍 중 연결이 끊겨도 워커는 계속
-    실행돼 세션 자체는 정상 생성되지만, 클라이언트가 최종 state(session_id 포함)를 받지
-    못했으면 그 세션은 사용되지 않고 TTL(30분)로 정리된다 — 프론트가 session_id를
-    sessionStorage에 저장하는 시점이 최종 state 수신 시점이기 때문이다.
+    끝까지 성공했을 때만 _store.create와 MongoDB 영속 저장을 수행한다. 스트리밍 중 연결이
+    끊겨도 워커는 계속 실행돼 세션 자체는 정상 생성된다. 클라이언트가 최종 state를 받지
+    못해 sessionStorage에 ID가 없어도 프로젝트별 최근 회의 조회로 다시 복원할 수 있다.
 
     라우트 경로 주의: FastAPI는 등록 순서대로 매칭하지만 "/start/stream"은 고정 경로라
     "/{session_id}/reply/stream" 같은 패턴과 충돌하지 않는다("/start"를 session_id로
     오인할 수 있는 경로는 GET /{session_id}뿐이고 그것은 GET, 이것은 POST다)."""
     _require_preview_enabled()
     _require_streaming_enabled()
+    user_email = get_current_user(authorization)
     if request.use_rag and not request.project_id:
         raise HTTPException(status_code=400, detail="use_rag=true이면 project_id가 필요합니다.")
 
@@ -1316,6 +1464,7 @@ async def start_conversation_stream(request: StartRequest, http_request: Request
     logger.info("[ideation-conversation] 스트리밍 시작 session_id=%s max_rounds=%d", session_id, effective_max_rounds)
 
     event_queue: "queue.Queue[object]" = queue.Queue()
+    persistence_loop = asyncio.get_running_loop()
 
     def sink(event: dict) -> None:
         event_queue.put(event)
@@ -1345,7 +1494,13 @@ async def start_conversation_stream(request: StartRequest, http_request: Request
             # 용준/Claude(2026-07-22, RAG 근거 유실 수정 2탄) 패턴과 동일 — 이후
             # /reply·/reply/stream이 evidence_lookup을 다시 만들 수 있도록 이번 세션의
             # use_rag/project_id를 함께 저장한다(스트리밍 시작 경로도 예외 없이).
-            _store.create(state, use_rag=request.use_rag, project_id=request.project_id)
+            _store.create(
+                state,
+                use_rag=request.use_rag,
+                project_id=request.project_id,
+                user_email=user_email,
+            )
+            _persist_from_worker(_store.get_record(session_id), persistence_loop)
             sink({"type": "state", "state": _serialize_state(state)})
         except ValueError as exc:
             sink({"type": "error", "code": "invalid_request", "message": str(exc)})
@@ -1395,7 +1550,11 @@ def _wait_for_release(record: "_SessionRecord", timeout: float) -> bool:
 
 
 @router.post("/{session_id}/cancel")
-async def cancel_conversation(session_id: str, request: CancelRequest):
+async def cancel_conversation(
+    session_id: str,
+    request: CancelRequest,
+    authorization: Optional[str] = Header(None, alias="authorization"),
+):
     """용준/Claude(2026-07-22, 요청: "잠시만" 실제 취소) — 지금 이 세션에서 진행 중인
     스트리밍 요청을 취소한다. request.request_id가 주어지면 그 요청과 일치할 때만 신호를
     보내고(다른 request_id면 이미 끝난 요청이므로 조용히 무시), 없으면 "지금 활성 요청
@@ -1406,6 +1565,8 @@ async def cancel_conversation(session_id: str, request: CancelRequest):
     세션 lock 409를 피할 수 있다(요청: "취소 완료 전에 새 reply를 보내 409가 발생하지
     않게")."""
     _require_preview_enabled()
+    user_email = get_current_user(authorization)
+    await _restore_session_record(session_id, user_email)
     cancel_started = time.perf_counter()
     record = _store.get_record(session_id)
     if record is None:
@@ -1439,10 +1600,16 @@ async def cancel_conversation(session_id: str, request: CancelRequest):
 
 
 @router.post("/{session_id}/finalize")
-async def finalize_conversation(session_id: str, request: FinalizeRequest):
+async def finalize_conversation(
+    session_id: str,
+    request: FinalizeRequest,
+    authorization: Optional[str] = Header(None, alias="authorization"),
+):
     _require_preview_enabled()
+    user_email = get_current_user(authorization)
+    await _restore_session_record(session_id, user_email)
     try:
-        previous_state = _acquire_session_or_404(session_id)
+        record = _acquire_session_record_or_404(session_id)
     except _SessionBusyError:
         raise HTTPException(status_code=409, detail="이 세션은 이미 다른 요청을 처리하고 있습니다.")
 
@@ -1452,7 +1619,7 @@ async def finalize_conversation(session_id: str, request: FinalizeRequest):
         try:
             state = await run_in_threadpool(
                 finalize_ideation_conversation,
-                previous_state=previous_state,
+                previous_state=record.state,
                 llm_call=llm_call,
             )
         except ValueError as exc:
@@ -1464,6 +1631,7 @@ async def finalize_conversation(session_id: str, request: FinalizeRequest):
             raise HTTPException(status_code=502, detail="최종 확정 중 오류가 발생했습니다. 서버 로그를 확인하세요.")
 
         _store.update(session_id, state)
+        await _persist_session_record(record)
         return _serialize_state(state)
     finally:
         _store.release(session_id)
@@ -1496,9 +1664,40 @@ async def _debug_list_sessions():
         return out
 
 
-@router.get("/{session_id}")
-async def get_conversation(session_id: str):
+@router.get("/project/{project_id}/latest")
+async def get_latest_project_conversation(
+    project_id: str,
+    authorization: Optional[str] = Header(None, alias="authorization"),
+):
+    """브라우저 sessionStorage가 사라져도 프로젝트의 최근 회의를 MongoDB에서 재개한다."""
     _require_preview_enabled()
+    user_email = get_current_user(authorization)
+    try:
+        stored = await _session_repo.find_latest_by_project(project_id, user_email)
+    except Exception:
+        logger.exception(
+            "[IDEATION_SESSION_LATEST_LOOKUP_FAILED] project_id=%s user=%s",
+            project_id,
+            user_email,
+        )
+        raise HTTPException(status_code=503, detail="저장된 회의를 조회할 수 없습니다.")
+    if not stored or not stored.get("session_id"):
+        raise HTTPException(status_code=404, detail="저장된 아이디어 회의가 없습니다.")
+
+    record = await _restore_session_record(stored["session_id"], user_email)
+    if record is None:
+        raise HTTPException(status_code=404, detail="저장된 아이디어 회의를 복원할 수 없습니다.")
+    return _serialize_state(record.state)
+
+
+@router.get("/{session_id}")
+async def get_conversation(
+    session_id: str,
+    authorization: Optional[str] = Header(None, alias="authorization"),
+):
+    _require_preview_enabled()
+    user_email = get_current_user(authorization)
+    await _restore_session_record(session_id, user_email)
     try:
         state = _store.get(session_id)
     except KeyError:

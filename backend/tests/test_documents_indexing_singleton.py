@@ -122,13 +122,21 @@ class TestSingletonConcurrency:
 
 
 class TestCanonicalChromaPersistDir:
-    def test_canonicalization_is_deterministic(self, monkeypatch):
+    def test_relative_path_is_resolved_from_repository_root(self, monkeypatch):
         monkeypatch.setattr(documents_module.settings, "CHROMA_PERSIST_DIR", "./chroma_db")
+        monkeypatch.chdir(Path(__file__).parent)
 
         result1 = documents_module._canonical_chroma_persist_dir()
         result2 = documents_module._canonical_chroma_persist_dir()
 
-        assert result1 == result2 == str(Path("./chroma_db").resolve())
+        expected = (documents_module._REPOSITORY_ROOT / "chroma_db").resolve()
+        assert result1 == result2 == str(expected)
+
+    def test_absolute_path_is_preserved(self, monkeypatch):
+        configured = documents_module._REPOSITORY_ROOT / ".test-custom-chroma"
+        monkeypatch.setattr(documents_module.settings, "CHROMA_PERSIST_DIR", str(configured))
+
+        assert documents_module._canonical_chroma_persist_dir() == str(configured.resolve())
 
     def test_relative_and_pathlib_normalized_forms_collide_before_fix(self):
         """회귀 방지용 증거: "./chroma_db"(원본 설정값)와 meetings.py가 예전에 쓰던

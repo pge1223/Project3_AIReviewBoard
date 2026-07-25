@@ -9,6 +9,9 @@ from app.config import settings
 from starlette.concurrency import run_in_threadpool
 from app.repositories.document_repository import DocumentRepository
 from app.repositories.meeting_repository import MeetingRepository
+from app.repositories.ideation_conversation_session_repository import (
+    IdeationConversationSessionRepository,
+)
 from app.api.routes.documents import _get_indexing_service
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -126,7 +129,10 @@ async def delete_project(project_id: str, authorization: Optional[str] = Header(
     for meeting in meetings:
         await meeting_repo.delete_by_id(meeting["_id"])
 
-    # 4. MongoDB 프로젝트 삭제
+    # 4. MongoDB 대화형 아이디어 회의 세션 삭제
+    await IdeationConversationSessionRepository().delete_by_project_id(project_id)
+
+    # 5. MongoDB 프로젝트 삭제
     await project_repo.delete_project(project_id)
     return {"message": "프로젝트가 삭제되었습니다"}
 
