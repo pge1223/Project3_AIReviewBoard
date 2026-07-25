@@ -73,10 +73,14 @@ def build_rubric(mapping: dict[str, Any]) -> dict[str, Any]:
         "source_document_id": mapping.get("meta", {}).get("source_document_id"),
         "total_max_score": mapping["total_max_score"],
         "criteria": criteria,
+        # 정직한 출처 표기(2026-07-25 사고 재발 방지): 공고문에서 실제로 추출된 rubric인지,
+        # 추출 실패/공고문 없음으로 정적 템플릿 폴백인지를 프론트가 구분해 표시한다 —
+        # 폴백을 "공고문 배점표에서 자동 추출"로 보여주는 것은 사용자를 속이는 것.
+        "extracted_from_notice": bool(mapping.get("meta", {}).get("dynamic")),
     }
     if mapping.get("meta", {}).get("source_document_ids"):
         rubric["source_document_ids"] = list(mapping["meta"]["source_document_ids"])
-    # 측정 불가(주관적) 항목 — 채점 대상은 아니지만 완성 리포트 "점수 체계표"에서 배제
+    # 측정 불가(주관적) 항목 — 채점 대상은 아니지만 종합 리포트 "점수 체계표"에서 배제
     # 사유와 함께 보여주기 위해 rubric 객체에 보존한다(회의 스냅샷에 저장됨).
     if mapping.get("excluded_criteria"):
         rubric["excluded_criteria"] = [dict(item) for item in mapping["excluded_criteria"]]
@@ -124,7 +128,7 @@ def build_dynamic_rubric_mapping(
     normalized: list[dict[str, Any]] = []
     # 경이/Claude(2026-07-25): 측정 가능 항목만 채점 — 공고문 평가항목 중 심사위원의 정성·
     # 가치 판단이 필요한 항목(예: 안전성·윤리성)은 자동 채점이 주관적일 수밖에 없어 점수에서
-    # 배제하되, 배제 사유를 excluded_criteria로 보존해 완성 리포트의 "점수 체계표"에 함께
+    # 배제하되, 배제 사유를 excluded_criteria로 보존해 종합 리포트의 "점수 체계표"에 함께
     # 보여준다(사용자가 "왜 이 항목은 점수에 없지?"를 납득할 수 있게). 가점(bonus_rules)은
     # 공모전마다 변동이 커 이미 별도 분리돼 채점 대상이 아니다. total_max_score는 측정 가능
     # 항목의 배점 합으로만 계산된다(예: 100점 배점표에서 주관 항목 10점 제외 시 90점 만점).

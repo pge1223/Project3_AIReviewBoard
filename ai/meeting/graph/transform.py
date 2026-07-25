@@ -8,9 +8,45 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .evidence import EvidencePool
+
+# 경이/Claude(2026-07-25): 지적↔문장 1:1 매핑 — reviewer_prompt [지적 작성 규칙]이 지적마다
+# "(p.N) '문장'" 인용을 요구하므로, 지적 텍스트에서 페이지·인용을 결정론적으로 파싱한다.
+_ISSUE_PAGE_RE = re.compile(r"\(\s*p\.?\s*(\d{1,3})\s*\)")
+_ISSUE_QUOTE_RE = re.compile(r"[‘'\"“]([^’'\"”]{4,200})[’'\"”]")
+
+
+def _norm_ws(text: str) -> str:
+    return "".join(str(text or "").split())
+
+
+def build_issue_refs(issues: list, submission_text: str | None) -> list[dict[str, Any]]:
+    """지적(issue) 문장 안의 (p.N)·'인용'을 파싱해 지적별 근거 목록을 만든다(issues와 인덱스 정렬).
+
+    할루시네이션 차단: 인용이 제출 문서 원문에 실제로 존재(공백 무시 부분일치, '…' 축약은
+    조각별 검증)할 때만 verified=True. LLM이 지어낸 인용은 verified=False로 남아 화면에
+    근거로 표시되지 않는다 — 프론트는 verified=True인 인용만 "이 지적이 근거한 문장"으로 쓴다."""
+    sub_norm = _norm_ws(submission_text)
+    refs: list[dict[str, Any]] = []
+    for issue in issues:
+        text = str(issue or "")
+        page_match = _ISSUE_PAGE_RE.search(text)
+        page = int(page_match.group(1)) if page_match else None
+        quote: str | None = None
+        verified = False
+        for qm in _ISSUE_QUOTE_RE.finditer(text):
+            cand = qm.group(1).strip()
+            parts = [p for p in re.split(r"…|\.\.\.", cand) if p.strip()]
+            if sub_norm and parts and all(_norm_ws(p) in sub_norm for p in parts):
+                quote, verified = cand, True
+                break
+            if quote is None:
+                quote = cand  # 미검증 후보(원문에 없음) — 표시 대상 아님
+        refs.append({"quote": quote, "page": page, "verified": verified})
+    return refs
 
 # reviewer_prompt.txt의 judgment(6종) -> v2 rubricScore.judgment(4종).
 # insufficient_evidence/not_applicable은 score_recommendation이 null이라 애초에 rubric_scores에서
@@ -56,6 +92,7 @@ def raw_reviewer_to_v2(
     evidence_pool: EvidencePool,
     criterion_evidence: dict[str, dict] | None = None,
     expected_criterion_ids: set[str] | None = None,
+    submission_text: str | None = None,
 ) -> dict[str, Any]:
     """reviewer_prompt.txt 출력(raw) 한 건을 review_output.schema.json v2의 reviewerResult로 변환한다.
 
@@ -129,20 +166,23 @@ def raw_reviewer_to_v2(
             evidence_ids = [evidence_pool.register(ref) for ref in evidence_refs]
             evidence_status = _evidence_status(evidence_refs, item.get("confidence", "medium"))
 
-        rubric_scores.append(
-            {
-                "criterion_id": cid,
-                "criterion_name": item["criterion_name"],
-                "score": item["score_recommendation"],
-                "max_score": item["max_score"],
-                "judgment": _JUDGMENT_MAP[judgment],
-                "strengths": item.get("strengths", []),
-                "issues": item.get("weaknesses", []),
-                "suggestions": item.get("improvement_actions", []),
-                "evidence_ids": evidence_ids,
-                "evidence_status": evidence_status,
-            }
-        )
+        score_entry = {
+            "criterion_id": cid,
+            "criterion_name": item["criterion_name"],
+            "score": item["score_recommendation"],
+            "max_score": item["max_score"],
+            "judgment": _JUDGMENT_MAP[judgment],
+            "strengths": item.get("strengths", []),
+            "issues": item.get("weaknesses", []),
+            "suggestions": item.get("improvement_actions", []),
+            "evidence_ids": evidence_ids,
+            "evidence_status": evidence_status,
+        }
+        # 지적별 인용(1:1) — 지적 텍스트에서 (p.N)·'인용'을 파싱하고 제출 문서 원문 존재를
+        # 검증해 정렬 저장(2026-07-25). 지적이 없으면 필드를 만들지 않는다(스키마 선택 필드).
+        if submission_text and score_entry["issues"]:
+            score_entry["issue_refs"] = build_issue_refs(score_entry["issues"], submission_text)
+        rubric_scores.append(score_entry)
 
     persona_name = raw.get("persona_name", raw["persona_id"])
     result: dict[str, Any] = {

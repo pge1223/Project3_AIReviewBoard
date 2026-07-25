@@ -173,6 +173,7 @@ def make_reviewer_node(
 
         v2_result = raw_reviewer_to_v2(
             raw, pool, criterion_evidence=criterion_evidence, expected_criterion_ids=my_criterion_ids,
+            submission_text=(state.get("submission") or {}).get("text"),
         )
         return {
             "reviewer_results": {persona_id: v2_result},

@@ -501,7 +501,7 @@ export default function WorkbenchScreen({ projectId, onNext }) {
         </div>
       </div>
 
-      {/* 경이/Claude(2026-07-24): AI 피드백 → 완성 리포트 이동 버튼. WorkbenchScreen에 다음
+      {/* 경이/Claude(2026-07-24): AI 피드백 → 종합 리포트 이동 버튼. WorkbenchScreen에 다음
           버튼이 없어 사이드바로만 넘어갈 수 있었다("안 넘어간다" 제보). 스크롤과 무관하게
           항상 보이도록 우하단 고정 배치. onNext(=goNext)로 report 단계로 진행한다. */}
       {onNext && (
@@ -515,7 +515,7 @@ export default function WorkbenchScreen({ projectId, onNext }) {
             boxShadow: '0 6px 20px rgba(124,92,234,0.35)',
           }}
         >
-          완성 리포트로 <ArrowRight size={16} />
+          종합 리포트로 <ArrowRight size={16} />
         </button>
       )}
     </div>
