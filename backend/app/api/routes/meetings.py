@@ -410,7 +410,7 @@ def _load_rubric_mapping(domain: str) -> dict:
 # (government_support는 role_mapping.py 미확정 등으로 아직 범위 밖, PER-002 우선순위
 # 합의 참고).
 _RUBRIC_EXTRACTION_MAX_ITEMS = 8
-_RUBRIC_EXTRACTION_VERSION = 2
+_RUBRIC_EXTRACTION_VERSION = 3  # v3: measurable(측정 가능/주관 배제) 분류 추가 — 캐시 무효화
 
 
 def _build_rubric_extraction_prompt(
@@ -466,6 +466,15 @@ def _build_rubric_extraction_prompt(
   bonus_max_score는 중복 불가·최대 가점 제한을 반영한 전체 상한입니다. 신청자 자격이나
   수상 이력처럼 별도 증빙이 필요한 규칙은 requires_verification=true로 두세요.
   가점이 없으면 bonus_rules=[]와 bonus_max_score=0으로 응답하세요.
+- 각 평가항목에 measurable(true/false)과 measurability_reason(문자열)을 지정하세요.
+  · measurable=true: 제출 문서의 내용만으로 실증적으로 확인·측정할 수 있는 항목
+    (예: 문제정의·목표의 명확성, 기술 구성·데이터 활용의 구체성, 실현 계획, 성과 지표 제시 여부).
+  · measurable=false: 심사위원의 정성·가치 판단이 필요해 자동 채점이 주관적일 수밖에 없는 항목
+    (예: 안전성·윤리성, 심미성, 진정성, 태도). 이 항목은 점수 계산에서 제외되고 사용자에게
+    "왜 제외됐는지"가 표로 보여지므로, measurability_reason에 사용자가 읽고 납득할 수 있는
+    한 문장을 적으세요(예: "윤리성은 정답이 없는 가치 판단 영역이라 문서만으로 객관 채점이
+    어려워 점수에서 제외했습니다").
+  · measurable=true 항목이 최소 1개는 있어야 합니다. 확신이 없으면 measurable=true로 두세요.
 - 공고문에서 평가항목 자체를 찾을 수 없으면 "criteria": []로 응답하세요.
 
 [기본 4범주 — 위원 배정 참고용(criterion_id 복사 금지, 위원 배정만 참고)]
@@ -480,6 +489,7 @@ def _build_rubric_extraction_prompt(
 다음 JSON 형식으로만 응답하세요:
 {{"criteria": [
   {{"criterion_id": "...", "criterion_name": "...", "description": "세부 평가내용", "max_score": 25, "required": true,
+    "measurable": true, "measurability_reason": "",
     "primary_persona_id": "...", "primary_perspective_id": "...", "secondary_persona_id": null,
     "required_keywords": [], "required_keyword_groups": []}}
 ],
@@ -1511,6 +1521,9 @@ async def get_project_report(
         "evidence": meeting.get("evidence"),
         "created_at": meeting.get("created_at"),
         "impl_guides": impl_guides,
+        # 경이/Claude(2026-07-25): 점수 체계표 — 프론트가 "무엇을 근거로 채점했고, 어떤 항목이
+        # 왜 제외됐는지"(criteria description / excluded_criteria / bonus_rules)를 그리기 위함.
+        "rubric": meeting.get("rubric"),
     }
 
 
