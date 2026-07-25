@@ -411,11 +411,17 @@ function GuideSteps({ prose, diff }) {
 //   (개발 위원×비전공자는 난이도 '어려움' + '구체적 해결방안' 단계 애니메이션 토글).
 function WhyFeedbackFlow({ f, crit, rubricInfo, citations, accent, noticeName, guide }) {
   const [guideOpen, setGuideOpen] = useState(false)
-  const subs = (citations || []).filter((q) => q.role === 'submission')
+  // STEP 1 중복 방지: 지적 전용 인용(f.ref)과 같은 문장은 "함께 쓰인 원문" 목록에서 제외.
+  const refKey = (f.ref?.quote || '').replace(/\s+/g, '')
+  const subs = (citations || []).filter(
+    (q) => q.role === 'submission' && q.quote.replace(/\s+/g, '') !== refKey,
+  )
+  // 중심 자료(파일명에 '공고문') 인용 vs 보조 자료(그 외 공고 자료) 인용 — STEP 2에서 구분 표시.
+  const notices = (citations || []).filter((q) => q.role === 'notice')
   const supports = (citations || []).filter((q) => q.role === 'support')
   const diff = guide ? DIFFICULTY[guide.level] : null
-  const quoteLine = (q) => (
-    <div key={q.quote} style={{ fontSize: 12, color: '#5b5770', lineHeight: 1.65, marginTop: 3 }}>
+  const quoteLine = (q, i) => (
+    <div key={`${q.quote}-${i}`} style={{ fontSize: 12, color: '#5b5770', lineHeight: 1.65, marginTop: 3 }}>
       “{q.quote}”{q.page != null && <span className="mono" style={{ color: '#a8a4b2' }}> (p.{q.page})</span>}
       {q.source && <span style={{ color: '#a8a4b2' }}> — {q.source}</span>}
     </div>
@@ -447,14 +453,21 @@ function WhyFeedbackFlow({ f, crit, rubricInfo, citations, accent, noticeName, g
       ),
     },
     {
-      icon: '📋', title: '왜 문제인가 — 공고문 기준',
+      icon: '📋', title: '왜 문제인가 — 평가 기준 근거',
       body: (
         <>
-          <div>공고문{noticeName ? <span style={{ color: '#a8a4b2' }}>({noticeName})</span> : ''} 기준 「{crit.name}」 <b>배점 {crit.max}점</b>{rubricInfo?.description ? ` — ${rubricInfo.description}` : ''}</div>
-          <div style={{ marginTop: 4 }}>이 기준 대비 지적: <b>{f.text}</b></div>
+          {/* 첫째, 중심 자료(파일명에 '공고문'이 들어간 파일) — 채점의 기준점 */}
+          <div className="vt-step" style={{ animationDelay: '0.15s', padding: '7px 10px', borderRadius: 8, background: 'rgba(28,26,46,0.035)' }}>
+            <span className="mono" style={{ fontSize: 10, fontWeight: 800, color: accent?.color || '#7c5cea' }}>중심 자료{noticeName ? ` — ${noticeName}` : ''}</span>
+            <div style={{ fontSize: 12.5, lineHeight: 1.65, marginTop: 2 }}>
+              「{crit.name}」 <b>배점 {crit.max}점</b>{rubricInfo?.description ? ` — ${rubricInfo.description}` : ''}
+            </div>
+            {notices.map(quoteLine)}
+          </div>
+          {/* 둘째, 보조 자료('공고문'이 아닌 공고 자료) — 중심 자료를 보완하는 세부 근거 */}
           {supports.length > 0 && (
-            <div style={{ marginTop: 6 }}>
-              <span className="mono" style={{ fontSize: 10.5, fontWeight: 800, color: '#a8a4b2' }}>보조 자료 근거</span>
+            <div className="vt-step" style={{ animationDelay: '0.45s', padding: '7px 10px', borderRadius: 8, background: 'rgba(28,26,46,0.025)', marginTop: 6 }}>
+              <span className="mono" style={{ fontSize: 10, fontWeight: 800, color: '#a8a4b2' }}>보조 자료 — 중심 자료(공고문 기준)를 보완하는 세부 근거</span>
               {supports.map(quoteLine)}
             </div>
           )}
@@ -544,7 +557,8 @@ function FeedbackItem({ f, guide, crit, rubricInfo, citations, accent, noticeNam
             )
           ) : (
             <>
-              {f.suggestion && (
+              {/* Why 플로우가 열리면 STEP 4가 같은 제안을 보여주므로 중복 방지를 위해 숨긴다 */}
+              {f.suggestion && !whyOpen && (
                 <div style={{ display: 'flex', gap: 7, fontSize: 13, lineHeight: 1.6, color: '#5b5770', background: 'rgba(255,255,255,0.6)', padding: '8px 11px', borderRadius: 9 }}>
                   <Lightbulb size={15} color="#b8830b" style={{ flexShrink: 0, marginTop: 1 }} />
                   <span><b style={{ color: '#3a3750' }}>이렇게 고치세요:</b> {f.suggestion}</span>
@@ -585,6 +599,9 @@ const WHY_JUDGMENT_LABEL = {
 }
 
 function CriterionCard({ c, before, index, animKey, isDev, profile, accent, realGuides, citations, priority, rubricInfo, noticeName }) {
+  // 우선순위 팝업 — "왜 이 순위인가"(판정·감점·근거 기반 점수 상한)를 배지 클릭 시 보여준다
+  // (경이 요청 2026-07-25: 상한 배너를 카드에 늘어놓지 않고 우선순위 근거로 접어 넣기).
+  const [prioOpen, setPrioOpen] = useState(false)
   const delta = before == null ? null : c.score - before
   // 실데이터 모드(realGuides): impl_guide는 criterion 단위 1개라, 개발 위원 항목의 "첫 미해결
   // 지적"에만 붙인다(criterion_id로 매칭). mock 모드: 미해결/신규 지적마다 프로필 기반 가이드.
@@ -602,8 +619,31 @@ function CriterionCard({ c, before, index, animKey, isDev, profile, accent, real
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 14, flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 9, minWidth: 0 }}>
           {priority != null && (
-            <span className="mono" style={{ flexShrink: 0, fontSize: 10.5, fontWeight: 800, padding: '3px 10px', borderRadius: 99, background: priority === 1 ? 'rgba(224,96,61,0.14)' : 'rgba(28,26,46,0.07)', color: priority === 1 ? '#e0603d' : '#5b5770' }}>
-              우선순위 {priority}
+            <span style={{ position: 'relative', flexShrink: 0 }}>
+              <button type="button" className="mono" onClick={() => setPrioOpen((v) => !v)}
+                title="왜 이 우선순위인지 보기"
+                style={{ fontSize: 10.5, fontWeight: 800, padding: '3px 10px', borderRadius: 99, border: '1.5px solid transparent', cursor: 'pointer', background: priority === 1 ? 'rgba(224,96,61,0.14)' : 'rgba(28,26,46,0.07)', color: priority === 1 ? '#e0603d' : '#5b5770', outline: prioOpen ? `1.5px solid ${priority === 1 ? '#e0603d' : '#918d9f'}` : 'none' }}>
+                우선순위 {priority} ⓘ
+              </button>
+              {/* 우선순위 근거 팝업 — 판정·감점 + 근거 기반 점수 상한(있을 때) */}
+              {prioOpen && (
+                <div className="vt-fade" style={{ position: 'absolute', top: 'calc(100% + 8px)', left: 0, zIndex: 30, width: 320, padding: '13px 15px', borderRadius: 12, background: '#fffdf9', border: '1px solid rgba(28,26,46,0.14)', boxShadow: '0 12px 30px rgba(28,26,46,0.18)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 7 }}>
+                    <span style={{ fontSize: 12, fontWeight: 800 }}>우선순위 {priority} — 산정 근거</span>
+                    <button type="button" onClick={() => setPrioOpen(false)} style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#918d9f', fontSize: 13, fontWeight: 700 }}>✕</button>
+                  </div>
+                  <div style={{ fontSize: 12, color: '#5b5770', lineHeight: 1.7 }}>
+                    · 판정 <b>「{WHY_JUDGMENT_LABEL[c.judgment] || c.judgment}」</b> · 감점 <b className="mono">{Math.round((c.max - c.score) * 10) / 10}점</b> (배점 {c.max}점 중 {c.score}점)
+                    <div style={{ marginTop: 3, color: '#918d9f' }}>우선순위는 판정 심각도 → 감점 비율 순으로 정해집니다.</div>
+                    {c.calibration && (
+                      <div style={{ marginTop: 7, padding: '8px 10px', borderRadius: 9, background: 'rgba(224,96,61,0.08)', border: '1px solid rgba(224,96,61,0.2)', color: '#7a442f', fontSize: 11.5, lineHeight: 1.6 }}>
+                        <b>근거 기반 점수 상한 적용:</b> 위원 제안 {c.calibration.original_score}점 → 상한 {c.calibration.cap_score}점
+                        {(c.calibration.signals || []).length > 0 && <span> · {(c.calibration.signals || []).map((s) => s.reason).join(' · ')}</span>}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
             </span>
           )}
           <div style={{ fontSize: 15.5, fontWeight: 700 }}>{c.name}</div>
@@ -615,16 +655,7 @@ function CriterionCard({ c, before, index, animKey, isDev, profile, accent, real
       </div>
 
       <CompareBars before={before} after={c.score} max={c.max ?? CRITERION_MAX} animKey={animKey} accent={accent?.bar} />
-
-      {c.calibration && (
-        <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 10, background: 'rgba(224,96,61,0.08)', border: '1px solid rgba(224,96,61,0.2)', color: '#7a442f', fontSize: 12.5, lineHeight: 1.55 }}>
-          <b>근거 기반 점수 상한 적용:</b>{' '}
-          위원 제안 {c.calibration.original_score}점 → 상한 {c.calibration.cap_score}점
-          {(c.calibration.signals || []).length > 0 && (
-            <span> · {(c.calibration.signals || []).map((s) => s.reason).join(' · ')}</span>
-          )}
-        </div>
-      )}
+      {/* 근거 기반 점수 상한 배너는 카드에 늘어놓지 않고 "우선순위 N ⓘ" 클릭 팝업으로 이동(2026-07-25) */}
 
       {c.feedback.length > 0 ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 14 }}>
@@ -1168,23 +1199,29 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
     return m
   }, [usingReal, report])
 
-  // 문서 역할 메타 — 파일명 → 역할(submission/notice/support). 공고문(notice)은 rubric이
-  // 실제 추출된 source 문서를 우선하고, 그 외 criteria 문서는 보조 자료(support)로 분류한다.
+  // 문서 역할 메타 — 파일명 → 역할(submission/notice/support). 중심 자료(notice)의 기준은
+  // **파일명에 '공고문'이 포함된 파일**(경이 확정, 2026-07-25). 없으면 rubric이 실제 추출된
+  // source 문서 → 첫 criteria 문서 순으로 폴백. 그 외 공고 자료는 전부 보조 자료(support) —
+  // 보조 자료는 중심 자료(공고문 기준)를 보완하는 근거로만 쓰인다.
   const docRoles = useMemo(() => {
     const byName = new Map()
     const noticeIds = new Set(report?.rubric?.source_document_ids || [])
-    let noticeName = null
+    const criteriaDocs = projectDocs.filter((d) => (d.document_role || 'target') === 'criteria')
+    const nameOf = (d) => d.original_filename || d.source_url || ''
+    const noticeDoc =
+      criteriaDocs.find((d) => nameOf(d).includes('공고문')) ||
+      criteriaDocs.find((d) => noticeIds.has(d.id)) ||
+      criteriaDocs[0] ||
+      null
+    const noticeName = noticeDoc ? nameOf(noticeDoc) : null
     for (const d of projectDocs) {
-      const name = d.original_filename || d.source_url || ''
+      const name = nameOf(d)
       if (!name) continue
       const role = d.document_role || 'target'
       if (role === 'target') byName.set(name, 'submission')
-      else if (role === 'criteria') {
-        if (noticeIds.has(d.id) || (!noticeIds.size && !noticeName)) { byName.set(name, 'notice'); if (!noticeName) noticeName = name }
-        else byName.set(name, 'support')
-      } else byName.set(name, 'support')
+      else if (role === 'criteria') byName.set(name, d === noticeDoc ? 'notice' : 'support')
+      else byName.set(name, 'support')
     }
-    if (!noticeName) noticeName = [...byName.entries()].find(([, r]) => r === 'notice')?.[0] || null
     return { byName, noticeName }
   }, [projectDocs, report])
 
@@ -1194,14 +1231,19 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
     if (!usingReal || !report) return null
     const evById = new Map((report.evidence || []).map((e) => [e.evidence_id, e]))
     const m = new Map()
+    const seenByCid = new Map() // criterion_id → Set(중복 인용 제거용 정규화 quote)
     for (const r of report.reviewer_results || []) {
       for (const rs of r.rubric_scores || []) {
         const arr = m.get(rs.criterion_id) || []
+        const seen = seenByCid.get(rs.criterion_id) || new Set()
         for (const id of rs.evidence_ids || []) {
           if (arr.length >= 4) break
           const e = evById.get(id)
           const quote = ((e || {}).quote || (e || {}).text || '').trim().replace(/\s+/g, ' ')
           if (!quote) continue
+          const key = quote.replace(/\s+/g, '')
+          if (seen.has(key)) continue // 위원 여러 명이 같은 청크를 인용하면 한 번만 표시
+          seen.add(key)
           const source = e.document_name || ''
           arr.push({
             quote: quote.length > 150 ? quote.slice(0, 150) + '…' : quote,
@@ -1210,7 +1252,7 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
             role: docRoles.byName.get(source) || 'support',
           })
         }
-        if (arr.length) m.set(rs.criterion_id, arr)
+        if (arr.length) { m.set(rs.criterion_id, arr); seenByCid.set(rs.criterion_id, seen) }
       }
     }
     return m
