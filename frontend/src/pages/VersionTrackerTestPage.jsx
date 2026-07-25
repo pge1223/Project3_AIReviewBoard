@@ -409,13 +409,58 @@ function GuideSteps({ prose, diff }) {
 //   STEP 1 제출 문서에서 확인한 내용(파일명·p.N 인용) → STEP 2 왜 문제인가(공고문 기준표
 //   파일명 + 배점 + 보조 자료 근거) → STEP 3 근거 종합 판정·점수 논리 → STEP 4 피드백
 //   (개발 위원×비전공자는 난이도 '어려움' + '구체적 해결방안' 단계 애니메이션 토글).
+// 인용 원문을 읽기 좋게 불릿 줄로 분해한다(경이 확정 2026-07-26 가독성 형식).
+// PDF 표가 한 줄로 풀리며 생긴 잡음("※ <작성 요령>", "○ -")을 제거하고, ㅇ/○/숫자절 단위로
+// 줄을 나눈다 — 원문 문장 자체는 바꾸지 않는다(재배열·잡음 제거만).
+function splitQuoteLines(quote) {
+  let t = ` ${quote || ''} `
+  t = t.replace(/※\s*<\s*작성\s*요령\s*>/g, '\n')
+  t = t.replace(/[○◦•▪]/g, '\n')
+  t = t.replace(/\sㅇ\s/g, '\nㅇ ')
+  t = t.replace(/\s(\d{1,2}\.\s)/g, '\n$1') // 절 제목(예: "5. 목표 달성도 및 성과")
+  let lines = t.split('\n').map((s) => s.trim().replace(/^[-–—:*]\s*/, '')).filter((s) => s && !/^[-<>*※.…]+$/.test(s))
+  // 불릿 앞에 남은 짧은 머리 조각(표 헤더 잔재, 예: "성과 지표 (KPI) 방안")은 버린다
+  if (lines.length > 1 && !/^(ㅇ|\d{1,2}\.)/.test(lines[0]) && lines[0].length < 26) lines = lines.slice(1)
+  return lines.map((s) => (/^(ㅇ|\d{1,2}\.)/.test(s) ? s : `ㅇ ${s}`))
+}
+
+// 보조 자료 인용 블록 — 파일명·페이지 번호를 헤더로, 내용은 불릿 줄로(마지막 사진 형식).
+function SupportQuoteBlock({ q }) {
+  const lines = splitQuoteLines(q.quote)
+  return (
+    <div style={{ marginTop: 8 }}>
+      <div className="mono" style={{ fontSize: 11, color: '#918d9f', lineHeight: 1.6 }}>
+        파일명: <span style={{ color: '#5b5770' }}>{q.source}</span>
+        {q.page != null && <>{'  ·  '}페이지 번호: <span style={{ color: '#5b5770' }}>{q.page}p</span></>}
+      </div>
+      {q.section && <div style={{ fontSize: 12.5, fontWeight: 800, color: '#3a3750', marginTop: 3 }}>{q.section}</div>}
+      <div style={{ marginTop: 2 }}>
+        {lines.map((ln, i) => (
+          <div key={i} style={{ fontSize: 12.5, color: '#3a3750', lineHeight: 1.7 }}>{ln}</div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function WhyFeedbackFlow({ f, crit, rubricInfo, citations, accent, noticeName, guide }) {
   const [guideOpen, setGuideOpen] = useState(false)
-  // STEP 1 중복 방지: 지적 전용 인용(f.ref)과 같은 문장은 "함께 쓰인 원문" 목록에서 제외.
-  const refKey = (f.ref?.quote || '').replace(/\s+/g, '')
-  const subs = (citations || []).filter(
-    (q) => q.role === 'submission' && q.quote.replace(/\s+/g, '') !== refKey,
-  )
+  // STEP 1 인용 통합·중복 제거(경이 확정 2026-07-25): 지적 전용 인용(f.ref)과 채점에 쓰인
+  // 제출 문서 인용을 한 목록으로 합치되, 어떤 인용이 더 긴 인용에 통째로 포함되면(부분 문장)
+  // 가장 완전한(긴) 인용만 남긴다 — 같은 문장이 3번씩 보이던 문제의 일반 해법.
+  const normQ = (s) => (s || '').replace(/\s+/g, '')
+  const pool = []
+  if (f.ref?.quote) pool.push({ quote: f.ref.quote, page: f.ref.page ?? null, source: '' })
+  for (const q of (citations || []).filter((q) => q.role === 'submission')) pool.push(q)
+  const seenQ = new Set()
+  const subs = pool.filter((a, i) => {
+    const ka = normQ(a.quote)
+    if (!ka || seenQ.has(ka)) return false
+    // 다른(더 긴) 인용에 포함되는 부분 문장이면 제거
+    if (pool.some((b, j) => j !== i && normQ(b.quote) !== ka && normQ(b.quote).includes(ka))) return false
+    seenQ.add(ka)
+    return true
+  })
   // 중심 자료(파일명에 '공고문') 인용 vs 보조 자료(그 외 공고 자료) 인용 — STEP 2에서 구분 표시.
   const notices = (citations || []).filter((q) => q.role === 'notice')
   const supports = (citations || []).filter((q) => q.role === 'support')
@@ -428,25 +473,15 @@ function WhyFeedbackFlow({ f, crit, rubricInfo, citations, accent, noticeName, g
   )
   const steps = [
     {
-      icon: '📄', title: '제출 문서에서 확인한 내용',
+      icon: '📄', title: '제출 문서 근거',
       body: (
         <>
-          {/* 이 지적이 직접 근거한 문장(1:1) — 백엔드가 제출 문서 원문에 실제 존재함을 검증한 인용만 */}
-          {f.ref?.quote && (
-            <div style={{ padding: '7px 10px', borderRadius: 8, background: `${accent?.color || '#7c5cea'}11`, marginBottom: subs.length ? 6 : 0 }}>
-              <span className="mono" style={{ fontSize: 10, fontWeight: 800, color: accent?.color || '#7c5cea' }}>이 지적이 근거한 문장</span>
-              <div style={{ fontSize: 12.5, color: '#3a3750', lineHeight: 1.65, marginTop: 2 }}>
-                “{f.ref.quote}”{f.ref.page != null && <span className="mono" style={{ color: '#a8a4b2' }}> (p.{f.ref.page})</span>}
-              </div>
-            </div>
-          )}
-          {subs.length > 0 && (
+          {subs.length > 0 ? (
             <div>
-              {f.ref?.quote && <span className="mono" style={{ fontSize: 10, fontWeight: 800, color: '#a8a4b2' }}>이 항목 채점에 함께 쓰인 원문</span>}
+              <span className="mono" style={{ fontSize: 10, fontWeight: 800, color: accent?.color || '#7c5cea' }}>이 항목 채점에 반영</span>
               {subs.map(quoteLine)}
             </div>
-          )}
-          {!f.ref?.quote && subs.length === 0 && (
+          ) : (
             <span>이 항목과 관련한 구체적 서술을 제출 문서에서 충분히 찾지 못했습니다 — 이 부재 자체가 지적의 사유입니다.</span>
           )}
         </>
@@ -457,18 +492,19 @@ function WhyFeedbackFlow({ f, crit, rubricInfo, citations, accent, noticeName, g
       body: (
         <>
           {/* 첫째, 중심 자료(파일명에 '공고문'이 들어간 파일) — 채점의 기준점 */}
-          <div className="vt-step" style={{ animationDelay: '0.15s', padding: '7px 10px', borderRadius: 8, background: 'rgba(28,26,46,0.035)' }}>
-            <span className="mono" style={{ fontSize: 10, fontWeight: 800, color: accent?.color || '#7c5cea' }}>중심 자료{noticeName ? ` — ${noticeName}` : ''}</span>
+          <div className="vt-step" style={{ animationDelay: '0.15s', padding: '8px 11px', borderRadius: 8, background: 'rgba(28,26,46,0.035)' }}>
+            <span className="mono" style={{ fontSize: 11, fontWeight: 800, color: '#1c1a2e' }}>중심 자료{noticeName ? ` — ${noticeName}` : ''}</span>
             <div style={{ fontSize: 12.5, lineHeight: 1.65, marginTop: 2 }}>
               「{crit.name}」 <b>배점 {crit.max}점</b>{rubricInfo?.description ? ` — ${rubricInfo.description}` : ''}
             </div>
             {notices.map(quoteLine)}
           </div>
-          {/* 둘째, 보조 자료('공고문'이 아닌 공고 자료) — 중심 자료를 보완하는 세부 근거 */}
+          {/* 둘째, 보조 자료('공고문'이 아닌 공고 자료) — 중심 자료를 보완하는 세부 근거.
+              의미 유사도(KURE score) 높은 순으로 표시하며, 파일명·페이지·불릿 구조로 가독성 있게. */}
           {supports.length > 0 && (
-            <div className="vt-step" style={{ animationDelay: '0.45s', padding: '7px 10px', borderRadius: 8, background: 'rgba(28,26,46,0.025)', marginTop: 6 }}>
-              <span className="mono" style={{ fontSize: 10, fontWeight: 800, color: '#a8a4b2' }}>보조 자료 — 중심 자료(공고문 기준)를 보완하는 세부 근거</span>
-              {supports.map(quoteLine)}
+            <div className="vt-step" style={{ animationDelay: '0.45s', padding: '8px 11px', borderRadius: 8, background: 'rgba(28,26,46,0.025)', marginTop: 6 }}>
+              <span className="mono" style={{ fontSize: 11, fontWeight: 800, color: '#1c1a2e' }}>보조 자료 — 중심 자료(공고문 기준)를 보완하는 세부 근거</span>
+              {supports.map((q, i) => <SupportQuoteBlock key={`${q.source}-${q.page}-${i}`} q={q} />)}
             </div>
           )}
         </>
@@ -531,6 +567,13 @@ function FeedbackItem({ f, guide, crit, rubricInfo, citations, accent, noticeNam
   const [whyOpen, setWhyOpen] = useState(false)
   const s = STATUS_META[f.status]
   const Icon = s.Icon
+  // 헤더에는 지적 요지만 — 인용이 검증된 지적(f.ref)이면 "(p.N) '...' ..." 인용 문장 부분을
+  // 잘라낸다(같은 인용이 STEP 1 근거에 다시 나와 중복되던 문제, 경이 확정 2026-07-25).
+  const headText = (() => {
+    if (!f.ref?.quote) return f.text
+    const cut = f.text.split(/\(\s*p\.?\s*\d+\s*\)/)[0].trim().replace(/[,·;]+$/, '')
+    return cut.length >= 4 ? cut : f.text
+  })()
   return (
     <div style={{ borderRadius: 11, background: s.bg, border: `1px solid ${s.border}` }}>
       {/* 헤더 — 클릭으로 펼침/접힘 */}
@@ -541,7 +584,7 @@ function FeedbackItem({ f, guide, crit, rubricInfo, citations, accent, noticeNam
         </span>
         <span style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'baseline', gap: 7, flexWrap: 'wrap' }}>
           <span style={{ fontSize: 11.5, fontWeight: 800, flexShrink: 0, color: s.color }}>{s.label}</span>
-          <span style={{ fontSize: 13.5, lineHeight: 1.5, fontWeight: 600, textDecoration: f.status === 'resolved' ? 'line-through' : 'none', color: f.status === 'resolved' ? '#a8a4b2' : '#3a3750' }}>{f.text}</span>
+          <span style={{ fontSize: 13.5, lineHeight: 1.5, fontWeight: 600, textDecoration: f.status === 'resolved' ? 'line-through' : 'none', color: f.status === 'resolved' ? '#a8a4b2' : '#3a3750' }}>{headText}</span>
         </span>
         <ChevronDown size={15} style={{ flexShrink: 0, marginTop: 3, color: s.color, transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.18s ease' }} />
       </button>
@@ -557,13 +600,8 @@ function FeedbackItem({ f, guide, crit, rubricInfo, citations, accent, noticeNam
             )
           ) : (
             <>
-              {/* Why 플로우가 열리면 STEP 4가 같은 제안을 보여주므로 중복 방지를 위해 숨긴다 */}
-              {f.suggestion && !whyOpen && (
-                <div style={{ display: 'flex', gap: 7, fontSize: 13, lineHeight: 1.6, color: '#5b5770', background: 'rgba(255,255,255,0.6)', padding: '8px 11px', borderRadius: 9 }}>
-                  <Lightbulb size={15} color="#b8830b" style={{ flexShrink: 0, marginTop: 1 }} />
-                  <span><b style={{ color: '#3a3750' }}>이렇게 고치세요:</b> {f.suggestion}</span>
-                </div>
-              )}
+              {/* "이렇게 고치세요" 박스는 STEP 4와 중복이라 완전 제거(경이 확정 2026-07-25) —
+                  개선 제안은 "왜 이 점수·피드백인가요?"의 STEP 4에서만 보여준다 */}
               {/* 지적별 "왜 이 점수·피드백인가요?" — 근거 인용 포함 4단계 */}
               <button type="button" onClick={() => setWhyOpen((v) => !v)}
                 style={{ marginTop: 8, display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 99, border: `1.5px solid ${accent?.color || '#7c5cea'}44`, background: whyOpen ? (accent?.dim || 'rgba(124,92,234,0.1)') : 'transparent', color: accent?.color || '#7c5cea', fontSize: 12, fontWeight: 800, cursor: 'pointer' }}>
@@ -615,7 +653,9 @@ function CriterionCard({ c, before, index, animKey, isDev, profile, accent, real
     return personalizeGuide(f, profile)
   }
   return (
-    <div className="vt-fade card glass" style={{ animationDelay: `${index * 90}ms` }}>
+    // 우선순위 팝업이 열리면 이 카드를 형제 카드들 위로 올린다 — 각 카드가 vt-fade 애니메이션으로
+    // 자체 스태킹 컨텍스트를 갖기 때문에, 팝업의 z-index만으로는 다음 카드에 가려진다(실측 2026-07-25).
+    <div className="vt-fade card glass" style={{ animationDelay: `${index * 90}ms`, position: 'relative', zIndex: prioOpen ? 40 : 'auto' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 14, flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 9, minWidth: 0 }}>
           {priority != null && (
@@ -1237,7 +1277,6 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
         const arr = m.get(rs.criterion_id) || []
         const seen = seenByCid.get(rs.criterion_id) || new Set()
         for (const id of rs.evidence_ids || []) {
-          if (arr.length >= 4) break
           const e = evById.get(id)
           const quote = ((e || {}).quote || (e || {}).text || '').trim().replace(/\s+/g, ' ')
           if (!quote) continue
@@ -1246,13 +1285,20 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
           seen.add(key)
           const source = e.document_name || ''
           arr.push({
-            quote: quote.length > 150 ? quote.slice(0, 150) + '…' : quote,
+            quote: quote.length > 280 ? quote.slice(0, 280) + '…' : quote,
             page: e.page ?? null,
             source,
+            section: e.section || null, // 원문 섹션 제목(가독성 헤더용)
+            score: typeof e.score === 'number' ? e.score : null, // KURE 의미 유사도
             role: docRoles.byName.get(source) || 'support',
           })
         }
-        if (arr.length) { m.set(rs.criterion_id, arr); seenByCid.set(rs.criterion_id, seen) }
+        if (arr.length) {
+          // 단어 매칭 순서가 아니라 **의미 유사도(KURE score) 높은 순**으로 상위 4개만 표시.
+          arr.sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+          m.set(rs.criterion_id, arr.slice(0, 4))
+          seenByCid.set(rs.criterion_id, seen)
+        }
       }
     }
     return m
