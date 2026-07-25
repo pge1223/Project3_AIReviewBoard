@@ -472,7 +472,7 @@ function personalizeGuide(feedback, profile) {
   return { feedback_id: feedback.id, level, verbosity: VERBOSITY_BY_LEVEL[level], label: DIFFICULTY_LABEL[level], prose }
 }
 
-function CriterionCard({ c, before, index, animKey, isDev, profile, accent, realGuides }) {
+function CriterionCard({ c, before, index, animKey, isDev, profile, accent, realGuides, citations }) {
   const delta = before == null ? null : c.score - before
   // 실데이터 모드(realGuides): impl_guide는 criterion 단위 1개라, 개발 위원 항목의 "첫 미해결
   // 지적"에만 붙인다(criterion_id로 매칭). mock 모드: 미해결/신규 지적마다 프로필 기반 가이드.
@@ -497,6 +497,16 @@ function CriterionCard({ c, before, index, animKey, isDev, profile, accent, real
 
       <CompareBars before={before} after={c.score} max={c.max ?? CRITERION_MAX} animKey={animKey} accent={accent?.bar} />
 
+      {c.calibration && (
+        <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 10, background: 'rgba(224,96,61,0.08)', border: '1px solid rgba(224,96,61,0.2)', color: '#7a442f', fontSize: 12.5, lineHeight: 1.55 }}>
+          <b>근거 기반 점수 상한 적용:</b>{' '}
+          위원 제안 {c.calibration.original_score}점 → 상한 {c.calibration.cap_score}점
+          {(c.calibration.signals || []).length > 0 && (
+            <span> · {(c.calibration.signals || []).map((s) => s.reason).join(' · ')}</span>
+          )}
+        </div>
+      )}
+
       {c.feedback.length > 0 ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 14 }}>
           {c.feedback.map((f, fi) => <FeedbackItem key={f.id} f={f} guide={guideFor(f, fi)} />)}
@@ -504,6 +514,21 @@ function CriterionCard({ c, before, index, animKey, isDev, profile, accent, real
       ) : (
         <div style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 13, color: '#16a37a', marginTop: 14, background: 'rgba(22,163,122,0.08)', padding: '10px 13px', borderRadius: 10, fontWeight: 600 }}>
           <CheckCircle2 size={15} /> 남은 지적 없음 — 이 항목은 깔끔합니다
+        </div>
+      )}
+
+      {/* 경이/Claude(2026-07-25): 근거 인용 — 이 항목 채점에 실제로 연결된 문서·공고문 원문
+          (RAG evidence quote)을 그대로 보여준다. "왜 이 점수인지"를 사용자가 원문으로 확인. */}
+      {citations && citations.length > 0 && (
+        <div style={{ marginTop: 10, padding: '10px 14px', background: 'rgba(28,26,46,0.035)', borderRadius: 10 }}>
+          <div className="mono" style={{ fontSize: 10.5, fontWeight: 800, color: '#918d9f', marginBottom: 6, letterSpacing: '0.04em' }}>근거 인용 — 채점에 사용된 원문</div>
+          {citations.map((q, i) => (
+            <div key={i} style={{ fontSize: 12, color: '#5b5770', lineHeight: 1.65, marginBottom: 4 }}>
+              “{q.quote}”
+              {q.page != null && <span className="mono" style={{ color: '#a8a4b2' }}> (p.{q.page})</span>}
+              {q.source && <span style={{ color: '#a8a4b2' }}> — {q.source}</span>}
+            </div>
+          ))}
         </div>
       )}
     </div>
@@ -668,6 +693,7 @@ function reportToVersions(report) {
       committee,
       score: b.raw_score ?? 0,
       max: b.max_score ?? CRITERION_MAX,
+      calibration: b.calibration || null,
       judgment: d.judgment || 'acceptable',
       feedback,
     }
@@ -678,6 +704,7 @@ function reportToVersions(report) {
       label: '현재 제출',
       submitted_at: report.created_at,
       total_score: sr.total_score ?? 0,
+      max_total: sr.max_score ?? 100, // 측정 가능 항목 배점 합(주관 항목 제외 시 100 미만일 수 있음)
       criteria,
     },
   ]
@@ -696,6 +723,7 @@ function buildVersionsFromHistory(versions) {
     label: v.label,
     submitted_at: v.submitted_at,
     total_score: v.total_score ?? 0,
+    max_total: v.max_score ?? 100, // 측정 가능 항목 배점 합(주관 항목 제외 시 100 미만)
     criteria: (v.criteria || []).map((c) => {
       const newSet = new Set(c.new_issues || [])
       const issues = c.issues || []
@@ -722,6 +750,7 @@ function buildVersionsFromHistory(versions) {
         committee: c.committee || 'planning',
         score: c.score ?? 0,
         max: c.max ?? CRITERION_MAX,
+        calibration: c.calibration || null,
         judgment: c.judgment || 'acceptable',
         feedback,
       }
@@ -829,6 +858,84 @@ function AiFeedbackPanel({ findings, format }) {
   )
 }
 
+// 경이/Claude(2026-07-25): 총점 참고용 안내 배너 — 공고문 평가 항목 중 "문서 내용으로 측정
+// 가능한 항목"만 채점하고, 정성 판단이 필요한 주관 항목(예: 안전성·윤리성)과 공모전마다 기준이
+// 바뀌는 가점 요소는 총점에서 제외한다는 것을 상단에 명시한다(사용자 오해 방지).
+function ScoreNotice() {
+  return (
+    <div className="card glass" style={{ marginBottom: 18, padding: '14px 20px', display: 'flex', alignItems: 'flex-start', gap: 10, borderLeft: '4px solid #b8830b' }}>
+      <AlertTriangle size={17} style={{ color: '#b8830b', flexShrink: 0, marginTop: 2 }} />
+      <div style={{ fontSize: 12.5, lineHeight: 1.7, color: '#5b5770' }}>
+        <b style={{ color: '#8a6508' }}>제시된 총점은 참고용입니다.</b>{' '}
+        공고문 평가 항목 중 <b>문서 내용으로 측정 가능한 항목만</b> 근거를 들어 채점하며,
+        심사위원의 정성 판단이 필요한 <b>주관적 항목</b>(예: 안전성·윤리성)과 공모전마다 기준이
+        달라지는 <b>가점 요소</b>는 총점에서 제외됩니다. 항목별 채점·제외 사유는 아래{' '}
+        <b>점수 체계표</b>에서 확인할 수 있으며, 실제 심사 결과와는 다를 수 있습니다.
+      </div>
+    </div>
+  )
+}
+
+// 경이/Claude(2026-07-25): 점수 체계표 — 공고문에서 동적 추출한 rubric(하드코딩 없음, 다른
+// 공모전 배점표가 와도 그대로 반영)을 기준으로 ① 채점 항목(배점·채점 기준) ② 측정 불가로
+// 제외된 항목(사유) ③ 가점 요소(항상 제외)를 한 표로 보여준다. "왜 이렇게 채점할 수밖에
+// 없었는지"를 리포트 안에서 설명하는 역할.
+function ScoringSchemeCard({ rubric }) {
+  if (!rubric) return null
+  const criteria = rubric.criteria || []
+  const excluded = rubric.excluded_criteria || []
+  const bonusMax = rubric.bonus_max_score || 0
+  const cell = { padding: '9px 12px', fontSize: 12.5, lineHeight: 1.6, verticalAlign: 'top', borderTop: '1px solid rgba(28,26,46,0.07)' }
+  const tag = (bg, color, text) => (
+    <span className="mono" style={{ fontSize: 10.5, fontWeight: 800, padding: '2px 9px', borderRadius: 99, background: bg, color, whiteSpace: 'nowrap' }}>{text}</span>
+  )
+  return (
+    <div className="card glass" style={{ marginBottom: 18, padding: '18px 20px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 14.5, fontWeight: 800 }}>점수 체계표</span>
+        <span style={{ fontSize: 11.5, color: '#918d9f' }}>공고문 배점표에서 자동 추출 · 측정 가능 항목만 채점 (만점 {rubric.total_max_score}점)</span>
+      </div>
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 8 }}>
+          <thead>
+            <tr>
+              {['평가 항목', '배점', '채점 여부', '채점 기준 · 사유'].map((h) => (
+                <th key={h} style={{ ...cell, borderTop: 'none', fontSize: 11, fontWeight: 800, color: '#918d9f', textAlign: 'left', whiteSpace: 'nowrap' }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {criteria.map((c) => (
+              <tr key={c.criterion_id}>
+                <td style={{ ...cell, fontWeight: 700, whiteSpace: 'nowrap' }}>{c.criterion_name}</td>
+                <td className="mono" style={{ ...cell, whiteSpace: 'nowrap' }}>{c.max_score}점</td>
+                <td style={cell}>{tag('rgba(22,163,122,0.12)', '#16a37a', '채점')}</td>
+                <td style={{ ...cell, color: '#5b5770' }}>{c.description || '공고문 배점표 기준으로 문서 근거를 들어 채점합니다.'}</td>
+              </tr>
+            ))}
+            {excluded.map((c) => (
+              <tr key={c.criterion_id}>
+                <td style={{ ...cell, fontWeight: 700, whiteSpace: 'nowrap', color: '#918d9f' }}>{c.criterion_name}</td>
+                <td className="mono" style={{ ...cell, whiteSpace: 'nowrap', color: '#918d9f' }}>{c.max_score}점</td>
+                <td style={cell}>{tag('rgba(224,96,61,0.1)', '#e0603d', '제외')}</td>
+                <td style={{ ...cell, color: '#918d9f' }}>{c.reason}</td>
+              </tr>
+            ))}
+            {bonusMax > 0 && (
+              <tr>
+                <td style={{ ...cell, fontWeight: 700, whiteSpace: 'nowrap', color: '#918d9f' }}>가점 요소</td>
+                <td className="mono" style={{ ...cell, whiteSpace: 'nowrap', color: '#918d9f' }}>최대 {bonusMax}점</td>
+                <td style={cell}>{tag('rgba(224,96,61,0.1)', '#e0603d', '제외')}</td>
+                <td style={{ ...cell, color: '#918d9f' }}>가점 기준은 공모전마다 변동이 크고 별도 증빙 확인이 필요해 자동 채점에서 제외합니다.</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
 // embedded: true면 /board 플로우("완성 리포트" 단계) 안에 끼워 넣는 모드 — 상단 나가기/
 // 실험 배지 바를 숨긴다(사이드바가 이미 단계 이동을 제공하므로). 기본(false)은 /version-test
 // 단독 페이지로 동작. projectId가 오면(embedded) 그 프로젝트의 실제 /report를 렌더한다.
@@ -915,6 +1022,32 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
     if (!usingReal) return null
     const m = new Map()
     for (const g of report.impl_guides || []) m.set(g.feedback_id, g)
+    return m
+  }, [usingReal, report])
+
+  // 근거 인용(criterion_id → RAG evidence quote 최대 2건) — 위원 rubric_scores.evidence_ids를
+  // report.evidence(quote·page·문서명)와 조인. 최신 버전 카드에만 붙인다(realGuides와 동일 패턴).
+  const realCitations = useMemo(() => {
+    if (!usingReal || !report) return null
+    const evById = new Map((report.evidence || []).map((e) => [e.evidence_id, e]))
+    const m = new Map()
+    for (const r of report.reviewer_results || []) {
+      for (const rs of r.rubric_scores || []) {
+        const arr = m.get(rs.criterion_id) || []
+        for (const id of rs.evidence_ids || []) {
+          if (arr.length >= 2) break
+          const e = evById.get(id)
+          const quote = ((e || {}).quote || (e || {}).text || '').trim().replace(/\s+/g, ' ')
+          if (!quote) continue
+          arr.push({
+            quote: quote.length > 150 ? quote.slice(0, 150) + '…' : quote,
+            page: e.page ?? null,
+            source: e.document_name || '',
+          })
+        }
+        if (arr.length) m.set(rs.criterion_id, arr)
+      }
+    }
     return m
   }, [usingReal, report])
 
@@ -1053,12 +1186,20 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
             <div style={{ textAlign: 'center', minWidth: 140, padding: '4px 8px' }}>
               <div className="mono" style={{ fontSize: 11, color: '#918d9f', marginBottom: 6, fontWeight: 600 }}>{selected.version} 총점</div>
               <div className="mono" style={{ fontSize: 46, fontWeight: 800, lineHeight: 1, marginBottom: 10, color: '#1c1a2e' }}>
-                {heroScore}<span style={{ fontSize: 15, color: '#918d9f' }}>/100</span>
+                {heroScore}<span style={{ fontSize: 15, color: '#918d9f' }}>/{selected.max_total ?? 100}</span>
               </div>
               {totalDelta != null ? <DeltaPill value={totalDelta} size="lg" /> : <span className="badge amber mono">출발점</span>}
             </div>
           </div>
         </div>
+
+        {/* 총점 참고용 안내 + 점수 체계표(공고문 동적 rubric 기준 채점/제외/가점) — 실데이터 모드에서만 */}
+        {usingReal && report?.rubric && (
+          <>
+            <ScoreNotice />
+            <ScoringSchemeCard rubric={report.rubric} />
+          </>
+        )}
 
         {/* TEST 프로필 토글 — 제출 정보 카드는 MyPage로 이동함 */}
         <ProfileToggle profileKey={profileKey} onChange={setProfileKey} locked={embedded} />
@@ -1146,7 +1287,7 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
         {/* 위원 항목 카드 */}
         <div key={`body-${animKey}`} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           {cmItems.map((c, i) => (
-            <CriterionCard key={c.id} c={c} before={criterionBefore(versions, selectedIndex, c.id)} index={i} animKey={animKey} isDev={committee === 'dev'} profile={profile} accent={cm} realGuides={selectedIndex === ALL.length - 1 ? realGuides : null} />
+            <CriterionCard key={c.id} c={c} before={criterionBefore(versions, selectedIndex, c.id)} index={i} animKey={animKey} isDev={committee === 'dev'} profile={profile} accent={cm} realGuides={selectedIndex === ALL.length - 1 ? realGuides : null} citations={selectedIndex === ALL.length - 1 && realCitations ? realCitations.get(c.id) : null} />
           ))}
         </div>
 

@@ -80,3 +80,38 @@ def test_explanation_is_deterministic():
     e1 = build_score_explanation(data["score_result"], data["rubric"], data["reviewer_results"])
     e2 = build_score_explanation(data["score_result"], data["rubric"], data["reviewer_results"])
     assert e1 == e2
+
+
+def test_explanation_discloses_deterministic_score_cap():
+    rubric = {
+        "rubric_id": "R-CAP",
+        "total_max_score": 20,
+        "criteria": [
+            {
+                "criterion_id": "data_utilization",
+                "criterion_name": "데이터 활용성",
+                "max_score": 20,
+                "required": True,
+            }
+        ],
+    }
+    reviewers = [
+        {
+            "review_id": "REV-CAP",
+            "rubric_scores": [{"criterion_id": "data_utilization", "score": 15}],
+        }
+    ]
+    submission = {
+        "text": (
+            "다양한 공공데이터를 활용할 예정이다. 구체적인 출처는 나중에 정할 계획이다. "
+            "데이터를 활용해 추천 서비스를 만들 것이다. 세부적인 가공 방법도 추후 마련할 예정이다."
+        )
+    }
+    score_result = calculate_score(rubric, reviewers, submission=submission)
+    explanation = build_score_explanation(score_result, rubric, reviewers)
+    card = explanation["criteria"][0]
+
+    assert card["raw_score"] == 2
+    assert card["calibration"]["original_score"] == 15
+    assert "위원 제안 점수 15점" in card["basis"]
+    assert "문서 근거 상한 2점" in card["basis"]

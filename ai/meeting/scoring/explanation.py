@@ -42,9 +42,17 @@ def _basis_text(criterion_name: str, breakdown: dict[str, Any], contributors: li
     """항목 점수가 어떻게 나왔는지 계산값만으로 서술한다(LLM 미사용)."""
     raw = breakdown["raw_score"]
     max_score = breakdown["max_score"]
+    calibration = breakdown.get("calibration")
     n = len(contributors)
     if n == 0:
         text = f"'{criterion_name}' 항목을 채점한 위원이 없어 {_num(Decimal(str(raw)))}점으로 처리되었습니다."
+    elif calibration:
+        original = calibration["original_score"]
+        cap = calibration["cap_score"]
+        text = (
+            f"위원 제안 점수 {original}점에 문서 근거 상한 {cap}점을 적용해 "
+            f"{max_score}점 만점에 {raw}점으로 집계했습니다."
+        )
     elif n == 1:
         text = f"담당 위원 1명이 {max_score}점 만점에 {raw}점을 부여했습니다."
     else:
@@ -103,6 +111,7 @@ def build_score_explanation(
                 "aggregation": aggregation,
                 "scored_by": b.get("source_review_ids", []),
                 "reviewer_scores": contributors,
+                "calibration": b.get("calibration"),
                 "penalty": _num(penalty_amount),
                 "penalty_reasons": pens,
                 "basis": _basis_text(meta.get("criterion_name", cid), b, contributors, penalty_amount),

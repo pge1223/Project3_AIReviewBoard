@@ -62,8 +62,40 @@
       "properties": {
         "rubric_id": { "type": "string" },
         "source_document_id": { "type": ["string", "null"] },
+        "source_document_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
         "total_max_score": { "type": "number", "exclusiveMinimum": 0 },
-        "criteria": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/rubricCriterion" } }
+        "criteria": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/rubricCriterion" } },
+        "bonus_max_score": { "type": "number", "minimum": 0 },
+        "bonus_rules": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/bonusRule" }
+        }
+      }
+    },
+    "bonusRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bonus_id",
+        "name",
+        "points",
+        "description",
+        "evidence_keywords",
+        "requires_verification"
+      ],
+      "properties": {
+        "bonus_id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "points": { "type": "number", "exclusiveMinimum": 0 },
+        "description": { "type": "string" },
+        "evidence_keywords": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "requires_verification": { "type": "boolean" }
       }
     },
     "rubricCriterion": {
@@ -76,7 +108,19 @@
         "max_score": { "type": "number", "exclusiveMinimum": 0 },
         "weight": { "type": ["number", "null"], "minimum": 0 },
         "required": { "type": "boolean" },
-        "description": { "type": ["string", "null"] }
+        "description": { "type": ["string", "null"] },
+        "required_keywords": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "required_keyword_groups": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "minLength": 1 }
+          }
+        }
       }
     },
     "reviewerResult": {
@@ -209,7 +253,33 @@
         "weight": { "type": ["number", "null"], "minimum": 0 },
         "weighted_score": { "type": ["number", "null"] },
         "penalty": { "type": "number", "default": 0 },
-        "source_review_ids": { "type": "array", "items": { "type": "string" } }
+        "source_review_ids": { "type": "array", "items": { "type": "string" } },
+        "calibration": { "$ref": "#/$defs/scoreCalibration" }
+      }
+    },
+    "scoreCalibration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["original_score", "cap_score", "cap_ratio", "signals"],
+      "properties": {
+        "original_score": { "type": "number", "minimum": 0 },
+        "cap_score": { "type": "number", "minimum": 0 },
+        "cap_ratio": { "type": "number", "minimum": 0, "maximum": 1 },
+        "signals": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["code", "reason"],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": ["S0", "S1", "S2", "S3", "S4", "S5", "S6", "MULTI"]
+              },
+              "reason": { "type": "string" }
+            }
+          }
+        }
       }
     },
     "penalty": {
