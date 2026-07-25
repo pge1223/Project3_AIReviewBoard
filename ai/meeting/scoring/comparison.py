@@ -78,6 +78,8 @@ def _detail_by_criterion(document: dict[str, Any]) -> dict[str, dict]:
                     "persona_id": pid,
                     "issues": list(s.get("issues", []) or []),
                     "suggestions": list(s.get("suggestions", []) or []),
+                    # 지적별 인용(issues와 인덱스 정렬, verified 포함) — 프론트 STEP 1 근거용
+                    "issue_refs": list(s.get("issue_refs", []) or []),
                 }
     return detail
 
@@ -118,6 +120,7 @@ def build_version_history(documents: list[dict[str, Any]]) -> list[dict[str, Any
                     "judgment": judgments.get(cid) or "acceptable",
                     "issues": d.get("issues", []),
                     "suggestions": d.get("suggestions", []),
+                    "issue_refs": d.get("issue_refs", []),
                     "new_issues": sorted(new_iss),
                     "resolved_issues": sorted(resolved_iss),
                 }

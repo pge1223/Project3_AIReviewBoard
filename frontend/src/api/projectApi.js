@@ -101,7 +101,7 @@ export async function getProjectReport(projectId) {
 }
 
 // 경이/Claude(2026-07-23, RPT-004 C단계): 버전 비교 — 최근 2개 회의(직전 vs 이번 수정본)를
-// build_revision_comparison으로 비교한 결과. 회의가 1개뿐이면 {available:false}. 완성 리포트
+// build_revision_comparison으로 비교한 결과. 회의가 1개뿐이면 {available:false}. 종합 리포트
 // (VersionTrackerTestPage)가 v1.0→v1.1 이전/현재 막대·해결/신규/잔존 뱃지를 그릴 때 쓴다.
 export async function getProjectComparison(projectId) {
   const res = await fetch(`${API_BASE_URL}/projects/${projectId}/comparison`, {

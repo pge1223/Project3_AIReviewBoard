@@ -247,7 +247,9 @@ function criterionBefore(versions, versionIndex, criterionId) {
   return prev ? prev.score : null
 }
 function committeeScore(version, committee) {
-  return version.criteria.filter((c) => c.committee === committee).reduce((s, c) => s + c.score, 0)
+  // 소수 배점 합산 시 부동소수점 잔여 오차 방지 — 소수 1자리 반올림.
+  const sum = version.criteria.filter((c) => c.committee === committee).reduce((s, c) => s + c.score, 0)
+  return Math.round(sum * 10) / 10
 }
 
 function useCountUp(target, duration = 850) {
@@ -276,8 +278,10 @@ function CountUp({ value, className, style }) {
 
 // --- 표시 컴포넌트 ---------------------------------------------------------
 function DeltaPill({ value, size = 'md' }) {
-  const up = value > 0
-  const flat = value === 0
+  // 부동소수점 잔여 오차(예: 24.700000000000003) 방지 — 표시 직전 소수 1자리로 반올림.
+  const v = Math.round(value * 10) / 10
+  const up = v > 0
+  const flat = v === 0
   const color = flat ? '#918d9f' : up ? '#16a37a' : '#e0603d'
   const bg = flat ? 'rgba(145,141,159,0.12)' : up ? 'rgba(22,163,122,0.12)' : 'rgba(224,96,61,0.12)'
   const Icon = up ? TrendingUp : TrendingDown
@@ -286,7 +290,7 @@ function DeltaPill({ value, size = 'md' }) {
   return (
     <span className="mono" style={{ display: 'inline-flex', alignItems: 'center', gap: 5, borderRadius: 99, fontWeight: 700, whiteSpace: 'nowrap', color, background: bg, padding: pad, fontSize: fs }}>
       {!flat && <Icon size={size === 'lg' ? 15 : 12} />}
-      {flat ? '±0' : `${up ? '+' : ''}${value}점`}
+      {flat ? '±0' : `${up ? '+' : ''}${v}점`}
     </span>
   )
 }
@@ -400,60 +404,163 @@ function GuideSteps({ prose, diff }) {
   )
 }
 
-function FeedbackItem({ f, guide }) {
+// "왜 이 점수·이 피드백인가" — 지적(피드백) 단위 4단계 근거 플로우(경이 요청 2026-07-25 개편).
+// 모든 인용은 색인된 실제 문서의 RAG evidence에서만 온다(지어낸 문장 절대 금지):
+//   STEP 1 제출 문서에서 확인한 내용(파일명·p.N 인용) → STEP 2 왜 문제인가(공고문 기준표
+//   파일명 + 배점 + 보조 자료 근거) → STEP 3 근거 종합 판정·점수 논리 → STEP 4 피드백
+//   (개발 위원×비전공자는 난이도 '어려움' + '구체적 해결방안' 단계 애니메이션 토글).
+function WhyFeedbackFlow({ f, crit, rubricInfo, citations, accent, noticeName, guide }) {
+  const [guideOpen, setGuideOpen] = useState(false)
+  const subs = (citations || []).filter((q) => q.role === 'submission')
+  const supports = (citations || []).filter((q) => q.role === 'support')
+  const diff = guide ? DIFFICULTY[guide.level] : null
+  const quoteLine = (q) => (
+    <div key={q.quote} style={{ fontSize: 12, color: '#5b5770', lineHeight: 1.65, marginTop: 3 }}>
+      “{q.quote}”{q.page != null && <span className="mono" style={{ color: '#a8a4b2' }}> (p.{q.page})</span>}
+      {q.source && <span style={{ color: '#a8a4b2' }}> — {q.source}</span>}
+    </div>
+  )
+  const steps = [
+    {
+      icon: '📄', title: '제출 문서에서 확인한 내용',
+      body: (
+        <>
+          {/* 이 지적이 직접 근거한 문장(1:1) — 백엔드가 제출 문서 원문에 실제 존재함을 검증한 인용만 */}
+          {f.ref?.quote && (
+            <div style={{ padding: '7px 10px', borderRadius: 8, background: `${accent?.color || '#7c5cea'}11`, marginBottom: subs.length ? 6 : 0 }}>
+              <span className="mono" style={{ fontSize: 10, fontWeight: 800, color: accent?.color || '#7c5cea' }}>이 지적이 근거한 문장</span>
+              <div style={{ fontSize: 12.5, color: '#3a3750', lineHeight: 1.65, marginTop: 2 }}>
+                “{f.ref.quote}”{f.ref.page != null && <span className="mono" style={{ color: '#a8a4b2' }}> (p.{f.ref.page})</span>}
+              </div>
+            </div>
+          )}
+          {subs.length > 0 && (
+            <div>
+              {f.ref?.quote && <span className="mono" style={{ fontSize: 10, fontWeight: 800, color: '#a8a4b2' }}>이 항목 채점에 함께 쓰인 원문</span>}
+              {subs.map(quoteLine)}
+            </div>
+          )}
+          {!f.ref?.quote && subs.length === 0 && (
+            <span>이 항목과 관련한 구체적 서술을 제출 문서에서 충분히 찾지 못했습니다 — 이 부재 자체가 지적의 사유입니다.</span>
+          )}
+        </>
+      ),
+    },
+    {
+      icon: '📋', title: '왜 문제인가 — 공고문 기준',
+      body: (
+        <>
+          <div>공고문{noticeName ? <span style={{ color: '#a8a4b2' }}>({noticeName})</span> : ''} 기준 「{crit.name}」 <b>배점 {crit.max}점</b>{rubricInfo?.description ? ` — ${rubricInfo.description}` : ''}</div>
+          <div style={{ marginTop: 4 }}>이 기준 대비 지적: <b>{f.text}</b></div>
+          {supports.length > 0 && (
+            <div style={{ marginTop: 6 }}>
+              <span className="mono" style={{ fontSize: 10.5, fontWeight: 800, color: '#a8a4b2' }}>보조 자료 근거</span>
+              {supports.map(quoteLine)}
+            </div>
+          )}
+        </>
+      ),
+    },
+    {
+      icon: '⚖️', title: '근거를 종합한 판정과 점수',
+      body: `위 제출 문서 근거와 공고문 기준을 함께 보면, 이 항목의 판정은 「${WHY_JUDGMENT_LABEL[crit.judgment] || crit.judgment}」 — 배점 ${crit.max}점 중 ${crit.score}점입니다.`
+        + (crit.calibration ? ` 또한 근거 신호 부족으로 결정론적 상한 ${crit.calibration.cap_score}점이 적용되었습니다.` : ''),
+    },
+    {
+      icon: '✏️', title: '이렇게 고치면 점수가 오릅니다',
+      body: (
+        <>
+          <div>{f.suggestion || f.text}</div>
+          {guide && diff && (
+            <div style={{ marginTop: 8 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <span className="mono" style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11.5, fontWeight: 700, padding: '4px 10px', borderRadius: 99, color: diff.color, background: diff.bg }}>
+                  <diff.Icon size={12} /> {guide.label}
+                </span>
+                {guide.verbosity === 'detailed' ? (
+                  <button type="button" className="vt-tab" onClick={() => setGuideOpen((v) => !v)}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, fontWeight: 800, color: diff.color, background: 'transparent', border: `1.5px solid ${diff.color}44`, borderRadius: 99, cursor: 'pointer', padding: '4px 12px' }}>
+                    구체적 해결방안 <ChevronDown size={13} style={{ transform: guideOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.18s ease' }} />
+                  </button>
+                ) : (
+                  <span style={{ fontSize: 12.5, color: '#5b5770' }}>{guide.prose}</span>
+                )}
+              </div>
+              {guide.verbosity === 'detailed' && guideOpen && <GuideSteps prose={guide.prose} diff={diff} />}
+            </div>
+          )}
+        </>
+      ),
+    },
+  ]
+  return (
+    <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {steps.map((s, i) => (
+        <div key={i} className="vt-step" style={{ animationDelay: `${i * 0.4}s`, display: 'flex', gap: 10, padding: '11px 14px', background: 'rgba(255,255,255,0.85)', border: `1px solid ${accent?.color || '#7c5cea'}22`, borderLeft: `3px solid ${accent?.color || '#7c5cea'}`, borderRadius: 10 }}>
+          <span style={{ fontSize: 16, flexShrink: 0 }}>{s.icon}</span>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 3 }}>
+              <span className="mono" style={{ fontSize: 10, fontWeight: 800, color: accent?.color || '#7c5cea' }}>STEP {i + 1}</span>
+              <span style={{ fontSize: 12.5, fontWeight: 800, color: '#1c1a2e' }}>{s.title}</span>
+            </div>
+            <div style={{ fontSize: 12.5, color: '#5b5770', lineHeight: 1.65 }}>{s.body}</div>
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// 지적 항목 — 아코디언(기본 접힘): 헤더(상태 배지 + 지적 한 줄)를 클릭하면 내용(제안·가이드·
+// "왜 이 점수·피드백인가요?")이 펼쳐진다(경이 요청 2026-07-25 — 길게 늘어놓지 않고 깔끔하게).
+function FeedbackItem({ f, guide, crit, rubricInfo, citations, accent, noticeName }) {
   const [open, setOpen] = useState(false)
+  const [whyOpen, setWhyOpen] = useState(false)
   const s = STATUS_META[f.status]
   const Icon = s.Icon
-  // guide: { feedback_id, level, verbosity, label, prose } — 백엔드 attach_impl_guides 출력 형태.
-  // verbosity==='detailed'(비전공/입문)면 '자세히 보기'로 접고, 그 외(standard/brief)면 인라인.
-  const diff = guide ? DIFFICULTY[guide.level] : null
-  const detailed = guide?.verbosity === 'detailed'
   return (
-    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '11px 13px', borderRadius: 11, background: s.bg, border: `1px solid ${s.border}` }}>
-      <span style={{ flexShrink: 0, width: 20, height: 20, borderRadius: '50%', background: s.color, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', marginTop: 1 }}>
-        <Icon size={12} strokeWidth={3} />
-      </span>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 7, flexWrap: 'wrap' }}>
+    <div style={{ borderRadius: 11, background: s.bg, border: `1px solid ${s.border}` }}>
+      {/* 헤더 — 클릭으로 펼침/접힘 */}
+      <button type="button" onClick={() => setOpen((v) => !v)}
+        style={{ width: '100%', display: 'flex', alignItems: 'flex-start', gap: 10, padding: '11px 13px', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left' }}>
+        <span style={{ flexShrink: 0, width: 20, height: 20, borderRadius: '50%', background: s.color, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', marginTop: 1 }}>
+          <Icon size={12} strokeWidth={3} />
+        </span>
+        <span style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'baseline', gap: 7, flexWrap: 'wrap' }}>
           <span style={{ fontSize: 11.5, fontWeight: 800, flexShrink: 0, color: s.color }}>{s.label}</span>
           <span style={{ fontSize: 13.5, lineHeight: 1.5, fontWeight: 600, textDecoration: f.status === 'resolved' ? 'line-through' : 'none', color: f.status === 'resolved' ? '#a8a4b2' : '#3a3750' }}>{f.text}</span>
-        </div>
-        {f.suggestion && (
-          <div style={{ display: 'flex', gap: 7, marginTop: 8, fontSize: 13, lineHeight: 1.6, color: '#5b5770', background: 'rgba(255,255,255,0.6)', padding: '8px 11px', borderRadius: 9 }}>
-            <Lightbulb size={15} color="#b8830b" style={{ flexShrink: 0, marginTop: 1 }} />
-            <span><b style={{ color: '#3a3750' }}>이렇게 고치세요:</b> {f.suggestion}</span>
-          </div>
-        )}
+        </span>
+        <ChevronDown size={15} style={{ flexShrink: 0, marginTop: 3, color: s.color, transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.18s ease' }} />
+      </button>
 
-        {/* 개인화: 개발 위원 구현 난이도 (프로필 기반) */}
-        {guide && diff && (
-          <div style={{ marginTop: 8 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-              <span className="mono" style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11.5, fontWeight: 700, padding: '4px 10px', borderRadius: 99, color: diff.color, background: diff.bg }}>
-                <diff.Icon size={12} /> {guide.label}
-              </span>
-              {detailed && (
-                <button className="vt-tab" onClick={() => setOpen((v) => !v)}
-                  style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, fontWeight: 700, color: '#1c1a2e', background: 'transparent', border: 'none', cursor: 'pointer', padding: '2px 4px' }}>
-                  자세히 보기 <ChevronDown size={13} style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.18s ease' }} />
-                </button>
+      {open && (
+        <div className="vt-fade" style={{ padding: '0 13px 12px 43px' }}>
+          {f.status === 'resolved' ? (
+            f.note && (
+              <div style={{ display: 'flex', gap: 7, fontSize: 13, lineHeight: 1.6, color: '#12876a' }}>
+                <CheckCircle2 size={15} style={{ flexShrink: 0, marginTop: 1 }} />
+                <span><b>반영됨:</b> {f.note}</span>
+              </div>
+            )
+          ) : (
+            <>
+              {f.suggestion && (
+                <div style={{ display: 'flex', gap: 7, fontSize: 13, lineHeight: 1.6, color: '#5b5770', background: 'rgba(255,255,255,0.6)', padding: '8px 11px', borderRadius: 9 }}>
+                  <Lightbulb size={15} color="#b8830b" style={{ flexShrink: 0, marginTop: 1 }} />
+                  <span><b style={{ color: '#3a3750' }}>이렇게 고치세요:</b> {f.suggestion}</span>
+                </div>
               )}
-            </div>
-            {detailed ? (
-              open && <GuideSteps prose={guide.prose} diff={diff} />
-            ) : (
-              <div style={{ marginTop: 7, fontSize: 12.5, lineHeight: 1.6, color: '#5b5770' }}>{guide.prose}</div>
-            )}
-          </div>
-        )}
-
-        {f.note && (
-          <div style={{ display: 'flex', gap: 7, marginTop: 8, fontSize: 13, lineHeight: 1.6, color: '#12876a' }}>
-            <CheckCircle2 size={15} style={{ flexShrink: 0, marginTop: 1 }} />
-            <span><b>반영됨:</b> {f.note}</span>
-          </div>
-        )}
-      </div>
+              {/* 지적별 "왜 이 점수·피드백인가요?" — 근거 인용 포함 4단계 */}
+              <button type="button" onClick={() => setWhyOpen((v) => !v)}
+                style={{ marginTop: 8, display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 99, border: `1.5px solid ${accent?.color || '#7c5cea'}44`, background: whyOpen ? (accent?.dim || 'rgba(124,92,234,0.1)') : 'transparent', color: accent?.color || '#7c5cea', fontSize: 12, fontWeight: 800, cursor: 'pointer' }}>
+                <Lightbulb size={13} /> 왜 이 점수·피드백인가요?
+                <ChevronDown size={13} style={{ transition: 'transform 0.2s', transform: whyOpen ? 'rotate(180deg)' : 'none' }} />
+              </button>
+              {whyOpen && <WhyFeedbackFlow key={`why-${f.id}`} f={f} crit={crit} rubricInfo={rubricInfo} citations={citations} accent={accent} noticeName={noticeName} guide={guide} />}
+            </>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -472,7 +579,12 @@ function personalizeGuide(feedback, profile) {
   return { feedback_id: feedback.id, level, verbosity: VERBOSITY_BY_LEVEL[level], label: DIFFICULTY_LABEL[level], prose }
 }
 
-function CriterionCard({ c, before, index, animKey, isDev, profile, accent, realGuides, citations }) {
+const WHY_JUDGMENT_LABEL = {
+  strong: '우수', acceptable: '적정', needs_improvement: '보완 필요',
+  critical_risk: '중대 리스크', insufficient_evidence: '근거 부족', not_applicable: '해당 없음',
+}
+
+function CriterionCard({ c, before, index, animKey, isDev, profile, accent, realGuides, citations, priority, rubricInfo, noticeName }) {
   const delta = before == null ? null : c.score - before
   // 실데이터 모드(realGuides): impl_guide는 criterion 단위 1개라, 개발 위원 항목의 "첫 미해결
   // 지적"에만 붙인다(criterion_id로 매칭). mock 모드: 미해결/신규 지적마다 프로필 기반 가이드.
@@ -488,7 +600,14 @@ function CriterionCard({ c, before, index, animKey, isDev, profile, accent, real
   return (
     <div className="vt-fade card glass" style={{ animationDelay: `${index * 90}ms` }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 14, flexWrap: 'wrap' }}>
-        <div style={{ fontSize: 15.5, fontWeight: 700 }}>{c.name}</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 9, minWidth: 0 }}>
+          {priority != null && (
+            <span className="mono" style={{ flexShrink: 0, fontSize: 10.5, fontWeight: 800, padding: '3px 10px', borderRadius: 99, background: priority === 1 ? 'rgba(224,96,61,0.14)' : 'rgba(28,26,46,0.07)', color: priority === 1 ? '#e0603d' : '#5b5770' }}>
+              우선순위 {priority}
+            </span>
+          )}
+          <div style={{ fontSize: 15.5, fontWeight: 700 }}>{c.name}</div>
+        </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
           {delta != null && <DeltaPill value={delta} />}
           <JudgmentChange before={null} after={c.judgment} accentColor={accent?.color} accentBg={accent?.dim} />
@@ -509,7 +628,9 @@ function CriterionCard({ c, before, index, animKey, isDev, profile, accent, real
 
       {c.feedback.length > 0 ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 14 }}>
-          {c.feedback.map((f, fi) => <FeedbackItem key={f.id} f={f} guide={guideFor(f, fi)} />)}
+          {c.feedback.map((f, fi) => (
+            <FeedbackItem key={f.id} f={f} guide={guideFor(f, fi)} crit={c} rubricInfo={rubricInfo} citations={citations} accent={accent} noticeName={noticeName} />
+          ))}
         </div>
       ) : (
         <div style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 13, color: '#16a37a', marginTop: 14, background: 'rgba(22,163,122,0.08)', padding: '10px 13px', borderRadius: 10, fontWeight: 600 }}>
@@ -517,20 +638,6 @@ function CriterionCard({ c, before, index, animKey, isDev, profile, accent, real
         </div>
       )}
 
-      {/* 경이/Claude(2026-07-25): 근거 인용 — 이 항목 채점에 실제로 연결된 문서·공고문 원문
-          (RAG evidence quote)을 그대로 보여준다. "왜 이 점수인지"를 사용자가 원문으로 확인. */}
-      {citations && citations.length > 0 && (
-        <div style={{ marginTop: 10, padding: '10px 14px', background: 'rgba(28,26,46,0.035)', borderRadius: 10 }}>
-          <div className="mono" style={{ fontSize: 10.5, fontWeight: 800, color: '#918d9f', marginBottom: 6, letterSpacing: '0.04em' }}>근거 인용 — 채점에 사용된 원문</div>
-          {citations.map((q, i) => (
-            <div key={i} style={{ fontSize: 12, color: '#5b5770', lineHeight: 1.65, marginBottom: 4 }}>
-              “{q.quote}”
-              {q.page != null && <span className="mono" style={{ color: '#a8a4b2' }}> (p.{q.page})</span>}
-              {q.source && <span style={{ color: '#a8a4b2' }}> — {q.source}</span>}
-            </div>
-          ))}
-        </div>
-      )}
     </div>
   )
 }
@@ -564,7 +671,8 @@ function ScoreTrendChart({ versions, selectedIndex, onSelect }) {
       {n > 1 && <path className="vt-line" pathLength="1" d={linePath} fill="none" stroke="#7c5cea" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />}
       {pts.slice(1).map((p, i) => {
         const prev = pts[i]
-        const d = p.v.total_score - prev.v.total_score
+        // 부동소수점 잔여 오차 방지 — 소수 1자리 반올림 후 표시.
+        const d = Math.round((p.v.total_score - prev.v.total_score) * 10) / 10
         const mx = (prev.x + p.x) / 2
         const my = (prev.y + p.y) / 2 - 13
         return (
@@ -664,6 +772,7 @@ function reportToVersions(report) {
           judgment: rs.judgment,
           issues: rs.issues || [],
           suggestions: rs.suggestions || [],
+          issueRefs: rs.issue_refs || [], // 지적별 인용(원문 검증 verified 포함, issues와 정렬)
           personaId: r.persona_id,
         })
       }
@@ -674,6 +783,7 @@ function reportToVersions(report) {
     const committee = TECHNICAL_PERSONA_IDS.has(d.personaId) ? 'dev' : 'planning'
     const issues = d.issues || []
     const suggestions = d.suggestions || []
+    const issueRefs = d.issueRefs || []
     const feedback = []
     const n = Math.max(issues.length, suggestions.length)
     for (let i = 0; i < n; i++) {
@@ -685,6 +795,8 @@ function reportToVersions(report) {
         status: 'open', // 회의 1건(v1.0) 시점엔 모두 미해결. 해결/신규는 버전 비교(C)에서 계산.
         text: issue || sug,
         suggestion: issue ? sug : '',
+        // 이 지적이 근거한 원문 문장(백엔드가 제출 문서 원문 존재를 검증한 것만 사용)
+        ref: issue && issueRefs[i]?.verified ? issueRefs[i] : null,
       })
     }
     return {
@@ -728,6 +840,7 @@ function buildVersionsFromHistory(versions) {
       const newSet = new Set(c.new_issues || [])
       const issues = c.issues || []
       const suggestions = c.suggestions || []
+      const issueRefs = c.issue_refs || []
       const feedback = []
       const n = Math.max(issues.length, suggestions.length)
       for (let i = 0; i < n; i++) {
@@ -739,6 +852,8 @@ function buildVersionsFromHistory(versions) {
           status: issue && newSet.has(issue) ? 'new' : 'open',
           text: issue || sug,
           suggestion: issue ? sug : '',
+          // 이 지적이 근거한 원문 문장(백엔드 원문 검증 통과분만)
+          ref: issue && issueRefs[i]?.verified ? issueRefs[i] : null,
         })
       }
       for (const t of c.resolved_issues || []) {
@@ -880,22 +995,40 @@ function ScoreNotice() {
 // 공모전 배점표가 와도 그대로 반영)을 기준으로 ① 채점 항목(배점·채점 기준) ② 측정 불가로
 // 제외된 항목(사유) ③ 가점 요소(항상 제외)를 한 표로 보여준다. "왜 이렇게 채점할 수밖에
 // 없었는지"를 리포트 안에서 설명하는 역할.
-function ScoringSchemeCard({ rubric }) {
+function ScoringSchemeCard({ rubric, open, onToggle }) {
   if (!rubric) return null
   const criteria = rubric.criteria || []
   const excluded = rubric.excluded_criteria || []
   const bonusMax = rubric.bonus_max_score || 0
+  // 정직한 출처 표기(2026-07-25 사고 재발 방지): 백엔드가 "공고문에서 실제 추출"이라고 명시한
+  // 경우(true)에만 그렇게 말한다. 정적 템플릿 폴백/출처 불명이면 빨간 경고로 사실대로 알린다 —
+  // 폴백을 "공고문 배점표에서 자동 추출"로 보여주는 것은 사용자를 속이는 것.
+  const extracted = rubric.extracted_from_notice === true
   const cell = { padding: '9px 12px', fontSize: 12.5, lineHeight: 1.6, verticalAlign: 'top', borderTop: '1px solid rgba(28,26,46,0.07)' }
   const tag = (bg, color, text) => (
     <span className="mono" style={{ fontSize: 10.5, fontWeight: 800, padding: '2px 9px', borderRadius: 99, background: bg, color, whiteSpace: 'nowrap' }}>{text}</span>
   )
   return (
-    <div className="card glass" style={{ marginBottom: 18, padding: '18px 20px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 14.5, fontWeight: 800 }}>점수 체계표</span>
-        <span style={{ fontSize: 11.5, color: '#918d9f' }}>공고문 배점표에서 자동 추출 · 측정 가능 항목만 채점 (만점 {rubric.total_max_score}점)</span>
-      </div>
-      <div style={{ overflowX: 'auto' }}>
+    <div className="card glass" style={{ marginBottom: 18, padding: '4px 20px 4px', border: extracted ? undefined : '1.5px solid rgba(224,96,61,0.45)' }}>
+      {/* 접힘/펼침 헤더 — 클릭하면 표가 열린다(기본 접힘, 경이 요청 2026-07-25) */}
+      <button type="button" onClick={onToggle}
+        style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', background: 'none', border: 'none', cursor: 'pointer', padding: '14px 0', textAlign: 'left' }}>
+        <span style={{ fontSize: 14.5, fontWeight: 800, color: '#1c1a2e' }}>점수 체계표</span>
+        {extracted ? (
+          <span style={{ fontSize: 11.5, color: '#918d9f', flex: 1 }}>공고문 배점표에서 자동 추출 · 측정 가능 항목만 채점 (만점 {rubric.total_max_score}점)</span>
+        ) : (
+          <span style={{ fontSize: 11.5, color: '#e0603d', fontWeight: 700, flex: 1 }}>⚠️ 공고문 기준이 아님 — 기본 템플릿으로 채점됨 (만점 {rubric.total_max_score}점)</span>
+        )}
+        <ChevronDown size={16} style={{ color: '#918d9f', transition: 'transform 0.2s', transform: open ? 'rotate(180deg)' : 'none', flexShrink: 0 }} />
+      </button>
+      {!extracted && (
+        <div style={{ margin: '0 0 12px', padding: '10px 14px', borderRadius: 10, background: 'rgba(224,96,61,0.08)', border: '1px solid rgba(224,96,61,0.3)', fontSize: 12.5, lineHeight: 1.65, color: '#8a4a30' }}>
+          공고문에서 <b>평가기준·배점을 추출하지 못해</b> 서비스 기본 템플릿으로 채점되었습니다. 이 표와 총점은 <b>공고문 기준이 아니므로 참고하지 마세요.</b>{' '}
+          평가기준·배점표가 담긴 <b>공고문 원문(파일 또는 공지 URL)</b>을 공고 자료로 올리고 재분석하면 공고문 기준으로 다시 채점됩니다.
+        </div>
+      )}
+      {open && (
+      <div className="vt-fade" style={{ overflowX: 'auto', paddingBottom: 14 }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 8 }}>
           <thead>
             <tr>
@@ -932,24 +1065,32 @@ function ScoringSchemeCard({ rubric }) {
           </tbody>
         </table>
       </div>
+      )}
     </div>
   )
 }
 
-// embedded: true면 /board 플로우("완성 리포트" 단계) 안에 끼워 넣는 모드 — 상단 나가기/
+// embedded: true면 /board 플로우("종합 리포트" 단계) 안에 끼워 넣는 모드 — 상단 나가기/
 // 실험 배지 바를 숨긴다(사이드바가 이미 단계 이동을 제공하므로). 기본(false)은 /version-test
 // 단독 페이지로 동작. projectId가 오면(embedded) 그 프로젝트의 실제 /report를 렌더한다.
 export default function VersionTrackerTestPage({ embedded = false, projectId = null }) {
   const navigate = useNavigate()
   const [revealed, setRevealed] = useState(1)
   const [selectedIndex, setSelectedIndex] = useState(0)
-  const [committee, setCommittee] = useState('planning')
+  // 탭 순서·기본값: AI 피드백 → 기획 위원 → 개발 위원 (경이 요청 2026-07-25)
+  const [committee, setCommittee] = useState('ai_feedback')
+  // 상세(탭 영역)는 처음에 숨기고, 점수 추이의 버전 점(v1.0…)을 클릭해야 열린다.
+  const [detailOpen, setDetailOpen] = useState(false)
+  const [schemeOpen, setSchemeOpen] = useState(false) // 점수 체계표 접기/펼치기
+  const [statusFilter, setStatusFilter] = useState('all') // 전체/신규/보완필요(남음)/해결 필터
+  const detailRef = useRef(null)
   const [profileKey, setProfileKey] = useState('nonmajor')
   const profile = PROFILES[profileKey]
   const [report, setReport] = useState(null)      // 실제 /report (embedded)
   const [versionPayload, setVersionPayload] = useState(null) // /comparison 응답(versions 히스토리)
   const [aiFindings, setAiFindings] = useState([])    // AI 피드백(오탈자·맥락) — 점수 미반영
   const [formatCheck, setFormatCheck] = useState(null) // 분량·밀도(빈 공간) 요약 — A vs B 변별 축
+  const [projectDocs, setProjectDocs] = useState([])  // 문서 역할 메타(제출/공고문/보조) — 인용 분류용
   const [reportLoaded, setReportLoaded] = useState(false)
   const [submitting, setSubmitting] = useState(false) // 수정본 업로드+재분석 중
   const [submitStage, setSubmitStage] = useState('')  // 진행 상태 문구
@@ -973,12 +1114,14 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
   // 다시 부르기 위해 함수로 분리. 실패 시 mock 유지(단독 데모와 동일).
   const loadReportAndComparison = useCallback(async () => {
     if (!embedded || !projectId) return
-    const [r, c] = await Promise.all([
+    const [r, c, docs] = await Promise.all([
       getProjectReport(projectId).catch(() => null),
       getProjectComparison(projectId).catch(() => null),
+      getDocuments(projectId).catch(() => []), // 인용 출처를 제출문서/공고문/보조자료로 분류하기 위한 역할 메타
     ])
     setReport(r)
     setVersionPayload(c) // {versions:[v1.0,v1.1,...], comparison, available, meeting_count}
+    setProjectDocs(docs || [])
   }, [embedded, projectId])
 
   // AI 피드백(오탈자·맥락)은 LLM 호출이라 느릴 수 있어 메인 리포트 로딩과 분리해 비동기로 받는다.
@@ -1025,8 +1168,28 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
     return m
   }, [usingReal, report])
 
-  // 근거 인용(criterion_id → RAG evidence quote 최대 2건) — 위원 rubric_scores.evidence_ids를
-  // report.evidence(quote·page·문서명)와 조인. 최신 버전 카드에만 붙인다(realGuides와 동일 패턴).
+  // 문서 역할 메타 — 파일명 → 역할(submission/notice/support). 공고문(notice)은 rubric이
+  // 실제 추출된 source 문서를 우선하고, 그 외 criteria 문서는 보조 자료(support)로 분류한다.
+  const docRoles = useMemo(() => {
+    const byName = new Map()
+    const noticeIds = new Set(report?.rubric?.source_document_ids || [])
+    let noticeName = null
+    for (const d of projectDocs) {
+      const name = d.original_filename || d.source_url || ''
+      if (!name) continue
+      const role = d.document_role || 'target'
+      if (role === 'target') byName.set(name, 'submission')
+      else if (role === 'criteria') {
+        if (noticeIds.has(d.id) || (!noticeIds.size && !noticeName)) { byName.set(name, 'notice'); if (!noticeName) noticeName = name }
+        else byName.set(name, 'support')
+      } else byName.set(name, 'support')
+    }
+    if (!noticeName) noticeName = [...byName.entries()].find(([, r]) => r === 'notice')?.[0] || null
+    return { byName, noticeName }
+  }, [projectDocs, report])
+
+  // 근거 인용(criterion_id → RAG evidence quote, 역할 분류 포함) — 위원 rubric_scores.evidence_ids를
+  // report.evidence(quote·page·문서명)와 조인. 인용은 색인된 실제 문서 원문에서만 온다(지어내기 없음).
   const realCitations = useMemo(() => {
     if (!usingReal || !report) return null
     const evById = new Map((report.evidence || []).map((e) => [e.evidence_id, e]))
@@ -1035,21 +1198,36 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
       for (const rs of r.rubric_scores || []) {
         const arr = m.get(rs.criterion_id) || []
         for (const id of rs.evidence_ids || []) {
-          if (arr.length >= 2) break
+          if (arr.length >= 4) break
           const e = evById.get(id)
           const quote = ((e || {}).quote || (e || {}).text || '').trim().replace(/\s+/g, ' ')
           if (!quote) continue
+          const source = e.document_name || ''
           arr.push({
             quote: quote.length > 150 ? quote.slice(0, 150) + '…' : quote,
             page: e.page ?? null,
-            source: e.document_name || '',
+            source,
+            role: docRoles.byName.get(source) || 'support',
           })
         }
         if (arr.length) m.set(rs.criterion_id, arr)
       }
     }
     return m
-  }, [usingReal, report])
+  }, [usingReal, report, docRoles])
+
+  // 공고문 배점표 메타(criterion_id → {description, max_score}) — "왜 이 점수인가" 단계 1(공고
+  // 기준)에서 인용한다. 동적 rubric이라 공모전이 바뀌어도 그대로 반영된다.
+  const rubricInfoById = useMemo(() => {
+    const m = new Map()
+    for (const c of report?.rubric?.criteria || []) m.set(c.criterion_id, c)
+    return m
+  }, [report])
+
+  // 버전 점 클릭으로 상세가 열리면 상세 영역으로 부드럽게 스크롤한다.
+  useEffect(() => {
+    if (detailOpen) detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, [detailOpen, selectedIndex])
 
   // 실데이터 버전 수가 바뀌면(1→2) 모두 펼치고 최신 버전을 선택한다(mock의 단계 공개와 분리).
   useEffect(() => {
@@ -1067,7 +1245,23 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
   const heroScore = useCountUp(selected.total_score)
 
   const cm = COMMITTEES[committee] || AI_FEEDBACK // ai_feedback 탭은 점수 영역을 안 그리지만 참조 안전용
-  const cmItems = selected.criteria.filter((c) => c.committee === committee)
+  // 우선순위 정렬 — "무엇부터 고쳐야 하나"가 위에 오도록: 판정 심각도 → 깎인 점수 비율 순.
+  const SEVERITY = { critical_risk: 3, needs_improvement: 2, insufficient_evidence: 1.5, acceptable: 1, strong: 0 }
+  const cmItems = selected.criteria
+    .filter((c) => c.committee === committee)
+    .slice()
+    .sort((a, b) => {
+      const sa = SEVERITY[a.judgment] ?? 1, sb = SEVERITY[b.judgment] ?? 1
+      if (sb !== sa) return sb - sa
+      const la = (a.max - a.score) / (a.max || 1), lb = (b.max - b.score) / (b.max || 1)
+      return lb - la
+    })
+  // 상태 필터(전체/신규/남음/해결) — 지적 단위로 거르고, 걸러진 뒤 지적이 없는 항목은 숨긴다.
+  const visibleItems = statusFilter === 'all'
+    ? cmItems
+    : cmItems
+        .map((c) => ({ ...c, feedback: c.feedback.filter((f) => f.status === statusFilter) }))
+        .filter((c) => c.feedback.length > 0)
   const cmScore = committeeScore(selected, committee)
   const cmBefore = prev ? committeeScore(prev, committee) : null
   const cmMax = cmItems.reduce((s, ci) => s + (ci.max ?? CRITERION_MAX), 0)
@@ -1140,7 +1334,7 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
     return (
       <div className="vt-root">
         <div style={{ maxWidth: 920, margin: '0 auto', padding: '48px 24px', textAlign: 'center' }}>
-          <span className="badge purple mono"><FlaskConical size={12} /> 완성 리포트</span>
+          <span className="badge purple mono"><FlaskConical size={12} /> 종합 리포트</span>
           <h1 style={{ fontSize: 22, fontWeight: 700, marginTop: 14, color: '#1c1a2e' }}>회의 결과를 불러오는 중...</h1>
         </div>
       </div>
@@ -1160,6 +1354,8 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
           </div>
         )}
 
+        {/* ===== 개요 화면(점수 추이) — 버전 상세가 열리면 통째로 숨긴다(별도 화면 전환, 경이 요청 2026-07-25) ===== */}
+        {!detailOpen && (<>
         {/* 히어로 */}
         <div className="card glass" style={{ padding: '26px 28px', marginBottom: 18 }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 24, flexWrap: 'wrap' }}>
@@ -1193,35 +1389,26 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
           </div>
         </div>
 
-        {/* 총점 참고용 안내 + 점수 체계표(공고문 동적 rubric 기준 채점/제외/가점) — 실데이터 모드에서만 */}
+        {/* 총점 참고용 안내 + 점수 체계표(접힘 탭 — 클릭해서 펼침) — 실데이터 모드에서만 */}
         {usingReal && report?.rubric && (
           <>
             <ScoreNotice />
-            <ScoringSchemeCard rubric={report.rubric} />
+            <ScoringSchemeCard rubric={report.rubric} open={schemeOpen} onToggle={() => setSchemeOpen((v) => !v)} />
           </>
         )}
 
         {/* TEST 프로필 토글 — 제출 정보 카드는 MyPage로 이동함 */}
         <ProfileToggle profileKey={profileKey} onChange={setProfileKey} locked={embedded} />
 
-        {/* 점수 추이 그래프 */}
-        <div className="card glass" style={{ padding: '20px 22px 10px', marginBottom: 18 }}>
+        {/* 점수 추이 그래프 — 상세(위원 탭)는 여기서 버전 점을 클릭해야 아래에 열린다 */}
+        <div className="card glass" style={{ padding: '20px 22px 10px', marginBottom: 12 }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', marginBottom: 4 }}>
             <div>
               <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 7 }}>
                 <TrendingUp size={17} color="#7c5cea" /> 버전별 점수 추이
               </h2>
-              <span style={{ fontSize: 12, color: '#918d9f' }}>점을 클릭하면 해당 버전의 피드백을 볼 수 있어요</span>
+              <span style={{ fontSize: 12, color: '#918d9f' }}>버전 점(v1.0 …)을 클릭하면 그 버전의 상세 리포트가 아래에 열려요</span>
             </div>
-            <button className="btn-primary" onClick={handleNext} disabled={usingReal ? submitting : !nextVersion} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-              {usingReal
-                ? (submitting ? <>분석 중...</> : <><Plus size={14} /> 다음 수정본 제출</>)
-                : nextVersion
-                  ? <><Plus size={14} /> 다음 수정본 제출 ({nextVersion})</>
-                  : <><CheckCircle2 size={14} /> 모든 버전 반영됨</>}
-            </button>
-            {/* 실제 수정본 파일 입력(숨김) — 버튼이 이걸 트리거한다(C-2) */}
-            <input ref={fileInputRef} type="file" accept=".pdf,.docx,.pptx,.hwp,.hwpx" style={{ display: 'none' }} onChange={handleRevisionFile} />
           </div>
           {/* 업로드+재분석 진행/에러 배너 */}
           {submitting && (
@@ -1234,17 +1421,65 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
               {submitError}
             </div>
           )}
-          <ScoreTrendChart versions={versions} selectedIndex={selectedIndex} onSelect={setSelectedIndex} />
+          <ScoreTrendChart versions={versions} selectedIndex={selectedIndex}
+            onSelect={(i) => { setSelectedIndex(i); setDetailOpen(true); setStatusFilter('all') }} />
         </div>
 
-        {/* 위원 탭 + AI 피드백 탭(점수 없는 문자서식·오탈자) */}
+        {/* 다음 수정본 제출 — 점수 추이 카드 "바깥 아래"(경이 요청 2026-07-25) */}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 22 }}>
+          <button className="btn-primary" onClick={handleNext} disabled={usingReal ? submitting : !nextVersion} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            {usingReal
+              ? (submitting ? <>분석 중...</> : <><Plus size={14} /> 다음 수정본 제출</>)
+              : nextVersion
+                ? <><Plus size={14} /> 다음 수정본 제출 ({nextVersion})</>
+                : <><CheckCircle2 size={14} /> 모든 버전 반영됨</>}
+          </button>
+          {/* 실제 수정본 파일 입력(숨김) — 버튼이 이걸 트리거한다(C-2) */}
+          <input ref={fileInputRef} type="file" accept=".pdf,.docx,.pptx,.hwp,.hwpx" style={{ display: 'none' }} onChange={handleRevisionFile} />
+        </div>
+
+        <div className="card glass" style={{ padding: '18px 22px', textAlign: 'center', color: '#918d9f', fontSize: 13 }}>
+          위 그래프에서 <b style={{ color: '#7c5cea' }}>버전 점(v1.0 …)</b>을 클릭하면 그 버전의 상세 리포트 화면으로 이동합니다.
+        </div>
+        </>)}
+
+        {/* ===== 버전 상세 화면 — 개요를 대체하는 별도 화면. 뒤로가기/버전 칩으로 이동 ===== */}
+        {detailOpen && (
+        <div ref={detailRef} key={`detail-${selected.version}`} className="vt-fade">
+        {/* 상세 헤더 — 뒤로가기 + 버전 전환 칩 + 이 버전 총점 */}
+        <div className="card glass" style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', margin: '0 0 14px', padding: '12px 16px' }}>
+          <button className="btn-ghost" onClick={() => setDetailOpen(false)} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 700 }}>
+            <ArrowLeft size={15} /> 점수 추이로
+          </button>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            {versions.map((v, i) => {
+              const active = i === selectedIndex
+              return (
+                <button key={v.version} type="button" className="mono vt-tab" onClick={() => { setSelectedIndex(i); setStatusFilter('all') }}
+                  style={{ padding: '6px 13px', borderRadius: 99, border: `1.5px solid ${active ? '#7c5cea' : 'rgba(28,26,46,0.12)'}`, background: active ? '#7c5cea' : 'rgba(255,255,255,0.8)', color: active ? '#fff' : '#5b5770', fontSize: 12, fontWeight: 800, cursor: 'pointer' }}>
+                  {v.version}
+                </button>
+              )
+            })}
+          </div>
+          <div className="mono" style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontSize: 12, color: '#918d9f', fontWeight: 700 }}>{selected.label || '상세 리포트'}</span>
+            <span style={{ fontSize: 19, fontWeight: 800 }}>{selected.total_score}<span style={{ fontSize: 12, color: '#918d9f' }}>/{selected.max_total ?? 100}</span></span>
+            {totalDelta != null && <DeltaPill value={totalDelta} />}
+          </div>
+        </div>
+        <div style={{ fontSize: 12.5, color: '#918d9f', margin: '0 2px 12px' }}>
+          항목은 <b style={{ color: '#e0603d' }}>고칠 우선순위</b> 순으로 정렬되어 있습니다.
+        </div>
+
+        {/* 탭 순서: AI 피드백 → 기획 위원 → 개발 위원(경이 요청 2026-07-25) */}
         <div style={{ display: 'flex', gap: 10, marginBottom: 16 }}>
-          {['planning', 'dev', 'ai_feedback'].map((cid) => {
+          {['ai_feedback', 'planning', 'dev'].map((cid) => {
             const t = cid === 'ai_feedback' ? AI_FEEDBACK : COMMITTEES[cid]
             const active = committee === cid
             const Icon = t.Icon
             return (
-              <button key={cid} className="vt-tab" onClick={() => setCommittee(cid)}
+              <button key={cid} className="vt-tab" onClick={() => { setCommittee(cid); setStatusFilter('all') }}
                 style={{ flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '12px 16px', borderRadius: 12, border: `1.5px solid ${active ? 'transparent' : 'rgba(28,26,46,0.1)'}`, background: active ? t.gradient : 'rgba(255,255,255,0.72)', color: active ? '#fff' : '#5b5770', fontSize: 14, fontWeight: 700, cursor: 'pointer', boxShadow: active ? `0 10px 22px ${t.dim}` : 'none' }}>
                 <Icon size={16} /> {t.name}
               </button>
@@ -1276,18 +1511,32 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
               </span>
             </div>
             {cmDelta != null && <DeltaPill value={cmDelta} />}
+            {/* 상태 필터 탭 — 누르면 해당 상태의 지적만 모아 보여준다(경이 요청 2026-07-25) */}
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-              <span className="badge green mono">✓ 해결 {counts.resolved}</span>
-              <span className="badge amber mono">! 남음 {counts.open}</span>
-              <span className="badge coral mono">+ 신규 {counts.new}</span>
+              {[
+                { k: 'all', label: `전체`, cls: 'badge purple mono' },
+                { k: 'new', label: `+ 신규 ${counts.new}`, cls: 'badge coral mono' },
+                { k: 'open', label: `! 보완 필요 ${counts.open}`, cls: 'badge amber mono' },
+                { k: 'resolved', label: `✓ 해결 ${counts.resolved}`, cls: 'badge green mono' },
+              ].map((f) => (
+                <button key={f.k} type="button" className={f.cls} onClick={() => setStatusFilter(f.k)}
+                  style={{ cursor: 'pointer', border: statusFilter === f.k ? '1.5px solid currentColor' : '1.5px solid transparent', opacity: statusFilter === f.k ? 1 : 0.62 }}>
+                  {f.label}
+                </button>
+              ))}
             </div>
           </div>
         </div>
 
-        {/* 위원 항목 카드 */}
-        <div key={`body-${animKey}`} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-          {cmItems.map((c, i) => (
-            <CriterionCard key={c.id} c={c} before={criterionBefore(versions, selectedIndex, c.id)} index={i} animKey={animKey} isDev={committee === 'dev'} profile={profile} accent={cm} realGuides={selectedIndex === ALL.length - 1 ? realGuides : null} citations={selectedIndex === ALL.length - 1 && realCitations ? realCitations.get(c.id) : null} />
+        {/* 위원 항목 카드 — 우선순위(심각도·감점 비율) 순 정렬 + 상태 필터 적용 */}
+        <div key={`body-${animKey}-${statusFilter}`} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          {visibleItems.length === 0 && (
+            <div className="card glass" style={{ padding: 18, textAlign: 'center', color: '#918d9f', fontSize: 13 }}>
+              이 필터에 해당하는 지적이 없습니다.
+            </div>
+          )}
+          {visibleItems.map((c, i) => (
+            <CriterionCard key={c.id} c={c} before={criterionBefore(versions, selectedIndex, c.id)} index={i} priority={i + 1} animKey={`${animKey}-${statusFilter}`} isDev={committee === 'dev'} profile={profile} accent={cm} rubricInfo={rubricInfoById.get(c.id)} noticeName={docRoles.noticeName} realGuides={selectedIndex === ALL.length - 1 ? realGuides : null} citations={selectedIndex === ALL.length - 1 && realCitations ? realCitations.get(c.id) : null} />
           ))}
         </div>
 
@@ -1307,6 +1556,8 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
           </p>
         )}
         </>)}
+        </div>
+        )}
       </div>
     </div>
   )
