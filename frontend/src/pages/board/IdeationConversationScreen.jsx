@@ -130,20 +130,20 @@ function StreamingCursorStyle() {
         display:grid; grid-template-columns:minmax(0,1fr) 480px 340px;
         gap:20px; align-items:start; max-width:1680px;
       }
-      .rb-ideation-side{ position:sticky; top:24px; display:flex; flex-direction:column; gap:12px; }
-      .rb-ideation-canvas-col{ position:sticky; top:24px; display:flex; flex-direction:column; gap:12px; }
+      .rb-ideation-side{ position:sticky; top:24px; margin-top:40px; display:flex; flex-direction:column; gap:12px; }
+      .rb-ideation-canvas-col{ position:sticky; top:24px; margin-top:40px; display:flex; flex-direction:column; gap:12px; }
       .rb-ideation-meta{ display:flex; flex-wrap:wrap; gap:10px; margin-bottom:14px; }
       .rb-ideation-meta-item{ flex:1 1 120px; border-radius:12px; padding:10px 12px; }
       .rb-ideation-meta-label{ display:flex; align-items:center; gap:5px; margin-bottom:3px; }
       .rb-ideation-meta-value{ font-weight:700; color:var(--text-0); }
       @media (max-width: 1500px){
         .rb-ideation-layout{ grid-template-columns: minmax(0,1fr) 460px; }
-        .rb-ideation-canvas-col{ position:static; grid-column: 1 / -1; }
+        .rb-ideation-canvas-col{ position:static; grid-column: 1 / -1; margin-top:0; }
       }
       @media (max-width: 1180px){
         .rb-ideation-layout{ grid-template-columns: minmax(0,1fr); }
-        .rb-ideation-side{ position:static; }
-        .rb-ideation-canvas-col{ grid-column: auto; }
+        .rb-ideation-side{ position:static; margin-top:0; }
+        .rb-ideation-canvas-col{ grid-column: auto; margin-top:0; }
       }
     `}</style>
   )
@@ -1315,25 +1315,6 @@ export function IdeationScreen({
         { icon: ArrowRight, label: '다음 단계', value: nextStepLabel },
       ]
     : []
-  const selectedIdeaTitle = ideationConv?.selected_idea?.title
-  const currentTaskHeadline = phase === 'awaiting_candidate_selection'
-    ? '논의를 이어갈 아이디어 후보를 선택해 주세요.'
-    : selectedIdeaTitle
-      ? canFinalize
-        ? `‘${selectedIdeaTitle}’에 대한 위원 논의가 정리되었습니다.`
-        : `선택한 ‘${selectedIdeaTitle}’을 중심으로 문제 정의와 구현 범위를 논의하고 있습니다.`
-      : starting
-        ? '공모전 분석을 바탕으로 아이디어 후보를 만들고 있습니다.'
-        : '위원들의 논의를 확인하고 아이디어의 방향을 구체화해 주세요.'
-  const currentTaskGuide = phase === 'awaiting_candidate_selection'
-    ? '후보 카드를 선택하거나, 입력창에 결합·추천 의견을 남겨주세요.'
-    : canFinalize
-      ? '추가 의견을 남기거나 오른쪽 버튼을 눌러 주제 확정 단계로 이동할 수 있습니다.'
-      : busy
-        ? '위원들이 응답을 준비하고 있습니다. 잠시 후 최신 발언을 확인해 주세요.'
-        : canReplyOrContinue
-          ? '진행자의 질문과 최신 발언을 확인하고 의견을 입력해 주세요.'
-          : '현재 회의 진행 상황과 최신 발언을 확인해 주세요.'
 
   return (
     <div className="rb-ideation-layout">
@@ -1381,24 +1362,6 @@ export function IdeationScreen({
         )}
 
         <ErrorBanner error={phaseFailure || error} onRetry={handleRestart} />
-
-        <section
-          aria-labelledby="current-task-title"
-          style={{
-            marginBottom: 16, padding: '15px 18px', borderRadius: 12,
-            background: '#f5f1ff', border: '1px solid #d8cdf8', borderLeft: '4px solid var(--purple)',
-          }}
-        >
-          <div id="current-task-title" style={{ fontSize: 13, fontWeight: 600, color: '#5e3ec8', marginBottom: 5 }}>
-            지금 할 일
-          </div>
-          <div style={{ fontSize: 17, fontWeight: 600, color: 'var(--text-0)', lineHeight: 1.6 }}>
-            {currentTaskHeadline}
-          </div>
-          <div style={{ marginTop: 4, fontSize: 15.5, fontWeight: 500, color: '#514a61', lineHeight: 1.7 }}>
-            {currentTaskGuide}
-          </div>
-        </section>
 
         {/* 용준/Claude(2026-07-25, 요청: "회의 대화 영역 상단에 가로형 상태 요약 카드") —
             round/idea_candidates.length/phase는 전부 ideationConv에 이미 있는 실제 값이다. */}
@@ -1509,33 +1472,6 @@ export function IdeationScreen({
           <div ref={chatEndRef} />
         </div>
 
-        {/* 용준/Claude(2026-07-25, 요청: "후보 카드 선택 후 채팅 입력창 위에 선택한 후보
-            표시") — selected_idea는 백엔드가 이미 확정한 값이라 그대로 보여준다. 백엔드에
-            "선택 취소" API/phase 되돌리기 로직이 없어(선택 즉시 다음 phase로 진행) 실제로
-            아무 동작도 하지 않는 [선택 취소] 버튼은 만들지 않았다 — 대신 현재 선택된
-            후보를 명확히 보여주는 안내로만 둔다. */}
-        {ideationConv?.selected_idea?.title && (
-          <div
-            style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
-              marginTop: 12, padding: '13px 16px', borderRadius: 12,
-              background: '#f5f1ff', border: '2px solid #9b82eb',
-              boxShadow: '0 4px 14px rgba(124,92,234,0.10)',
-            }}
-          >
-            <div>
-              <div style={{ fontSize: 13, fontWeight: 600, color: '#5e3ec8' }}>선택한 아이디어</div>
-              <div style={{ marginTop: 2, fontSize: 17, fontWeight: 600, color: 'var(--text-0)' }}>
-                {ideationConv.selected_idea.title}
-              </div>
-              <div style={{ marginTop: 3, fontSize: 14.5, fontWeight: 500, color: '#514a61', lineHeight: 1.65 }}>
-                현재 이 아이디어를 중심으로 회의 중입니다.
-              </div>
-            </div>
-            <CheckCircle2 size={21} color="var(--purple)" style={{ flexShrink: 0 }} />
-          </div>
-        )}
-
         {/* 용준/Claude(2026-07-22, 요청: "잠시만" 버튼): 위원이 실제로 발언을 스트리밍하는
             동안만 노출된다 — 클릭 시 실제 활성 스트리밍 요청을 취소한다(표시만 멈추는
             효과 아님). */}
@@ -1608,6 +1544,29 @@ export function IdeationScreen({
             >
               <Send size={14} />
             </button>
+          </div>
+        )}
+
+        {/* 선택한 아이디어 안내는 채팅 입력창 아래에 표시한다. selected_idea는 백엔드가
+            확정한 값이며, 선택 취소 API나 phase 되돌리기 동작은 제공하지 않는다. */}
+        {ideationConv?.selected_idea?.title && (
+          <div
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+              marginTop: 12, padding: '13px 16px', borderRadius: 12,
+              background: 'var(--bg-1)', border: '1px solid var(--glass-border)',
+            }}
+          >
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-2)' }}>선택한 아이디어</div>
+              <div style={{ marginTop: 2, fontSize: 17, fontWeight: 600, color: 'var(--text-0)' }}>
+                {ideationConv.selected_idea.title}
+              </div>
+              <div style={{ marginTop: 3, fontSize: 14.5, fontWeight: 500, color: 'var(--text-2)', lineHeight: 1.65 }}>
+                현재 이 아이디어를 중심으로 회의 중입니다.
+              </div>
+            </div>
+            <CheckCircle2 size={21} color="var(--text-2)" style={{ flexShrink: 0 }} />
           </div>
         )}
 
