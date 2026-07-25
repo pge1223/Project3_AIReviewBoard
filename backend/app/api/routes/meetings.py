@@ -410,7 +410,103 @@ def _load_rubric_mapping(domain: str) -> dict:
 # (government_support는 role_mapping.py 미확정 등으로 아직 범위 밖, PER-002 우선순위
 # 합의 참고).
 _RUBRIC_EXTRACTION_MAX_ITEMS = 8
-_RUBRIC_EXTRACTION_VERSION = 3  # v3: measurable(측정 가능/주관 배제) 분류 추가 — 캐시 무효화
+_RUBRIC_EXTRACTION_VERSION = 7  # v7: 균등배분 금지+배점 숫자 원문 확인 필수(양식 제목 지어내기 차단) — 캐시 무효화
+
+# 공고문(criteria) 텍스트 예산 — 배점표가 뒤쪽에 있거나 공고 자료가 여러 개(공고문+신청서식)여도
+# 배점표가 잘리지 않도록 submission(6000자)보다 넉넉하게 잡는다.
+_CRITERIA_TEXT_MAX_CHARS = 12000
+
+
+def _normalize_for_match(text: str) -> str:
+    """항목명 원문 등장 검증용 정규화 — 공백·중점·'및'·괄호류를 제거해 표기 차이를 흡수한다."""
+    out = []
+    for ch in text:
+        if ch.isspace() or ch in "·⋅ㆍ,()[]<>「」『』-–—/":
+            continue
+        out.append(ch)
+    return "".join(out).replace("및", "").lower()
+
+
+def _criteria_text_looks_like_notice(criteria_text: str) -> bool:
+    """공고문 텍스트가 평가기준을 담고 있을 법한지 사전 판별(결정론).
+
+    실측 사고(2026-07-25): 잘못된 URL 스크랩("Please enable JS ..." 43자)이 criteria로
+    들어갔는데 LLM이 criteria:[] 대신 기본 4범주를 지어내 '추출 성공'으로 기록됨.
+    내용이 없으면 LLM을 아예 부르지 않고 정적 폴백한다."""
+    text = (criteria_text or "").strip()
+    if len(text) < 200:
+        return False
+    return any(kw in text for kw in ("평가", "심사", "배점", "기준", "선정"))
+
+
+_SCORE_LINE_RE = re.compile(r"^\d{1,3}(?:\.\d+)?\s*점?$")
+
+
+def _align_scores_with_notice_first_column(
+    criteria_text: str, extracted_items: list
+) -> tuple[list[str], list[str]]:
+    """배점을 공고문 원문의 '항목명 다음 첫 번째 숫자'(=첫 부문 열)로 결정론적으로 보정한다.
+
+    실측(2026-07-25): 부문별 배점 열이 2개인 표(실증·PoC/우수사례)가 텍스트로 풀리면 항목마다
+    숫자가 두 줄로 나온다("10" 다음 "25"). 프롬프트로 '첫 열만 사용'을 지시해도 LLM이 일부
+    항목에서 두 번째 숫자를 집는 사고가 재발해(확산성·효과성 10→25), 원문 기반으로 강제 정렬한다.
+    항목명이 등장한 줄 이후의 '순수 숫자 줄'들을 모아 첫 번째 숫자로 배점을 강제한다(공고문
+    원문이 배점의 유일한 진실 — LLM이 다른 열/지어낸 값을 넣어도 원문 값으로 교체).
+    반환: (보정 내역, 원문에서 배점 숫자를 찾지 못한 항목명 목록). 후자가 과반이면 호출부가
+    "배점표 없는 자료(신청서 양식 등)에서 지어낸 추출"로 보고 거부한다(2026-07-25 실측:
+    붙임2 신청 서식의 작성 항목 제목 4개에 균등 배분 25점씩 지어낸 사고)."""
+    lines = [ln.strip() for ln in (criteria_text or "").splitlines()]
+    corrections: list[str] = []
+    unmatched: list[str] = []
+    for item in extracted_items:
+        name = str(item.get("criterion_name") or "")
+        name_norm = _normalize_for_match(name)
+        if not name_norm:
+            continue
+        # 항목명이 들어간 모든 줄을 후보로 본다 — 본문 서술("'목표 부합성', '기술성' … 항목을
+        # 종합 평가")에 먼저 등장할 수 있어, 뒤에 숫자 줄이 실제로 따라오는 위치(=배점표 행)를
+        # 찾을 때까지 순서대로 시도한다.
+        row_idxs = [i for i, ln in enumerate(lines) if ln and name_norm in _normalize_for_match(ln)]
+        numbers: list[float] = []
+        for row_idx in row_idxs:
+            numbers = []
+            for ln in lines[row_idx + 1 : row_idx + 16]:
+                if not ln:
+                    continue  # 표가 풀리며 생긴 빈 줄은 숫자 연속 구간을 끊지 않는다
+                if _SCORE_LINE_RE.match(ln):
+                    numbers.append(float(ln.rstrip("점").strip()))
+                    if len(numbers) >= 4:
+                        break
+                elif numbers:
+                    break  # 숫자 구간이 끝나면 중단(다음 항목 배점과 섞임 방지)
+            if numbers:
+                break
+        if not numbers:
+            unmatched.append(name)
+            continue
+        first = numbers[0]
+        current = item.get("max_score")
+        if current != first:
+            corrections.append(f"{name}: {current}→{first}(원문 첫 부문 열)")
+            item["max_score"] = first
+    return corrections, unmatched
+
+
+def _validate_extracted_names(criteria_text: str, extracted_items: list) -> None:
+    """추출된 평가항목명이 공고문 원문에 실제로 등장하는지 검증(결정론적 할루시네이션 차단).
+
+    LLM이 프롬프트의 [기본 4범주] 참고 목록이나 자기 상식으로 항목을 지어내면, 그 이름은
+    공고문 원문에 없으므로 여기서 걸린다 → ValueError → 정적 템플릿 폴백(정직하게 표기됨)."""
+    text_norm = _normalize_for_match(criteria_text)
+    missing = []
+    for item in extracted_items:
+        name = str(item.get("criterion_name") or "")
+        if _normalize_for_match(name) not in text_norm:
+            missing.append(name)
+    if missing:
+        raise ValueError(
+            f"추출된 평가항목명이 공고문 원문에 없습니다(할루시네이션 의심): {missing}"
+        )
 
 
 def _build_rubric_extraction_prompt(
@@ -432,15 +528,24 @@ def _build_rubric_extraction_prompt(
         f'평가관점(perspective_id): {[p["perspective_id"] for p in persona_cards[pid]["evaluation_perspectives"]]}'
         for pid in committee
     )
-    truncated = criteria_text[:_SUBMISSION_TRUNCATE_CHARS]
+    truncated = criteria_text[:_CRITERIA_TEXT_MAX_CHARS]
     return f"""당신은 공모전 공고문(모집요강)에서 실제 심사 평가항목을 추출하는 보조입니다.
 아래 [공고문 내용]을 읽고, 이 공모전의 평가항목을 최대 {_RUBRIC_EXTRACTION_MAX_ITEMS}개까지
 추출하세요.
 
 규칙:
-- 공고문에 명시된 평가항목을 최우선으로 사용하세요. 배점(가중치)이 공고문에 있으면 그대로
-  쓰고, 없으면 전체 100점을 항목 수로 균등 배분하세요(모든 항목의 max_score 합은 반드시
-  100이어야 합니다).
+- 평가항목은 공고문의 **"평가 항목 및 배점" 표(배점 숫자가 명시된 표)에서만** 추출하세요.
+  배점(가중치)은 **그 숫자를 그대로** 쓰세요 — 합을 100으로 억지로 맞추기 위해 배점을 바꾸거나
+  다른 열의 배점을 가져오는 것은 금지입니다(가점이 별도라 합이 95점 등 100 미만이어도 정상).
+- [배점 없는 항목 금지] 배점 숫자가 명시되지 않은 항목은 절대 criteria에 넣지 마세요 —
+  균등 배분으로 배점을 지어내는 것은 금지입니다. 특히 **참가 신청서·수행보고서 양식의 작성
+  항목 제목**(예: "현안 및 문제정의", "과제 목표 및 기대 방향", "작성 요령")은 평가항목이
+  아니라 작성 양식이므로 절대 평가항목으로 추출하지 마세요. 배점표를 찾을 수 없으면
+  "criteria": []로 응답하세요.
+- [부문별 배점 열 혼용 금지] 배점표가 공모 부문마다 배점을 다르게 매긴 경우(예: "실증·PoC"
+  열과 "우수사례" 열이 나란히 있는 표), 항목마다 다른 부문의 배점을 섞지 말고 **한 부문의
+  배점 열만 일관되게** 사용하세요. 어느 부문인지 판단이 애매하면 배점표에서 첫 번째(왼쪽)
+  부문의 열을 사용합니다.
 - 배점(max_score)이 실제로 매겨진 채점 항목만 추출하세요. max_score는 반드시 1 이상이어야
   합니다. 배점이 0이거나 없는 항목(예: 배점 없이 이름만 나열된 2차 발표심사 항목, 참고용
   안내 문구)은 criteria에 절대 넣지 마세요 — 배점표(100점 만점)에 실린 항목만 대상입니다.
@@ -475,6 +580,11 @@ def _build_rubric_extraction_prompt(
     한 문장을 적으세요(예: "윤리성은 정답이 없는 가치 판단 영역이라 문서만으로 객관 채점이
     어려워 점수에서 제외했습니다").
   · measurable=true 항목이 최소 1개는 있어야 합니다. 확신이 없으면 measurable=true로 두세요.
+- [지어내기 금지 — 매우 중요] criteria에 넣는 각 항목의 criterion_name은 반드시 [공고문 내용]
+  원문에 실제로 등장하는 평가항목명이어야 합니다. 아래 [기본 4범주]는 위원 배정 참고용일 뿐이며,
+  그 이름(창의성·기술·사업전략·완성도 등)이 공고문 원문에 없으면 절대 평가항목으로 만들지 마세요.
+  공고문 텍스트에서 평가항목·배점을 찾을 수 없으면(내용이 없거나 무관한 문서면) 항목을 상식으로
+  창작하지 말고 반드시 "criteria": []로 응답하세요 — 빈 응답이 지어낸 응답보다 훨씬 낫습니다.
 - 공고문에서 평가항목 자체를 찾을 수 없으면 "criteria": []로 응답하세요.
 
 [기본 4범주 — 위원 배정 참고용(criterion_id 복사 금지, 위원 배정만 참고)]
@@ -503,10 +613,14 @@ def _build_rubric_extraction_prompt(
 def _call_rubric_extraction_llm(prompt: str) -> str:
     model = settings.reviewer_model()
     client = trace_openai_client(OpenAI(api_key=settings.OPENAI_API_KEY, max_retries=1))
+    # 경이/Claude(2026-07-25): 추출도 채점처럼 결정론으로 — 같은 공고문이면 같은 rubric(배점·
+    # measurable 분류)이 나와야 프로젝트/재분석 간 만점이 흔들리지 않는다.
     resp = client.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": prompt}],
         response_format={"type": "json_object"},
+        temperature=0,
+        seed=_SCORING_SEED,
     )
     return resp.choices[0].message.content
 
@@ -533,8 +647,18 @@ async def _get_or_build_rubric_mapping(project: dict, project_id: str, domain: s
         return base_mapping
 
     criteria_text, source_document_ids = combine_criteria_documents(
-        criteria_docs, max_chars=_SUBMISSION_TRUNCATE_CHARS
+        criteria_docs, max_chars=_CRITERIA_TEXT_MAX_CHARS
     )
+    # 사전 가드 — 공고문 텍스트에 평가기준이 있을 리 없는 내용(스크랩 실패·잡문)이면
+    # LLM을 부르지 않는다(지어내기 원천 차단).
+    if not _criteria_text_looks_like_notice(criteria_text):
+        logger.warning(
+            "[rubric] project_id=%s 공고문 텍스트가 평가기준을 담고 있지 않아(길이 %d자, "
+            "평가/배점 키워드 없음) 정적 템플릿으로 폴백합니다 — 공고문 원문 업로드 필요.",
+            project_id,
+            len(criteria_text or ""),
+        )
+        return base_mapping
     cached = project.get("dynamic_rubric_mapping")
     cached_ids = (cached or {}).get("meta", {}).get("source_document_ids")
     if cached_ids is None and cached:
@@ -561,6 +685,25 @@ async def _get_or_build_rubric_mapping(project: dict, project_id: str, domain: s
         extracted_items = parsed.get("criteria")
         if not isinstance(extracted_items, list):
             raise ValueError(f"'criteria' 필드가 리스트가 아닙니다: {parsed!r}")
+        # 사후 검증(결정론) — 항목명이 공고문 원문에 실제로 등장하지 않으면 지어낸 것으로
+        # 보고 거부한다(기본 4범주 복사·상식 창작 차단).
+        _validate_extracted_names(criteria_text, extracted_items)
+        # 배점 보정(결정론) — 원문의 첫 부문 열 값으로 강제 정렬. 원문에서 배점 숫자를 확인
+        # 못 한 항목이 과반이면 "배점표 없는 자료(신청서 양식 등)에서 지어낸 추출"로 보고 거부.
+        score_corrections, unmatched = _align_scores_with_notice_first_column(
+            criteria_text, extracted_items
+        )
+        if len(unmatched) > len(extracted_items) // 2:
+            raise ValueError(
+                f"공고문 원문에서 배점 숫자를 확인하지 못한 항목이 과반입니다(배점표 부재/"
+                f"양식 제목 추출 의심): {unmatched}"
+            )
+        if score_corrections:
+            logger.info(
+                "[rubric] project_id=%s 배점을 공고문 첫 부문 열로 보정: %s",
+                project_id,
+                "; ".join(score_corrections),
+            )
         dynamic_mapping = build_dynamic_rubric_mapping(
             base_mapping=base_mapping,
             extracted_items=extracted_items,

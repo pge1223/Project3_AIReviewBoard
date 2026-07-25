@@ -23,7 +23,7 @@ import { pollDocumentIndexing } from "../../utils/documentIndexingPoll";
 import { parseEvaluationCriteria, summarizeCriteria, CONFIDENCE_LABEL } from "../../utils/contestAnalysisDisplay";
 import ProgressBar from "../../components/common/ProgressBar";
 import WorkbenchScreen from "./WorkbenchScreen";
-// 경이/Claude(2026-07-22): "AI 피드백" 다음 "완성 리포트" 단계 — 경이가 설계한 버전 추적형
+// 경이/Claude(2026-07-22): "AI 피드백" 다음 "종합 리포트" 단계 — 경이가 설계한 버전 추적형
 // 리포트(VersionTrackerTestPage, 애니메이션/버전추적/프로필 토글/이전·현재 비교 포함)를
 // 흐름 안에 embedded 모드로 끼워 넣는다. 이 파일(가은님 소유)의 변경은 워크벤치와 같은
 // 방식으로 라벨/흐름/렌더 3곳만 최소화했다.
@@ -55,7 +55,7 @@ const STAGE_LABELS = {
   // WorkbenchScreen.jsx(신규 파일)에 분리해서, 이 파일(가은님 소유)의 변경은
   // 이 라벨/흐름 추가 정도로 최소화했다.
   workbench: "AI 피드백",
-  report: "완성 리포트",
+  report: "종합 리포트",
 };
 
 // 가은/Claude(2026-07-24, 요청: 공모전 분석 결과 화면 개편) — 왼쪽 단계 메뉴와 오른쪽
