@@ -402,7 +402,9 @@ def build_ideation_conv_discussion_prompt(
     return template
 
 
-IDEATION_CONV_DISCUSSION_FACILITATOR_TEMPLATE = "ideation_conv_discussion_facilitator.txt"
+# 진행자 v02 전환점. 롤백하려면 파일명만
+# "ideation_conv_discussion_facilitator.txt"로 되돌린다.
+IDEATION_CONV_DISCUSSION_FACILITATOR_TEMPLATE = "ideation_conv_discussion_facilitator_02.txt"
 IDEATION_CONV_CANVAS_UPDATE_TEMPLATE = "ideation_conv_canvas_update.txt"
 
 
@@ -449,6 +451,15 @@ def build_ideation_conv_discussion_facilitator_prompt(
     resolved_issues: Any = None,
     stop_reason: str | None = None,
     next_issue_hint: str | None = None,
+    application_form_items: Any = None,
+    application_form_draft: Any = None,
+    selected_idea: Any = None,
+    idea_canvas: Any = None,
+    latest_user_answer: str | None = None,
+    recent_messages: Any = None,
+    required_phase: str | None = None,
+    next_phase_if_confirmed: str | None = None,
+    context_anchors: Any = None,
 ) -> str:
     """진행자가 전문가 토론을 정리하고 사용자 질문이 꼭 필요한지 판단하는 프롬프트를
     조립한다. decided_next_action은 이미 라우터(ideation_conv_build.py::
@@ -482,6 +493,19 @@ def build_ideation_conv_discussion_facilitator_prompt(
         "<<RESOLVED_ISSUES_JSON>>": _as_text(resolved_issues if resolved_issues is not None else []),
         "<<STOP_REASON>>": stop_reason or "",
         "<<NEXT_ISSUE_HINT>>": next_issue_hint or "",
+        "<<APPLICATION_FORM_ITEMS_JSON>>": _as_text(
+            application_form_items if application_form_items else None
+        ),
+        "<<APPLICATION_FORM_DRAFT_JSON>>": _as_text(
+            application_form_draft if application_form_draft else []
+        ),
+        "<<SELECTED_IDEA_JSON>>": _as_text(selected_idea if selected_idea is not None else None),
+        "<<IDEA_CANVAS_JSON>>": _as_text(idea_canvas if idea_canvas is not None else None),
+        "<<LATEST_USER_ANSWER>>": (latest_user_answer or "").strip() or "null",
+        "<<RECENT_MESSAGES_JSON>>": _as_text(recent_messages if recent_messages is not None else []),
+        "<<REQUIRED_PHASE>>": required_phase or "problem_definition",
+        "<<NEXT_PHASE_IF_CONFIRMED>>": next_phase_if_confirmed or "target_user",
+        "<<CONTEXT_ANCHORS_JSON>>": _as_text(context_anchors if context_anchors is not None else []),
     }
     for token, value in replacements.items():
         template = template.replace(token, value)
