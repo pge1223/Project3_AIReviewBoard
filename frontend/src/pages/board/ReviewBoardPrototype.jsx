@@ -2,9 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   Link2, Upload, FileText, Sparkles,
-  CheckCircle2, Circle, AlertCircle, Award, Target, ShieldCheck,
-  ArrowRight, TrendingUp, ChevronDown, ChevronUp, Calendar, FolderOpen, X,
-  Menu, User, LogOut, ExternalLink,
+  CheckCircle2, Circle, AlertCircle, AlertTriangle, Award, Target, ShieldCheck,
+  ArrowRight, TrendingUp, ChevronDown, ChevronUp, ChevronRight, Calendar, FolderOpen, X, Trash2,
+  Menu, User, LogOut, ExternalLink, Gift, AlertOctagon, Quote, FileStack,
 } from "lucide-react";
 import { createProject, getProject, updateProject, getLatestMeeting } from "../../api/projectApi";
 import {
@@ -20,9 +20,10 @@ import { analyzeProject, getAnalyzeProgress, getMentorCandidates } from "../../a
 import { isAcceptedDocument, formatFileSize, ACCEPTED_DOCUMENT_EXTENSIONS } from "../../utils/file";
 import { assessCriteriaContent } from "../../utils/criteriaAssessment";
 import { pollDocumentIndexing } from "../../utils/documentIndexingPoll";
+import { parseEvaluationCriteria, summarizeCriteria, CONFIDENCE_LABEL } from "../../utils/contestAnalysisDisplay";
 import ProgressBar from "../../components/common/ProgressBar";
 import WorkbenchScreen from "./WorkbenchScreen";
-// 경이/Claude(2026-07-22): "AI 피드백" 다음 "완성 리포트" 단계 — 경이가 설계한 버전 추적형
+// 경이/Claude(2026-07-22): "AI 피드백" 다음 "종합 리포트" 단계 — 경이가 설계한 버전 추적형
 // 리포트(VersionTrackerTestPage, 애니메이션/버전추적/프로필 토글/이전·현재 비교 포함)를
 // 흐름 안에 embedded 모드로 끼워 넣는다. 이 파일(가은님 소유)의 변경은 워크벤치와 같은
 // 방식으로 라벨/흐름/렌더 3곳만 최소화했다.
@@ -43,7 +44,10 @@ import { IdeationScreen, IdeationResultScreen } from "./IdeationConversationScre
 const STAGE_LABELS = {
   entry: "공모전 입력",
   analysis: "공모전 분석",
-  ideation: "주제 아이디어 회의",
+  // 가은/Claude(2026-07-24, 요청: 공모전 분석 결과 화면 개편) — 내부 stage 키("ideation")와
+  // 라우팅/데이터는 그대로 두고, 화면에 노출되는 문구만 팀 UX 레퍼런스에 맞춰 "AI 아이디어
+  // 회의"로 바꾼다. IdeationConversationScreen.jsx 쪽 배지 등 이 상수를 안 쓰는 곳은 영향 없음.
+  ideation: "AI 아이디어 회의",
   ideation_result: "주제 확정",
   upload: "기획서 업로드 · 분석",
   // 재인/Claude(2026-07-21): docs/REVIEW_BOARD_서비스_방향성_정리_20260720.md의
@@ -51,7 +55,20 @@ const STAGE_LABELS = {
   // WorkbenchScreen.jsx(신규 파일)에 분리해서, 이 파일(가은님 소유)의 변경은
   // 이 라벨/흐름 추가 정도로 최소화했다.
   workbench: "AI 피드백",
-  report: "완성 리포트",
+  report: "종합 리포트",
+};
+
+// 가은/Claude(2026-07-24, 요청: 공모전 분석 결과 화면 개편) — 왼쪽 단계 메뉴와 오른쪽
+// 분석 진행 상태 패널이 같은 문구를 공유한다. 실제 분석 데이터가 아니라 "이 단계에서 뭘
+// 하는가"를 설명하는 고정 안내문이라 API 값과 무관하게 둬도 값을 지어내는 게 아니다.
+const STAGE_DESCRIPTIONS = {
+  entry: "공모전 자료 등록이 완료되었습니다.",
+  analysis: "공모전의 핵심 내용과 평가 기준을 분석합니다.",
+  ideation: "AI 전문가들이 아이디어를 논의합니다.",
+  ideation_result: "최종 아이디어를 선택하고 확정합니다.",
+  upload: "평가받을 기획서를 업로드하고 분석을 시작합니다.",
+  workbench: "AI 위원들의 피드백을 확인합니다.",
+  report: "버전별 개선 결과를 확인합니다.",
 };
 
 const FLOW_BY_MODE = {
@@ -118,24 +135,37 @@ function Shell({ children, active, mode, onNavigate, showNav }) {
             var(--bg-0);
           color:var(--text-0);
           font-family:'Pretendard', -apple-system, sans-serif;
+          font-size:15px;
           display:flex;
         }
         .rb-root .glass{ background:var(--glass); border:1px solid var(--glass-border); backdrop-filter: blur(14px); box-shadow: 0 2px 14px rgba(28,26,46,0.05); }
         .rb-root .mono{ font-family:var(--mono); letter-spacing:0.02em; }
         .rb-root .navrail{ width:220px; flex-shrink:0; border-right:1px solid var(--glass-border); padding:24px 14px; }
-        .rb-root .navitem{ display:flex; align-items:center; gap:10px; padding:10px 12px; border-radius:10px; font-size:13px; color:var(--text-2); cursor:pointer; margin-bottom:4px; }
-        .rb-root .navitem:hover{ background:var(--bg-2); }
-        .rb-root .navitem.active{ background:var(--purple-dim); color:var(--text-0); }
-        .rb-root .navitem.done{ color:var(--text-1); }
+        .rb-root .navstep{ position:relative; padding-bottom:20px; }
+        .rb-root .navstep:last-child{ padding-bottom:0; }
+        .rb-root .navstep-line{ position:absolute; left:17px; top:28px; bottom:0; width:1.5px; background:var(--glass-border); }
+        .rb-root .navstep-row{ display:flex; align-items:flex-start; gap:10px; padding:6px; margin:-6px; border-radius:10px; text-align:left; background:none; border:none; width:100%; font:inherit; color:inherit; }
+        .rb-root .navstep-done .navstep-row, .rb-root .navstep-current .navstep-row{ cursor:pointer; }
+        .rb-root .navstep-done .navstep-row:hover, .rb-root .navstep-current .navstep-row:hover{ background:var(--bg-2); }
+        .rb-root .navstep-upcoming .navstep-row{ cursor:default; }
+        .rb-root .navstep-dot{ width:22px; height:22px; border-radius:999px; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:700; flex-shrink:0; margin-top:1px; }
+        .rb-root .navstep-done .navstep-dot{ background:var(--green-dim); color:var(--green); }
+        .rb-root .navstep-current .navstep-dot{ background:var(--purple); color:#fff; }
+        .rb-root .navstep-upcoming .navstep-dot{ background:var(--bg-2); color:var(--text-2); }
+        .rb-root .navstep-label{ font-size:14px; font-weight:600; color:var(--text-1); }
+        .rb-root .navstep-current .navstep-label{ color:var(--text-0); font-weight:700; }
+        .rb-root .navstep-upcoming .navstep-label{ color:var(--text-2); }
+        .rb-root .navstep-desc{ font-size:12px; color:var(--text-2); margin-top:2px; line-height:1.5; }
         .rb-root .main{ flex:1; min-width:0; padding:32px 40px; overflow-y:auto; }
-        .rb-root .badge{ display:inline-flex; align-items:center; gap:6px; font-size:11px; padding:3px 9px; border-radius:99px; font-family:var(--mono); }
+        .rb-root .badge{ display:inline-flex; align-items:center; gap:6px; font-size:12px; padding:3px 9px; border-radius:99px; font-family:var(--mono); }
         .rb-root .badge.purple{ background:var(--purple-dim); color:var(--purple); }
         .rb-root .badge.coral{ background:var(--coral-dim); color:var(--coral); }
         .rb-root .badge.green{ background:var(--green-dim); color:var(--green); }
         .rb-root .badge.amber{ background:var(--amber-dim); color:var(--amber); }
-        .rb-root .btn-primary{ background:linear-gradient(135deg, var(--purple), #8b6ef0); color:#0b0a16; font-weight:600; border:none; border-radius:12px; padding:11px 20px; cursor:pointer; font-size:14px; }
+        .rb-root .badge.grey{ background:var(--bg-2); color:var(--text-2); }
+        .rb-root .btn-primary{ background:linear-gradient(135deg, var(--purple), #8b6ef0); color:#0b0a16; font-weight:600; border:none; border-radius:12px; padding:11px 20px; cursor:pointer; font-size:15px; }
         .rb-root .btn-primary:disabled{ opacity:0.4; cursor:not-allowed; }
-        .rb-root .btn-ghost{ background:transparent; border:1px solid var(--glass-border); color:var(--text-1); border-radius:12px; padding:10px 18px; cursor:pointer; font-size:14px; }
+        .rb-root .btn-ghost{ background:transparent; border:1px solid var(--glass-border); color:var(--text-1); border-radius:12px; padding:10px 18px; cursor:pointer; font-size:15px; }
         .rb-root .btn-ghost:hover{ background:var(--bg-2); }
         .rb-root .card{ border-radius:16px; padding:20px; }
         .rb-root .progress-track{ height:8px; border-radius:999px; background:var(--bg-2); overflow:hidden; }
@@ -144,10 +174,10 @@ function Shell({ children, active, mode, onNavigate, showNav }) {
         .rb-root .rb-icon-btn{ width:40px; height:40px; display:inline-flex; align-items:center; justify-content:center; padding:0; border:none; background:transparent; color:var(--text-1); border-radius:10px; cursor:pointer; }
         .rb-root .rb-icon-btn:hover{ background:var(--bg-2); color:var(--text-0); }
         .rb-root .rb-menu-panel{ position:absolute; top:48px; right:0; width:168px; border-radius:12px; padding:6px; }
-        .rb-root .rb-menu-item{ width:100%; display:flex; align-items:center; gap:8px; padding:10px 11px; border:none; border-radius:9px; background:transparent; color:var(--text-1); font-size:13px; cursor:pointer; text-align:left; }
+        .rb-root .rb-menu-item{ width:100%; display:flex; align-items:center; gap:8px; padding:10px 11px; border:none; border-radius:9px; background:transparent; color:var(--text-1); font-size:14px; cursor:pointer; text-align:left; }
         .rb-root .rb-menu-item:hover{ background:var(--bg-2); color:var(--text-0); }
         .rb-root .rb-entry-actions{ display:flex; justify-content:flex-end; margin-bottom:10px; }
-        .rb-root .rb-inline-projects{ display:inline-flex; align-items:center; gap:6px; padding:8px 12px; font-size:14px; font-family:inherit; font-weight:400; letter-spacing:0; }
+        .rb-root .rb-inline-projects{ display:inline-flex; align-items:center; gap:6px; padding:8px 12px; font-size:15px; font-family:inherit; font-weight:400; letter-spacing:0; }
         .rb-root .rb-back-button{ width:26px; height:26px; display:inline-flex; align-items:center; justify-content:center; border:none; background:transparent; color:#000; border-radius:8px; cursor:pointer; font-size:13px; font-weight:300; line-height:1; padding:0; flex-shrink:0; }
         .rb-root .rb-back-button:hover{ background:var(--bg-2); color:var(--text-0); }
         .rb-root .rb-typing-cursor{ display:inline-block; margin-left:1px; animation: rb-blink 0.9s steps(1) infinite; }
@@ -190,16 +220,31 @@ function Shell({ children, active, mode, onNavigate, showNav }) {
           <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 20, letterSpacing: "0.02em" }}>
             AI Review Board
           </div>
-          {flow.map((k) => (
-            <div
-              key={k}
-              className={`navitem ${active === k ? "active" : ""} ${flow.indexOf(k) < flow.indexOf(active) ? "done" : ""}`}
-              onClick={() => onNavigate(k)}
-            >
-              {flow.indexOf(k) < flow.indexOf(active) ? <CheckCircle2 size={14} color="var(--green)" /> : <Circle size={13} />}
-              {STAGE_LABELS[k]}
-            </div>
-          ))}
+          {flow.map((k, idx) => {
+            const activeIdx = flow.indexOf(active);
+            const state = idx < activeIdx ? "done" : idx === activeIdx ? "current" : "upcoming";
+            const reachable = state !== "upcoming";
+            return (
+              <div key={k} className={`navstep navstep-${state}`}>
+                <button
+                  type="button"
+                  className="navstep-row"
+                  onClick={reachable ? () => onNavigate(k) : undefined}
+                  disabled={!reachable}
+                  aria-current={state === "current" ? "step" : undefined}
+                >
+                  <span className="navstep-dot">
+                    {state === "done" ? <CheckCircle2 size={13} /> : idx + 1}
+                  </span>
+                  <span>
+                    <div className="navstep-label">{STAGE_LABELS[k]}</div>
+                    {STAGE_DESCRIPTIONS[k] && <div className="navstep-desc">{STAGE_DESCRIPTIONS[k]}</div>}
+                  </span>
+                </button>
+                {idx < flow.length - 1 && <div className="navstep-line" />}
+              </div>
+            );
+          })}
         </div>
       )}
       <div className="main">{children}</div>
@@ -214,10 +259,83 @@ function Shell({ children, active, mode, onNavigate, showNav }) {
  * 없었다. DocumentUploadPage.jsx(/projects/new)의 "기준 문서·공고문" 로직(URL 탭 +
  * 파일 업로드 탭, 전용 "가져오기" 버튼, 진행 상태·에러 표시, 색인 폴링)을 그대로
  * 옮겨왔다.
+ *
+ * 가은/Claude(2026-07-24, 요청: 첫 화면 개편) — 콘텐츠가 세로로만 길게 쌓이던 걸
+ * "왼쪽 진행 단계 / 가운데 방식 선택·자료 등록 / 오른쪽 현재 설정 요약" 3열
+ * 대시보드로 재구성했다. 상태·핸들러(모드 선택, URL 가져오기, 파일 업로드, 삭제,
+ * 시작 조건)는 전부 그대로이고 레이아웃·표시만 바뀐다. 신규로 늘어난 것은
+ * unsupportedLinks를 문서 데이터에 실어 보내(assessCriteriaContent가 이미 계산해
+ * 주던 값인데 기존엔 meta 문장에만 녹여서 버렸다) "추가 파일 확인 필요" 경고를
+ * 별도 영역으로 분리한 것뿐이다.
  */
+const MODE_META = {
+  pre: {
+    title: "아이디어가 없어요",
+    badge: "아이디어 발굴",
+    description: "공모전을 분석하고 아이디어를 발굴하며 전문가 회의를 진행해요.",
+    outcomes: ["공모전 핵심 분석", "평가 기준 및 배점 정리", "아이디어 후보와 전문가 회의"],
+    icon: Sparkles,
+    accent: "purple",
+  },
+  post: {
+    title: "작성한 문서가 있어요",
+    badge: "문서 피드백",
+    description: "기획서나 제안서를 평가하고 개선 우선순위를 확인해요.",
+    outcomes: ["항목별 평가 및 점수", "개선 우선순위 제안", "피드백 및 수정 가이드"],
+    icon: FileText,
+    accent: "coral",
+  },
+};
+
+// 가은/Claude(2026-07-24): "분석 후 제공되는 결과"는 지어낸 기능 설명 대신, 이 모드가
+// 실제로 거쳐가는 다음 단계 이름(STAGE_LABELS·FLOW_BY_MODE, 이 파일 상단에 이미 정의됨)
+// 을 그대로 보여준다 — 사용자가 다음에 뭘 하게 되는지 정확히 예고한다.
+function expectedResultLabels(mode) {
+  if (!mode) return [];
+  return FLOW_BY_MODE[mode].slice(1).map((k) => STAGE_LABELS[k]);
+}
+
+const ENTRY_PROGRESS_STEPS = [
+  { key: "select", label: "새 분석 시작", desc: "분석 방식과 자료를 등록해 주세요." },
+  { key: "analyzing", label: "분석 진행 중", desc: "AI가 공모전과 문서를 분석합니다." },
+  { key: "result", label: "결과 확인", desc: "분석 결과와 인사이트를 확인합니다." },
+];
+
+function ModeCard({ meta, selected, onSelect }) {
+  const Icon = meta.icon;
+  function handleKeyDown(e) {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      onSelect();
+    }
+  }
+  return (
+    <div
+      role="radio"
+      aria-checked={selected}
+      tabIndex={0}
+      onClick={onSelect}
+      onKeyDown={handleKeyDown}
+      className={`card glass es-mode-card ${selected ? "es-mode-card-selected" : ""}`}
+    >
+      <div className="es-mode-card-top">
+        <Icon size={20} color={`var(--${meta.accent})`} />
+        {selected ? <CheckCircle2 size={18} color="var(--purple)" /> : <Circle size={16} color="var(--glass-border)" />}
+      </div>
+      <span className={`badge ${meta.accent} mono`} style={{ marginTop: 10, width: "fit-content" }}>{meta.badge}</span>
+      <div style={{ fontWeight: 700, fontSize: 15, margin: "10px 0 6px" }}>{meta.title}</div>
+      <div style={{ fontSize: 13, color: "var(--text-2)", lineHeight: 1.6, marginBottom: 12 }}>{meta.description}</div>
+      <ul className="es-mode-outcomes">
+        {meta.outcomes.map((o) => <li key={o}>{o}</li>)}
+      </ul>
+    </div>
+  );
+}
+
 function EntryScreen({ onEnter, onModeSelect, loading, error, projectId, ensureProject, documents, setDocuments }) {
   const navigate = useNavigate();
   const [mode, setMode] = useState(null);
+  const [dismissedAlerts, setDismissedAlerts] = useState([]);
 
   // 가은/Claude(2026-07-21): 실측 요청 — 여기서 모드 카드를 고른 시점과 "분석 시작"을
   // 누르는 시점 사이에 공고문을 먼저 등록하면(ensureProject가 여기서 바로 호출됨) 그
@@ -269,17 +387,17 @@ function EntryScreen({ onEnter, onModeSelect, loading, error, projectId, ensureP
       const result = await fetchCriteriaUrl(criteriaUrl.trim(), pid);
       const id = `url-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
       const title = result.page_content?.title || criteriaUrl.trim();
-      const { status: contentStatus, meta: contentMeta } = assessCriteriaContent(result);
+      const { status: contentStatus, meta: contentMeta, unsupportedLinks } = assessCriteriaContent(result);
 
       // 가은/Claude(2026-07-21): 실측 지적 — 여기서 원문 앞부분 300자를 그대로 미리보기로
       // 보여줬더니 메뉴/내비게이션 텍스트("공지사항 - 공지사항 - 뉴포커스 - ...")가 그대로
       // 나왔다. 원문 요약은 "공모전 분석" 화면(AnalysisScreen)이 LLM으로 뽑은 요약을 대신
       // 보여주므로, 여기서는 원문 슬라이스를 더 이상 안 만든다.
       if (result.document_status === 'indexing' && result.document_id) {
-        setDocuments((prev) => [...prev, { id, backendId: result.document_id, name: title, meta: '공고문을 색인하는 중...', status: 'embedding', progress: 50 }]);
+        setDocuments((prev) => [...prev, { id, backendId: result.document_id, type: 'url', name: title, meta: '공고문을 색인하는 중...', status: 'embedding', progress: 50, unsupportedLinks }]);
         pollDocumentIndexing(pid, result.document_id, id, contentStatus, contentMeta, updateDoc);
       } else {
-        setDocuments((prev) => [...prev, { id, backendId: result.document_id, name: title, meta: contentMeta, status: contentStatus }]);
+        setDocuments((prev) => [...prev, { id, backendId: result.document_id, type: 'url', name: title, meta: contentMeta, status: contentStatus, unsupportedLinks }]);
       }
       setCriteriaUrl('');
     } catch (err) {
@@ -291,7 +409,7 @@ function EntryScreen({ onEnter, onModeSelect, loading, error, projectId, ensureP
 
   async function uploadCriteriaFile(file) {
     const id = `${file.name}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-    setDocuments((prev) => [...prev, { id, name: file.name, meta: formatFileSize(file.size), status: 'embedding', progress: 50 }]);
+    setDocuments((prev) => [...prev, { id, type: 'file', name: file.name, meta: formatFileSize(file.size), status: 'embedding', progress: 50 }]);
     try {
       const pid = await ensureProject();
       const doc = await uploadDocument(pid, file, 'pdf', 'criteria');
@@ -326,202 +444,792 @@ function EntryScreen({ onEnter, onModeSelect, loading, error, projectId, ensureP
     onDrop: (e) => { e.preventDefault(); setIsCriteriaDragging(false); addCriteriaFiles(e.dataTransfer.files); },
   };
 
-  return (
-    <div style={{ maxWidth: 760, margin: "40px auto" }}>
-      <div className="badge purple mono" style={{ marginBottom: 14 }}>IT 공모전 · MVP</div>
-      <h1 style={{ fontSize: 30, fontWeight: 700, lineHeight: 1.35, marginBottom: 10 }}>
-        지금 어떤 상태이세요?
-      </h1>
-      <p style={{ color: "var(--text-2)", fontSize: 14, marginBottom: 28 }}>
-        같은 공모전 데이터·평가 기준을 쓰지만, 두 흐름은 서로 다른 경험을 제공합니다.
-      </p>
+  // 가은/Claude(2026-07-22)의 정책(공고문·평가기준 등록 필수) — 그대로 유지: ① 문서가
+  // 하나라도 done/warning이어야 하고 ② 색인 중인 문서가 없어야 "분석 시작"이 눌린다.
+  const hasReadyCriteriaDoc = documents.some((doc) => doc.status === 'done' || doc.status === 'warning');
+  const isIndexingCriteriaDoc = documents.some((doc) => doc.status === 'embedding');
+  const isMaterialProcessing = isIndexingCriteriaDoc || criteriaLoading;
+  const canStart = !!mode && hasReadyCriteriaDoc && !isIndexingCriteriaDoc && !criteriaLoading;
+  const guide = !mode
+    ? '분석 방식을 먼저 선택해 주세요.'
+    : isMaterialProcessing
+      ? '자료를 처리하는 중이에요 — 완료되면 시작할 수 있어요.'
+      : !hasReadyCriteriaDoc
+        ? '필수 공모전 자료를 등록해 주세요.'
+        : '';
 
-      <div className="rb-entry-actions">
+  const materialStatusCounts = documents.reduce((acc, doc) => {
+    acc[doc.status] = (acc[doc.status] || 0) + 1;
+    return acc;
+  }, {});
+  const materialStatusEntries = [
+    ['분석 준비 완료', materialStatusCounts.done, 'green'],
+    ['확인 필요', materialStatusCounts.warning, 'amber'],
+    ['처리 중', materialStatusCounts.embedding, 'purple'],
+    ['처리 실패', materialStatusCounts.error, 'coral'],
+  ].filter(([, count]) => count > 0);
+
+  const expectedResults = expectedResultLabels(mode);
+  const checklist = [
+    { done: !!mode, label: '분석 방식 선택' },
+    { done: hasReadyCriteriaDoc, label: '공모전 자료 등록' },
+    { done: !isMaterialProcessing, label: '자료 처리 완료' },
+  ];
+
+  return (
+    <div style={{ maxWidth: 1500, margin: "0 auto" }}>
+      <style>{`
+        .es-header-row{ display:flex; justify-content:space-between; align-items:flex-start; gap:16px; margin-bottom:28px; flex-wrap:wrap; }
+        .es-eyebrow{ font-size:13px; font-weight:700; color:var(--purple); letter-spacing:.03em; margin-bottom:6px; }
+        .es-title{ font-size:28px; font-weight:700; margin:0 0 6px; }
+        .es-subtitle{ font-size:14.5px; color:var(--text-2); margin:0; }
+
+        .es-layout{ display:grid; grid-template-columns:220px minmax(0,1fr) 320px; gap:28px; align-items:start; }
+        @media (max-width:1180px){
+          .es-layout{ grid-template-columns:minmax(0,1fr); }
+          .es-progress-list{ flex-direction:row; overflow-x:auto; gap:20px; }
+          .es-progress-step{ flex-direction:column; padding-bottom:0; min-width:150px; }
+          .es-progress-step::before{ display:none; }
+          .es-side{ position:static !important; }
+        }
+
+        .es-progress-list{ display:flex; flex-direction:column; }
+        .es-progress-step{ display:flex; gap:12px; padding-bottom:22px; position:relative; }
+        .es-progress-step:last-child{ padding-bottom:0; }
+        .es-progress-step::before{ content:''; position:absolute; left:11px; top:26px; bottom:0; width:1.5px; background:var(--glass-border); }
+        .es-progress-step:last-child::before{ display:none; }
+        .es-progress-dot{ width:24px; height:24px; border-radius:999px; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:700; flex-shrink:0; }
+        .es-progress-step.active .es-progress-dot{ background:var(--purple); color:#fff; }
+        .es-progress-step.upcoming .es-progress-dot{ background:var(--bg-2); color:var(--text-2); }
+        .es-progress-label{ font-size:14px; font-weight:700; }
+        .es-progress-step.upcoming .es-progress-label{ color:var(--text-2); font-weight:600; }
+        .es-progress-desc{ font-size:12.5px; color:var(--text-2); margin-top:2px; line-height:1.5; }
+
+        .es-mode-grid{ display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:20px; }
+        @media (max-width:640px){ .es-mode-grid{ grid-template-columns:1fr; } }
+        .es-mode-card{ cursor:pointer; border:1.5px solid var(--glass-border); display:flex; flex-direction:column; transition:border-color .18s ease, box-shadow .18s ease; }
+        .es-mode-card:hover{ border-color:var(--purple); }
+        .es-mode-card:focus-visible{ outline:2px solid var(--purple); outline-offset:2px; }
+        .es-mode-card-selected{ border:2px solid var(--purple); background:var(--purple-dim); box-shadow:0 4px 14px rgba(124,92,234,0.14); }
+        .es-mode-card-top{ display:flex; justify-content:space-between; align-items:flex-start; }
+        .es-mode-outcomes{ margin:0; padding-left:16px; font-size:13px; color:var(--text-1); line-height:1.8; }
+
+        .es-material-section.disabled{ opacity:.55; }
+        .es-tabs{ display:flex; gap:4px; background:var(--bg-2); border-radius:999px; padding:4px; margin-bottom:14px; width:fit-content; }
+        .es-tab{ padding:7px 16px; border-radius:999px; border:none; cursor:pointer; font-size:14px; font-weight:600; font-family:inherit; background:transparent; color:var(--text-2); }
+        .es-tab.active{ background:var(--bg-1); color:var(--purple); box-shadow:0 1px 4px rgba(28,26,46,0.1); }
+
+        .es-doc-row{ display:flex; justify-content:space-between; align-items:center; padding:12px 0; gap:12px; }
+        .es-doc-row + .es-doc-row{ border-top:1px solid var(--glass-border); }
+        .es-doc-name{ font-size:14.5px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:320px; }
+        .es-doc-meta{ font-size:12.5px; color:var(--text-2); margin-top:2px; }
+
+        .es-alert{ display:flex; gap:10px; padding:14px 16px; border-radius:12px; background:var(--amber-dim); border:1px solid rgba(184,131,11,0.25); margin-bottom:12px; }
+        .es-alert-title{ font-size:14px; font-weight:700; color:var(--amber); margin-bottom:4px; }
+        .es-alert-body{ font-size:13px; color:var(--text-1); line-height:1.6; }
+        .es-alert-actions{ display:flex; gap:8px; margin-top:10px; }
+
+        .es-side{ position:sticky; top:24px; }
+        .es-side-title{ font-size:15px; font-weight:700; margin-bottom:14px; }
+        .es-side-row{ padding:12px 0; border-top:1px solid var(--glass-border); }
+        .es-side-row:first-child{ border-top:none; padding-top:0; }
+        .es-side-label{ font-size:12.5px; color:var(--text-2); margin-bottom:6px; }
+        .es-checklist{ list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:6px; font-size:13.5px; }
+        .es-checklist li{ display:flex; align-items:center; gap:8px; color:var(--text-1); }
+        .es-checklist li.done{ color:var(--green); }
+      `}</style>
+
+      <div className="es-header-row">
+        <div>
+          <div className="es-eyebrow mono">AI REVIEW BOARD</div>
+          <h1 className="es-title">새 분석 시작</h1>
+          <p className="es-subtitle">현재 준비 상태에 맞는 분석 방식을 선택하고 필요한 자료를 등록해 주세요.</p>
+        </div>
         <button type="button" className="btn-ghost rb-inline-projects" onClick={() => navigate('/projects')}>
           <FolderOpen size={14} /> 내 프로젝트
         </button>
       </div>
 
-      <div className="rb-grid-2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 32 }}>
-        <div
-          className="card glass"
-          style={{ cursor: "pointer", border: mode === "pre" ? "1px solid var(--purple)" : "1px solid var(--glass-border)" }}
-          onClick={() => selectMode("pre")}
-        >
-          <Sparkles size={20} color="var(--purple)" />
-          <div style={{ fontWeight: 700, fontSize: 15, margin: "10px 0 6px" }}>작성 전 → 주제 발굴</div>
-          <div style={{ fontSize: 13, color: "var(--text-2)", lineHeight: 1.6 }}>
-            아이디어가 아직 막연해요. 공모전 분석부터 AI 위원과 주제 회의까지.
-          </div>
-        </div>
-        <div
-          className="card glass"
-          style={{ cursor: "pointer", border: mode === "post" ? "1px solid var(--coral)" : "1px solid var(--glass-border)" }}
-          onClick={() => selectMode("post")}
-        >
-          <FileText size={20} color="var(--coral)" />
-          <div style={{ fontWeight: 700, fontSize: 15, margin: "10px 0 6px" }}>작성 후 → 문서 피드백</div>
-          <div style={{ fontSize: 13, color: "var(--text-2)", lineHeight: 1.6 }}>
-            기획서 초안 또는 완성본이 있어요. 바로 점수와 수정 우선순위를 확인.
-          </div>
-        </div>
-      </div>
-
-      <div className="card glass">
-        <div style={{ fontSize: 13, color: "var(--text-1)", marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
-          <Link2 size={14} /> 공모전 공고 · 평가기준 · 신청서 양식
-          {/* 가은/Claude(2026-07-22): "분석 시작"이 공고문 등록·색인 완료를 요구하도록
-              바뀌면서(아래 canStart 참고) 선택 입력 -> 필수 입력으로 변경. */}
-          <span className="badge purple mono" style={{ marginLeft: 6 }}>필수 입력</span>
-        </div>
-        {/* 가은/Claude(2026-07-22, 요청: 업로드 영역 통합) — 신청서 양식 전용 카드를 따로
-            두지 않고 여기 함께 올린다. 신청서 양식을 올리면 회의 시작 시 기입 항목만 뽑아
-            위원 발언에 참고 자료로 약하게 반영된다(질문 주제·순서는 안 바뀜). */}
-        <div style={{ fontSize: 12, color: "var(--text-2)", marginBottom: 10 }}>
-          공고문·평가기준과 함께 신청서 양식도 올려두면, 위원들이 논의할 때 신청서에 옮기기
-          좋은 표현으로 다듬어줘요.
-        </div>
-
-        <div style={{ display: "flex", gap: 4, background: "var(--bg-2)", borderRadius: 999, padding: 4, marginBottom: 14 }}>
-          {[['url', 'URL 입력'], ['file', '파일 업로드']].map(([key, label]) => (
-            <button
-              key={key}
-              onClick={() => setCriteriaTab(key)}
-              style={{
-                flex: 1, padding: '7px 0', borderRadius: 999, border: 'none', cursor: 'pointer',
-                fontSize: 13, fontWeight: 600, fontFamily: 'inherit',
-                background: criteriaTab === key ? 'var(--bg-1)' : 'transparent',
-                color: criteriaTab === key ? 'var(--purple)' : 'var(--text-2)',
-                boxShadow: criteriaTab === key ? '0 1px 4px rgba(28,26,46,0.1)' : 'none',
-              }}
-            >
-              {label}
-            </button>
+      <div className="es-layout">
+        <div className="es-progress-list">
+          {ENTRY_PROGRESS_STEPS.map((step, i) => (
+            <div key={step.key} className={`es-progress-step ${i === 0 ? "active" : "upcoming"}`}>
+              <div className="es-progress-dot">{i + 1}</div>
+              <div>
+                <div className="es-progress-label">{step.label}</div>
+                <div className="es-progress-desc">{step.desc}</div>
+              </div>
+            </div>
           ))}
         </div>
 
-        {criteriaTab === 'url' ? (
-          <div style={{ display: "flex", gap: 10 }}>
-            <input
-              value={criteriaUrl}
-              onChange={(e) => setCriteriaUrl(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleFetchCriteriaUrl()}
-              placeholder="https://example.com/공고문"
-              disabled={criteriaLoading}
-              style={{ flex: 1, background: "var(--bg-1)", border: "1px solid var(--glass-border)", borderRadius: 10, padding: "11px 14px", color: "var(--text-0)", fontSize: 13 }}
-            />
-            <button className="btn-ghost" onClick={handleFetchCriteriaUrl} disabled={criteriaLoading}>
-              {criteriaLoading ? '가져오는 중...' : '가져오기'}
-            </button>
-          </div>
-        ) : (
-          <div
-            style={{
-              border: `1.5px dashed ${isCriteriaDragging ? 'var(--purple)' : 'var(--glass-border)'}`,
-              borderRadius: 12, padding: '18px 16px', display: 'flex', alignItems: 'center',
-              justifyContent: 'space-between', background: isCriteriaDragging ? 'var(--purple-dim)' : 'var(--bg-1)',
-            }}
-            {...criteriaDropHandlers}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <Upload size={20} color="var(--purple)" />
-              <div>
-                <div style={{ fontSize: 14, fontWeight: 700 }}>{isCriteriaDragging ? '여기에 놓으세요' : '공고문 · 평가기준 · 신청서 양식'}</div>
-                <div style={{ fontSize: 12, color: 'var(--text-2)' }}>PDF, DOCX, PPTX, HWP, HWPX</div>
-              </div>
-            </div>
-            <button className="btn-ghost" onClick={() => criteriaFileInputRef.current?.click()}>파일 선택</button>
-            <input
-              ref={criteriaFileInputRef}
-              type="file"
-              accept={ACCEPTED_DOCUMENT_EXTENSIONS.join(',')}
-              multiple
-              style={{ display: 'none' }}
-              onChange={(e) => { addCriteriaFiles(e.target.files); e.target.value = ''; }}
-            />
-          </div>
-        )}
-
-        {criteriaError && <p style={{ color: "var(--coral)", fontSize: 13, marginTop: 12 }}>{criteriaError}</p>}
-
-        {documents.length > 0 && (
-          <div style={{ marginTop: 14 }}>
-            {documents.map((doc, i) => (
-              <div key={doc.id} style={{
-                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                padding: '10px 0', borderTop: i > 0 ? '1px solid var(--glass-border)' : 'none',
-              }}>
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontSize: 13.5, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{doc.name}</div>
-                  <div style={{ fontSize: 12, color: 'var(--text-2)' }}>{doc.meta}</div>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, marginLeft: 10 }}>
-                  {doc.status === 'embedding' && (
-                    <ProgressBar percent={doc.progress} label="색인 중" color="linear-gradient(135deg, #7c5cea, #8b6ef0)" trackColor="var(--bg-2)" />
-                  )}
-                  {doc.status === 'done' && <span className="badge green mono">✓ 완료</span>}
-                  {doc.status === 'warning' && <span className="badge amber mono">확인 필요</span>}
-                  {doc.status === 'error' && <span className="badge coral mono">실패</span>}
-                  <button
-                    className="icon-btn"
-                    onClick={() => handleDeleteDoc(doc)}
-                    disabled={deletingIds.includes(doc.id)}
-                    aria-label="문서 삭제"
-                    style={{ background: 'none', border: 'none', padding: 4, cursor: deletingIds.includes(doc.id) ? 'default' : 'pointer', color: 'var(--text-2)', display: 'flex', opacity: deletingIds.includes(doc.id) ? 0.4 : 1 }}
-                  >
-                    <X size={14} />
-                  </button>
-                </div>
-              </div>
+        <div style={{ minWidth: 0 }}>
+          <div role="radiogroup" aria-label="분석 방식 선택" className="es-mode-grid">
+            {['pre', 'post'].map((key) => (
+              <ModeCard key={key} meta={MODE_META[key]} selected={mode === key} onSelect={() => selectMode(key)} />
             ))}
           </div>
-        )}
-      </div>
 
-      {error && <p style={{ color: "var(--coral)", fontSize: 13, marginTop: 12 }}>{error}</p>}
+          <div className={`card glass es-material-section ${!mode ? "disabled" : ""}`}>
+            {!mode ? (
+              <div style={{ fontSize: 14, color: "var(--text-2)" }}>분석 방식을 먼저 선택해 주세요.</div>
+            ) : (
+              <>
+                <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
+                  <Link2 size={14} color="var(--text-2)" /> 공모전 자료 등록
+                  <span className="badge purple mono" style={{ marginLeft: 6 }}>필수 입력</span>
+                </div>
+                <div style={{ fontSize: 13, color: "var(--text-2)", marginBottom: 14 }}>
+                  공고문, 평가 기준, 신청서 양식 등 공모전 관련 자료를 등록해 주세요.
+                </div>
 
-      {/* 가은/Claude(2026-07-22): 정책 변경 — 공고문·평가기준 등록이 "선택"에서 "필수"로.
-          공고문 없이 시작하면 이후 화면이 전부 "미등록" 폴백으로만 돌아 분석 가치가 없어서,
-          ① 공고문(URL 가져오기 또는 파일 업로드)이 실제로 등록되고 ② 색인(문서 분석)까지
-          끝나야 "분석 시작"이 눌리게 한다. warning(색인은 됐지만 내용 확인 필요)은 처리
-          자체는 끝난 상태라 시작을 막지 않는다 — error만 있는 경우는 등록 문서가 없는
-          것과 동일하게 취급한다. */}
-      {(() => {
-        const hasReadyCriteriaDoc = documents.some((doc) => doc.status === 'done' || doc.status === 'warning');
-        const isIndexingCriteriaDoc = documents.some((doc) => doc.status === 'embedding');
-        const canStart = !!mode && hasReadyCriteriaDoc && !isIndexingCriteriaDoc && !criteriaLoading;
-        const guide = !mode
-          ? '위에서 진행 방식을 먼저 선택해주세요.'
-          : isIndexingCriteriaDoc || criteriaLoading
-            ? '공고문 분석(색인)이 끝나면 시작할 수 있어요.'
-            : !hasReadyCriteriaDoc
-              ? '공모전 공고 URL을 가져오거나 평가 기준 문서를 업로드해야 시작할 수 있어요.'
-              : '';
-        return (
-          <>
-            <button
-              className="btn-primary"
-              style={{ marginTop: 24, width: "100%", opacity: canStart ? 1 : 0.4, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}
-              disabled={!canStart || loading}
-              onClick={() => onEnter(mode)}
-            >
-              {loading
-                ? "준비하는 중..."
-                : isIndexingCriteriaDoc || criteriaLoading
-                  ? "공고문 분석 중..."
-                  : "분석 시작"} <ArrowRight size={15} />
-            </button>
-            {guide && !loading && (
-              <p style={{ fontSize: 12.5, color: "var(--text-2)", marginTop: 10, textAlign: "center" }}>{guide}</p>
+                {mode === 'post' && (
+                  <div style={{ fontSize: 12.5, color: "var(--text-1)", background: "var(--bg-2)", borderRadius: 10, padding: "10px 12px", marginBottom: 14, lineHeight: 1.6 }}>
+                    평가받을 기획서·제안서·사업계획서 같은 문서는 다음 단계(기획서 업로드)에서 따로 등록해요. 여기서는 공모전 공고문·평가기준·신청서 양식만 등록하면 돼요.
+                  </div>
+                )}
+
+                <div className="es-tabs" role="tablist" aria-label="자료 등록 방식">
+                  {[['url', 'URL로 가져오기'], ['file', '파일 업로드']].map(([key, label]) => (
+                    <button
+                      key={key}
+                      type="button"
+                      role="tab"
+                      aria-selected={criteriaTab === key}
+                      tabIndex={criteriaTab === key ? 0 : -1}
+                      className={`es-tab ${criteriaTab === key ? "active" : ""}`}
+                      onClick={() => setCriteriaTab(key)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+                          e.preventDefault();
+                          setCriteriaTab((prev) => (prev === 'url' ? 'file' : 'url'));
+                        }
+                      }}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+
+                {criteriaTab === 'url' ? (
+                  <div style={{ display: "flex", gap: 10 }}>
+                    <input
+                      value={criteriaUrl}
+                      onChange={(e) => setCriteriaUrl(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && handleFetchCriteriaUrl()}
+                      placeholder="공모전 페이지 URL을 입력하세요."
+                      disabled={criteriaLoading}
+                      style={{ flex: 1, background: "var(--bg-1)", border: "1px solid var(--glass-border)", borderRadius: 10, padding: "11px 14px", color: "var(--text-0)", fontSize: 14 }}
+                    />
+                    <button type="button" className="btn-ghost" onClick={handleFetchCriteriaUrl} disabled={criteriaLoading || !criteriaUrl.trim()}>
+                      {criteriaLoading ? '가져오는 중...' : '가져오기'}
+                    </button>
+                  </div>
+                ) : (
+                  <div
+                    style={{
+                      border: `1.5px dashed ${isCriteriaDragging ? 'var(--purple)' : 'var(--glass-border)'}`,
+                      borderRadius: 12, padding: '18px 16px', display: 'flex', alignItems: 'center',
+                      justifyContent: 'space-between', background: isCriteriaDragging ? 'var(--purple-dim)' : 'var(--bg-1)',
+                    }}
+                    {...criteriaDropHandlers}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                      <Upload size={20} color="var(--purple)" />
+                      <div>
+                        <div style={{ fontSize: 15, fontWeight: 700 }}>{isCriteriaDragging ? '여기에 놓으세요' : '공고문 · 평가기준 · 신청서 양식'}</div>
+                        <div style={{ fontSize: 13, color: 'var(--text-2)' }}>PDF, DOCX, PPTX, HWP, HWPX · 파일당 최대 50MB · 여러 개 선택 가능</div>
+                      </div>
+                    </div>
+                    <button type="button" className="btn-ghost" onClick={() => criteriaFileInputRef.current?.click()}>파일 선택</button>
+                    <input
+                      ref={criteriaFileInputRef}
+                      type="file"
+                      accept={ACCEPTED_DOCUMENT_EXTENSIONS.join(',')}
+                      multiple
+                      style={{ display: 'none' }}
+                      onChange={(e) => { addCriteriaFiles(e.target.files); e.target.value = ''; }}
+                    />
+                  </div>
+                )}
+
+                {criteriaError && <p style={{ color: "var(--coral)", fontSize: 13, marginTop: 12 }}>{criteriaError}</p>}
+
+                {documents.filter((d) => d.unsupportedLinks?.length > 0 && !dismissedAlerts.includes(d.id)).map((doc) => (
+                  <div key={`alert-${doc.id}`} className="es-alert" style={{ marginTop: 14 }}>
+                    <AlertTriangle size={18} color="var(--amber)" style={{ flexShrink: 0, marginTop: 1 }} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div className="es-alert-title">추가 파일 확인이 필요합니다</div>
+                      <div className="es-alert-body">
+                        공모전 페이지에서 첨부파일을 발견했지만 자동으로 내용을 가져오지 못했습니다.
+                      </div>
+                      <ul style={{ margin: '8px 0 0', paddingLeft: 16, fontSize: 12.5, color: "var(--text-1)" }}>
+                        {doc.unsupportedLinks.map((link, i) => (
+                          <li key={i}>{link.file_name || link.url}</li>
+                        ))}
+                      </ul>
+                      <div className="es-alert-actions">
+                        <button type="button" className="btn-ghost" onClick={() => { setCriteriaTab('file'); criteriaFileInputRef.current?.click(); }}>
+                          파일 업로드
+                        </button>
+                        <button type="button" className="btn-ghost" onClick={() => setDismissedAlerts((prev) => [...prev, doc.id])}>
+                          제외하기
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+
+                {documents.length > 0 && (
+                  <div style={{ marginTop: 14 }}>
+                    {documents.map((doc) => (
+                      <div key={doc.id} className="es-doc-row">
+                        <div style={{ display: 'flex', gap: 10, minWidth: 0, alignItems: 'flex-start' }}>
+                          {doc.type === 'url'
+                            ? <Link2 size={16} color="var(--text-2)" style={{ marginTop: 2, flexShrink: 0 }} />
+                            : <FileText size={16} color="var(--text-2)" style={{ marginTop: 2, flexShrink: 0 }} />}
+                          <div style={{ minWidth: 0 }}>
+                            <div className="es-doc-name" title={doc.name}>{doc.name}</div>
+                            <div className="es-doc-meta">{doc.meta}</div>
+                          </div>
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                          {doc.status === 'embedding' && (
+                            <ProgressBar percent={doc.progress} label="처리 중" color="linear-gradient(135deg, #7c5cea, #8b6ef0)" trackColor="var(--bg-2)" />
+                          )}
+                          {doc.status === 'done' && <span className="badge green mono">분석 준비 완료</span>}
+                          {doc.status === 'warning' && <span className="badge amber mono">확인 필요</span>}
+                          {doc.status === 'error' && <span className="badge coral mono">처리 실패</span>}
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteDoc(doc)}
+                            disabled={deletingIds.includes(doc.id)}
+                            aria-label={`${doc.name} 삭제`}
+                            style={{ background: 'none', border: 'none', padding: 6, cursor: deletingIds.includes(doc.id) ? 'default' : 'pointer', color: 'var(--text-2)', display: 'flex', opacity: deletingIds.includes(doc.id) ? 0.4 : 1 }}
+                          >
+                            <Trash2 size={15} />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
             )}
-          </>
-        );
-      })()}
+          </div>
+
+          {error && <p style={{ color: "var(--coral)", fontSize: 13 }}>{error}</p>}
+        </div>
+
+        <aside className="es-side">
+          <div className="card glass">
+            <div className="es-side-title">현재 분석 설정</div>
+
+            <div className="es-side-row">
+              <div className="es-side-label">분석 방식</div>
+              <div style={{ fontSize: 14.5, fontWeight: 600 }}>
+                {mode ? MODE_META[mode].badge : '분석 방식을 선택해 주세요.'}
+              </div>
+            </div>
+
+            {materialStatusEntries.length > 0 && (
+              <div className="es-side-row">
+                <div className="es-side-label">등록된 자료 상태</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {materialStatusEntries.map(([label, count, color]) => (
+                    <div key={label} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13.5 }}>
+                      <span style={{ color: 'var(--text-1)' }}>{label}</span>
+                      <span className={`badge ${color} mono`}>{count}개</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {mode && expectedResults.length > 0 && (
+              <div className="es-side-row">
+                <div className="es-side-label">분석 후 다음 순서</div>
+                <ul style={{ margin: 0, paddingLeft: 16, fontSize: 13.5, color: "var(--text-1)", lineHeight: 1.8 }}>
+                  {expectedResults.map((r) => <li key={r}>{r}</li>)}
+                </ul>
+              </div>
+            )}
+
+            <div className="es-side-row">
+              <ul className="es-checklist">
+                {checklist.map((item) => (
+                  <li key={item.label} className={item.done ? 'done' : ''}>
+                    {item.done ? <CheckCircle2 size={14} /> : <Circle size={13} />} {item.label}
+                  </li>
+                ))}
+              </ul>
+
+              <button
+                type="button"
+                className="btn-primary"
+                style={{ marginTop: 14, width: "100%", opacity: canStart ? 1 : 0.4, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}
+                disabled={!canStart || loading}
+                onClick={() => onEnter(mode)}
+              >
+                {loading
+                  ? "분석을 시작하고 있습니다..."
+                  : mode === 'post'
+                    ? "문서 평가 시작하기"
+                    : "공모전 분석 시작하기"} <ArrowRight size={15} />
+              </button>
+              {guide && !loading && (
+                <p style={{ fontSize: 12.5, color: "var(--text-2)", marginTop: 8, textAlign: "center" }}>{guide}</p>
+              )}
+            </div>
+          </div>
+        </aside>
+      </div>
     </div>
   );
 }
 
-const _CONFIDENCE_LABEL = { high: '확신 높음', medium: '확신 보통', low: '확신 낮음' };
+const DETAIL_TABS = [
+  { key: "strategy", label: "지원 전략" },
+  { key: "schedule", label: "일정·신청" },
+  { key: "eligibility", label: "신청 조건" },
+  { key: "benefits", label: "선정 혜택" },
+  { key: "caution", label: "유의사항" },
+];
+
+// 가은/Claude(2026-07-24, 요청: 공모전 분석 결과 화면 개편) — 상단 가로형 메타 카드.
+// 실제 API가 내려주지 않는 값(분석 완료 시각·소요 시간·모델명)은 절대 지어내지 않고,
+// 실제 데이터로 계산 가능한 항목만 items로 넘겨 받는다 — items가 비면 행 전체를 숨긴다.
+function MetaSummaryRow({ items }) {
+  if (items.length === 0) return null;
+  return (
+    <div className="cas-meta-row">
+      {items.map((item) => (
+        <div key={item.label} className="cas-meta-item">
+          <item.icon size={14} color="var(--text-2)" />
+          <div>
+            <div className="cas-meta-label">{item.label}</div>
+            <div className="cas-meta-value">{item.value}</div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function AnalysisSummaryCard({ summary, onExpand }) {
+  return (
+    <div className="card glass cas-section">
+      <div className="cas-section-head">
+        <div className="cas-card-title"><Target size={15} color="var(--purple)" /> AI 분석 요약</div>
+        {summary && (
+          <button type="button" className="btn-ghost cas-detail-btn" onClick={onExpand}>
+            자세히 보기 <ChevronRight size={13} />
+          </button>
+        )}
+      </div>
+      {summary ? <p className="cas-summary-text">{summary}</p> : <div className="cas-empty">핵심 과제를 판단할 근거가 부족해요.</div>}
+    </div>
+  );
+}
+
+function EvaluationCriteriaSummary({ groups, expanded, onToggle }) {
+  const allItems = groups.flatMap((g) => g.items);
+  const { itemCount, totalScore } = summarizeCriteria(groups);
+
+  return (
+    <div className="card glass cas-section">
+      <div className="cas-section-head">
+        <div>
+          <div className="cas-card-title"><Award size={15} color="var(--coral)" /> 평가 기준 요약</div>
+          {itemCount > 0 && (
+            <div className="cas-card-subtitle">
+              {itemCount}개 항목{totalScore != null ? `, 총 ${totalScore}점 만점으로 평가됩니다.` : "으로 평가됩니다."}
+            </div>
+          )}
+        </div>
+        {itemCount > 0 && (
+          <button type="button" className="btn-ghost cas-detail-btn" onClick={onToggle}>
+            {expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />} {expanded ? "접기" : "전체 평가 기준 보기"}
+          </button>
+        )}
+      </div>
+
+      {itemCount === 0 && <div className="cas-empty">등록한 공고문에서 확인된 평가 기준이 없어요.</div>}
+
+      {itemCount > 0 && !expanded && (
+        <div className="cas-criteria-chips">
+          {allItems.slice(0, 4).map((item, i) => (
+            <div key={i} className="cas-criteria-chip">
+              <span>{item.name}</span>
+              {item.score != null && <span className="mono cas-criteria-score">{item.score}점</span>}
+            </div>
+          ))}
+          {allItems.length > 4 && <div className="cas-criteria-more">+{allItems.length - 4}개 항목</div>}
+        </div>
+      )}
+
+      {itemCount > 0 && expanded && (
+        <div className="cas-criteria-groups">
+          {groups.map((group) => (
+            <div key={group.groupName} className="cas-criteria-group">
+              <div className="cas-criteria-group-name">
+                {group.groupName}
+                {group.totalScore != null && <span className="mono cas-criteria-score"> · {group.totalScore}점</span>}
+              </div>
+              <div className="cas-criteria-chips">
+                {group.items.map((item, i) => (
+                  <div key={i} className="cas-criteria-chip">
+                    <span>{item.name}</span>
+                    {item.score != null && <span className="mono cas-criteria-score">{item.score}점</span>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SimilarCaseSection({ hasData, works, expanded, onToggle, onWorkClick, loadingWork }) {
+  if (!hasData || works.length === 0) {
+    return (
+      <div className="card glass cas-section">
+        <div className="cas-card-title"><TrendingUp size={15} color="var(--amber)" /> 수상작·유사 사례 분석</div>
+        <div className="cas-empty">
+          {hasData ? "일치하는 유사 사례를 찾지 못했어요." : "수상작 자료 미확보 — 유사 공모전 사례 기반 분석은 아직 지원하지 않아요."}
+        </div>
+      </div>
+    );
+  }
+
+  const visible = expanded ? works : works.slice(0, 3);
+  const restCount = works.length - visible.length;
+
+  return (
+    <div className="card glass cas-section">
+      <div className="cas-section-head">
+        <div>
+          <div className="cas-card-title"><TrendingUp size={15} color="var(--amber)" /> 수상작·유사 사례 분석</div>
+          <div className="cas-card-subtitle">최근 수상작 및 유사 사례 {works.length}건을 분석했습니다.</div>
+        </div>
+        <button type="button" className="btn-ghost cas-detail-btn" onClick={onToggle}>
+          {expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />} {expanded ? "접기" : "자세히 보기"}
+        </button>
+      </div>
+
+      <div className="cas-case-grid">
+        {visible.map((work, i) => {
+          const clickable = !!work.contest_title && !loadingWork;
+          const Tag = clickable ? "button" : "div";
+          return (
+            <Tag
+              key={i}
+              type={clickable ? "button" : undefined}
+              className="card glass cas-case-card"
+              onClick={clickable ? () => onWorkClick(work) : undefined}
+            >
+              {work.selection_status && (
+                <span className={`badge ${work.selection_status === "winner" ? "green" : "amber"} mono`}>
+                  {work.selection_status === "winner" ? (work.award_grade || "수상") : "후보"}
+                </span>
+              )}
+              <div className="cas-case-title">{work.title}</div>
+              {(work.contest_title || work.source_org) && (
+                <div className="cas-case-source">{[work.contest_title, work.source_org].filter(Boolean).join(" · ")}</div>
+              )}
+            </Tag>
+          );
+        })}
+        {!expanded && restCount > 0 && (
+          <button type="button" className="card glass cas-case-card cas-case-more" onClick={onToggle}>
+            +{restCount}건 더 보기
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ContestDetailTabs({ activeTab, onTabChange, facts, strategy, formAnalysis }) {
+  function handleTabKeyDown(e) {
+    if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+    e.preventDefault();
+    const idx = DETAIL_TABS.findIndex((t) => t.key === activeTab);
+    const dir = e.key === "ArrowRight" ? 1 : -1;
+    onTabChange(DETAIL_TABS[(idx + dir + DETAIL_TABS.length) % DETAIL_TABS.length].key);
+  }
+
+  const eligibilityItems = [
+    ...(facts?.eligibility || []),
+    ...(facts?.submission_requirements || []),
+    ...(facts?.application_review_conditions || []),
+  ];
+  const disqualificationRules = facts?.disqualification_rules || [];
+  const riskFlags = strategy?.risk_flags || [];
+  const formatScheduleDate = (value, weekday, includeYear = true) => {
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value || "");
+    if (!match) return value || "";
+    const [, year, month, day] = match;
+    return `${includeYear ? `${Number(year)}년 ` : ""}${Number(month)}월 ${Number(day)}일${weekday ? `(${weekday})` : ""}`;
+  };
+  const formatScheduleItem = (item) => {
+    const start = formatScheduleDate(item.start_date, item.start_weekday);
+    const sameYear = item.end_date?.slice(0, 4) === item.start_date?.slice(0, 4);
+    const end = item.end_date
+      ? ` ~ ${formatScheduleDate(item.end_date, item.end_weekday, !sameYear)}`
+      : "";
+    return [item.event_label, `${start}${end}`, item.method].filter(Boolean).join(" · ");
+  };
+
+  return (
+    <div className="cas-tabs-wrap">
+      <div className="es-tabs cas-detail-tabs" role="tablist" aria-label="핵심 요구사항 상세">
+        {DETAIL_TABS.map((tab) => (
+          <button
+            key={tab.key}
+            type="button"
+            role="tab"
+            aria-selected={activeTab === tab.key}
+            tabIndex={activeTab === tab.key ? 0 : -1}
+            className={`es-tab ${activeTab === tab.key ? "active" : ""}`}
+            onClick={() => onTabChange(tab.key)}
+            onKeyDown={handleTabKeyDown}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="cas-tab-panel" role="tabpanel">
+        {activeTab === "strategy" && (
+          (strategy?.winning_points?.length || 0) + (strategy?.recommended_direction?.length || 0) > 0 ? (
+            <div className="cas-numbered-list">
+              {strategy?.winning_points?.length > 0 && <div className="cas-subheading">차별화 포인트</div>}
+              {strategy?.winning_points?.map((v, i) => (
+                <div key={`w-${i}`} className="cas-numbered-item"><span className="cas-num">{i + 1}</span><span>{v}</span></div>
+              ))}
+              {strategy?.recommended_direction?.length > 0 && <div className="cas-subheading">추천 방향</div>}
+              {strategy?.recommended_direction?.map((v, i) => (
+                <div key={`r-${i}`} className="cas-numbered-item"><span className="cas-num">{i + 1}</span><span>{v}</span></div>
+              ))}
+            </div>
+          ) : <div className="cas-empty">제안할 전략을 판단할 근거가 부족해요.</div>
+        )}
+
+        {activeTab === "schedule" && (
+          <>
+            <div className="cas-subheading" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <Calendar size={13} color="var(--purple)" /> 주요 일정
+            </div>
+            {(facts?.schedule_items?.length || 0) > 0 ? (
+              <div className="cas-timeline">
+                {facts.schedule_items.map((item, i) => (
+                  <div key={`${item.event_label}-${item.start_date}-${i}`} className="cas-timeline-row">
+                    <span className="cas-timeline-dot" />
+                    <span>{formatScheduleItem(item)}</span>
+                  </div>
+                ))}
+              </div>
+            ) : (facts?.key_dates?.length || 0) > 0 ? (
+              <div className="cas-timeline">
+                {facts.key_dates.map((date, i) => (
+                  <div key={i} className="cas-timeline-row">
+                    <span className="cas-timeline-dot" />
+                    <span>{date}</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className={facts?.deadline && facts.deadline !== "미공개" ? "cas-plain-text" : "cas-empty"}>
+                제출 마감: {facts?.deadline || "미공개"}
+              </div>
+            )}
+          </>
+        )}
+
+        {activeTab === "eligibility" && (
+          <>
+            {eligibilityItems.length > 0 ? (
+              <ul className="cas-plain-list">{eligibilityItems.map((v, i) => <li key={i}>{v}</li>)}</ul>
+            ) : <div className="cas-empty">공고문에서 확인된 신청·심사 조건이 없어요.</div>}
+
+            {formAnalysis?.has_application_form && formAnalysis.items.length > 0 && (
+              <div className="cas-form-items">
+                <div className="cas-subheading" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <FileText size={13} color="var(--purple)" /> 신청양식에서 써야 할 항목
+                </div>
+                <div className="cas-form-note">
+                  등록한 신청양식에서 찾은 기입란이에요. 여러 부문(도시/기업 등)이 한 문서에 있으면 관련 없는 항목도 섞여 보일 수 있어요.
+                </div>
+                <ul className="cas-plain-list">
+                  {formAnalysis.items.map((item, i) => (
+                    <li key={i}>
+                      <strong>{item.field_name}</strong>
+                      {item.char_limit != null && <span className="mono cas-form-limit"> ({item.char_limit}자 이내)</span>}
+                      {item.description && <div className="cas-form-desc">{item.description}</div>}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </>
+        )}
+
+        {activeTab === "benefits" && (
+          (facts?.selection_benefits?.length || 0) > 0 ? (
+            <div className="cas-benefit-grid">
+              {facts.selection_benefits.map((v, i) => (
+                <div key={i} className="card glass cas-benefit-card">
+                  <Gift size={15} color="var(--purple)" />
+                  <div>{v}</div>
+                </div>
+              ))}
+            </div>
+          ) : <div className="cas-empty">공고문에서 확인된 선정 혜택이 없어요.</div>
+        )}
+
+        {activeTab === "caution" && (
+          <>
+            {disqualificationRules.length > 0 ? (
+              <div className="cas-warning-box">
+                <AlertOctagon size={16} color="var(--amber)" style={{ flexShrink: 0, marginTop: 1 }} />
+                <div>
+                  <div className="cas-warning-title">수상 취소 조건</div>
+                  <ul className="cas-plain-list">{disqualificationRules.map((v, i) => <li key={i}>{v}</li>)}</ul>
+                </div>
+              </div>
+            ) : <div className="cas-empty">공고문에서 확인된 수상 취소 조건이 없어요.</div>}
+
+            {riskFlags.length > 0 && (
+              <div className="cas-risk-list">
+                <div className="cas-subheading">주의 리스크</div>
+                <ul className="cas-plain-list">{riskFlags.map((v, i) => <li key={i}>{v}</li>)}</ul>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CoreRequirementsSection({ open, onToggle, ...tabProps }) {
+  return (
+    <div className="card glass cas-section">
+      <div className="cas-section-head">
+        <div>
+          <div className="cas-card-title"><ShieldCheck size={15} color="var(--green)" /> 핵심 요구사항 정리</div>
+          <div className="cas-card-subtitle">공모전에서 요구하는 핵심 조건과 제출물, 일정, 신청 대상 및 유의사항을 정리했습니다.</div>
+        </div>
+        <button type="button" className="btn-ghost cas-detail-btn" onClick={onToggle}>
+          {open ? <ChevronUp size={13} /> : <ChevronDown size={13} />} {open ? "접기" : "자세히 보기"}
+        </button>
+      </div>
+      {open && <ContestDetailTabs {...tabProps} />}
+    </div>
+  );
+}
+
+function EvidenceSection({ evidence, sourceDocs, expanded, onToggle }) {
+  if (evidence.length === 0) {
+    return (
+      <div className="card glass cas-section">
+        <div className="cas-card-title"><Quote size={15} color="var(--purple)" /> 분석 근거</div>
+        <div className="cas-empty">현재 연결된 분석 근거가 없습니다.</div>
+      </div>
+    );
+  }
+
+  const visible = expanded ? evidence : evidence.slice(0, 3);
+
+  return (
+    <div className="card glass cas-section">
+      <div className="cas-section-head">
+        <div className="cas-card-title"><Quote size={15} color="var(--purple)" /> 분석 근거</div>
+        {evidence.length > 3 && (
+          <button type="button" className="btn-ghost cas-detail-btn" onClick={onToggle}>
+            {expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />} {expanded ? "접기" : "전체 근거 보기"}
+          </button>
+        )}
+      </div>
+      <div className="cas-evidence-list">
+        {visible.map((e, i) => (
+          <div key={i} className="cas-evidence-row">
+            <div className="cas-evidence-head">
+              <span className={`badge ${e.source_type === "announcement" ? "green" : "purple"} mono`}>
+                {e.source_type === "announcement" ? "공고문 근거" : "AI 추론"}
+              </span>
+            </div>
+            <div className="cas-evidence-claim">{e.claim}</div>
+            <div className="cas-evidence-meta">
+              {e.location || (e.source_type === "announcement" ? "위치 미상" : "추론")} · {CONFIDENCE_LABEL[e.confidence] || e.confidence}
+            </div>
+          </div>
+        ))}
+      </div>
+      {sourceDocs.length > 0 && <div className="cas-evidence-sources">참고 문서: {sourceDocs.join(", ")}</div>}
+    </div>
+  );
+}
+
+function NextStepCard({ nextLabel, nextDesc, ctaLabel, onAdvance, advancing }) {
+  return (
+    <div className="card glass">
+      {nextLabel && <div className="cas-next-title">{nextLabel}</div>}
+      {nextDesc && <div className="cas-next-desc">{nextDesc}</div>}
+      <button type="button" className="btn-primary cas-next-btn" onClick={onAdvance} disabled={advancing}>
+        {advancing ? "이동하는 중..." : ctaLabel} <ArrowRight size={14} />
+      </button>
+    </div>
+  );
+}
+
+// 가은/Claude(2026-07-24, 요청: 공모전 분석 결과 화면 개편) — 오른쪽 "분석 진행 상태"
+// 패널. 왼쪽 Shell navrail과 같은 FLOW_BY_MODE/STAGE_LABELS를 그대로 참조해 두 표시가
+// 어긋나지 않게 한다. 여기 진행 단계 목록은 정보용이라 클릭 이동은 왼쪽 단계 메뉴에만 둔다.
+function AnalysisStatusPanel({ mode, active, statRows, nextLabel, nextDesc, ctaLabel, onAdvance, advancing }) {
+  const flow = mode ? FLOW_BY_MODE[mode] : ["entry"];
+  const activeIdx = flow.indexOf(active);
+
+  return (
+    <aside className="cas-aside">
+      <div className="card glass">
+        <div className="cas-aside-title">분석 진행 상태</div>
+        <div className="cas-status-list">
+          {flow.map((k, idx) => {
+            const state = idx < activeIdx ? "done" : idx === activeIdx ? "current" : "upcoming";
+            return (
+              <div key={k} className="cas-status-row">
+                <span>{STAGE_LABELS[k]}</span>
+                <span className={`badge ${state === "done" ? "green" : state === "current" ? "purple" : "grey"} mono`}>
+                  {state === "done" ? "완료" : state === "current" ? "진행 중" : "대기"}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+
+        {statRows.length > 0 && (
+          <>
+            <div className="cas-aside-title" style={{ marginTop: 18 }}>현재 분석 요약</div>
+            <div className="cas-stat-list">
+              {statRows.map((row) => (
+                <div key={row.label} className="cas-stat-row">
+                  <div className="cas-stat-label">{row.label}</div>
+                  <div className="cas-stat-value">{row.value}</div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+
+      <NextStepCard nextLabel={nextLabel} nextDesc={nextDesc} ctaLabel={ctaLabel} onAdvance={onAdvance} advancing={advancing} />
+    </aside>
+  );
+}
 
 /* ---------------- 2. 공모전 분석 결과 (공통) ----------------
  * 가은/Claude(2026-07-21): 실측 제보 두 건에 대한 대응.
@@ -533,6 +1241,12 @@ const _CONFIDENCE_LABEL = { high: '확신 높음', medium: '확신 보통', low:
  *    리스크/출처)을 둔다. 수상작·유사사례 경향은 kyh님의 소통혁신24 수상작 아카이브
  *    (contest_works)가 생기기 전까지는 데이터 소스가 없어 "자료 미확보"로 고정
  *    표시했었다 — 이제 실제 매칭 결과가 있으면 보여주고, 없을 때만 그 문구를 쓴다.
+ *
+ * 가은/Claude(2026-07-24, 요청: 공모전 분석 결과 화면 개편) — 팀 레퍼런스(왼쪽 단계/
+ * 가운데 분석 결과/오른쪽 진행 상태) 3열 대시보드로 재구성. 데이터 소스(useState·useEffect·
+ * API 호출·handleSimilarWorkClick 등)는 전혀 바꾸지 않았고, 그 아래 표시 방식과 위 보조
+ * 컴포넌트들만 새로 짰다. 레퍼런스 화면 속 문구·숫자·모델명은 목업이라 그대로 옮기지
+ * 않고, 실제 API 응답에 있는 값만 채운다 — 값이 없으면 해당 UI를 숨긴다.
  */
 function AnalysisScreen({ mode, onNext, onBack, projectId }) {
   const [loading, setLoading] = useState(true);
@@ -554,6 +1268,24 @@ function AnalysisScreen({ mode, onNext, onBack, projectId }) {
   const [workDetailLoading, setWorkDetailLoading] = useState(false);
   const [panelWidth, setPanelWidth] = useState(460);
   const resizingRef = useRef(false);
+  // 가은/Claude(2026-07-24, 요청: 공모전 분석 결과 화면 개편) — 새 카드형 레이아웃의
+  // 펼침/탭 상태. 전부 표시용 UI 상태라 API 재호출이나 데이터 변형을 일으키지 않는다.
+  const [detailTab, setDetailTab] = useState("strategy");
+  const [criteriaExpanded, setCriteriaExpanded] = useState(false);
+  const [similarExpanded, setSimilarExpanded] = useState(false);
+  const [evidenceExpanded, setEvidenceExpanded] = useState(false);
+  const [advancing, setAdvancing] = useState(false);
+
+  function openDetail(tab) {
+    setDetailTab(tab);
+    setDetailOpen(true);
+  }
+
+  function handleAdvance() {
+    if (advancing) return;
+    setAdvancing(true);
+    onNext();
+  }
 
   // 가은/Claude(2026-07-21): 실측 요청 — 수상작 상세 패널을 마우스로 드래그해 너비를
   // 조절할 수 있게. 패널이 화면 오른쪽에 고정돼 있어 왼쪽 가장자리를 끌면 그 지점부터
@@ -670,211 +1402,200 @@ function AnalysisScreen({ mode, onNext, onBack, projectId }) {
   // 못 찾으면(팀 공유 DB에 아직 데이터가 안 올라왔거나 이 카테고리에 사례가 없으면)
   // has_similar_case_data가 false로 오므로 그때는 기존 "미확보" 문구를 그대로 보여준다.
   const similarWorks = analysis?.similar_works || [];
-  const detailFactSections = [
-    {
-      title: "신청·심사 관련 조건",
-      items: facts?.application_review_conditions || [],
-      empty: "공고문에서 확인된 신청·심사 조건이 없어요.",
-    },
-    {
-      title: "선정 혜택",
-      items: facts?.selection_benefits || [],
-      empty: "공고문에서 확인된 선정 혜택이 없어요.",
-    },
-    {
-      title: "수상 취소 조건",
-      items: facts?.disqualification_rules || [],
-      empty: "공고문에서 확인된 수상 취소 조건이 없어요.",
-    },
-  ];
+  const criteriaGroups = parseEvaluationCriteria(facts?.evaluation_criteria);
+  const criteriaSummary = summarizeCriteria(criteriaGroups);
+  const sourceDocCount = analysis?.source_document_names?.length || 0;
 
-  const cards = hasAnnouncement
-    ? [
-        { icon: Sparkles, color: "purple", title: "아이디어 주제 선정", body: ideaTopic || "미정" },
-        { icon: Target, color: "purple", title: "핵심 과제", body: strategy?.core_intent || "핵심 과제를 판단할 근거가 부족해요." },
-        { icon: Award, color: "coral", title: "평가 기준·배점", list: facts?.evaluation_criteria },
-        { icon: ShieldCheck, color: "green", title: "신청 대상·제출 조건", list: [...(facts?.eligibility || []), ...(facts?.submission_requirements || [])] },
-        analysis?.has_similar_case_data
-          ? {
-              icon: TrendingUp, color: "amber", title: "수상작·유사사례 경향",
-              list: similarWorks.map((w) => ({
-                label: [w.contest_title, w.source_org].filter(Boolean).join(" · "),
-                onClick: () => handleSimilarWorkClick(w),
-              })),
-            }
-          : { icon: TrendingUp, color: "amber", title: "수상작·유사사례 경향", body: "수상작 자료 미확보 — 유사 공모전 사례 기반 분석은 아직 지원하지 않아요." },
-      ]
-    : [];
+  const nextStageKey = (() => {
+    const seq = (mode && FLOW_BY_MODE[mode]) || [];
+    const i = seq.indexOf("analysis");
+    return i >= 0 && i < seq.length - 1 ? seq[i + 1] : null;
+  })();
+  const nextLabel = nextStageKey ? STAGE_LABELS[nextStageKey] : null;
+  const nextDesc = nextStageKey ? STAGE_DESCRIPTIONS[nextStageKey] : null;
+  const ctaLabel = mode === "pre" ? "AI 위원과 주제 확정 시작" : "기획서 업로드하기";
+
+  const metaItems = [{ icon: Sparkles, label: "아이디어 주제", value: ideaTopic || "미정" }];
+  if (sourceDocCount > 0) metaItems.push({ icon: FileStack, label: "분석에 사용된 자료", value: `${sourceDocCount}개` });
+  if (hasAnnouncement) metaItems.push({ icon: CheckCircle2, label: "분석 상태", value: "완료" });
+
+  const statRows = [];
+  if (hasAnnouncement) statRows.push({ label: "분석 범위", value: "공모전 공고 및 평가 기준" });
+  if (criteriaSummary.itemCount > 0) {
+    statRows.push({
+      label: "평가 항목",
+      value: criteriaSummary.totalScore != null
+        ? `${criteriaSummary.itemCount}개 항목 · ${criteriaSummary.totalScore}점`
+        : `${criteriaSummary.itemCount}개 항목`,
+    });
+  }
+  if (sourceDocCount > 0) statRows.push({ label: "분석 근거 자료", value: `${sourceDocCount}개 문서` });
+  if (analysis?.has_similar_case_data && similarWorks.length > 0) {
+    statRows.push({ label: "유사 사례", value: `${similarWorks.length}개 분석` });
+  }
 
   return (
     <>
-    <div style={{ maxWidth: 820 }}>
+    <div className="cas-wrap">
+      <style>{`
+        .cas-wrap{ max-width:1320px; }
+        .cas-title-row{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:10px 0 6px; }
+        .cas-title{ font-size:28px; font-weight:700; margin:0; }
+        .cas-subtitle{ font-size:14.5px; color:var(--text-2); margin:0 0 18px; }
+
+        .cas-meta-row{ display:flex; flex-wrap:wrap; gap:12px; margin-bottom:18px; }
+        .cas-meta-item{ display:flex; align-items:center; gap:8px; background:var(--bg-1); border:1px solid var(--glass-border); border-radius:12px; padding:10px 14px; flex:0 1 auto; }
+        .cas-meta-label{ font-size:12px; color:var(--text-2); }
+        .cas-meta-value{ font-size:14.5px; font-weight:700; }
+        @media (max-width:640px){ .cas-meta-item{ flex:1 1 45%; } }
+
+        .cas-layout{ display:grid; grid-template-columns:minmax(0,1fr) 320px; gap:24px; align-items:start; }
+        @media (max-width:1180px){ .cas-layout{ grid-template-columns:minmax(0,1fr); } .cas-aside{ position:static !important; } }
+
+        .cas-section{ display:flex; flex-direction:column; gap:10px; }
+        .cas-section-head{ display:flex; justify-content:space-between; align-items:flex-start; gap:12px; }
+        .cas-card-title{ display:flex; align-items:center; gap:7px; font-size:15.5px; font-weight:700; }
+        .cas-card-subtitle{ font-size:13px; color:var(--text-2); margin-top:2px; line-height:1.5; }
+        .cas-detail-btn{ display:flex; align-items:center; gap:4px; padding:7px 14px; font-size:13.5px; flex-shrink:0; white-space:nowrap; }
+        .cas-empty{ font-size:13.5px; color:var(--text-2); }
+        .cas-summary-text{ font-size:14px; color:var(--text-1); line-height:1.7; margin:0; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
+
+        .cas-criteria-chips{ display:flex; flex-wrap:wrap; gap:8px; }
+        .cas-criteria-chip{ display:flex; align-items:center; gap:8px; background:var(--bg-2); border-radius:10px; padding:8px 12px; font-size:13.5px; }
+        .cas-criteria-score{ color:var(--purple); font-size:12.5px; }
+        .cas-criteria-more{ display:flex; align-items:center; font-size:13.5px; color:var(--text-2); padding:8px 4px; }
+        .cas-criteria-groups{ display:flex; flex-direction:column; gap:14px; }
+        .cas-criteria-group-name{ font-size:13.5px; font-weight:700; margin-bottom:6px; }
+
+        .cas-case-grid{ display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
+        @media (max-width:900px){ .cas-case-grid{ grid-template-columns:repeat(2,1fr); } }
+        @media (max-width:560px){ .cas-case-grid{ grid-template-columns:1fr; } }
+        .cas-case-card{ min-height:96px; display:flex; flex-direction:column; gap:8px; text-align:left; font:inherit; color:inherit; }
+        .cas-case-title{ font-size:14px; font-weight:600; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; line-height:1.5; }
+        .cas-case-source{ font-size:12px; color:var(--text-2); }
+        .cas-case-more{ align-items:center; justify-content:center; color:var(--purple); font-size:13.5px; font-weight:600; cursor:pointer; border:1px dashed var(--glass-border); }
+
+        .cas-tabs-wrap{ margin-top:6px; }
+        .cas-detail-tabs{ margin-bottom:14px; flex-wrap:wrap; }
+        .cas-tab-panel{ font-size:13.5px; color:var(--text-1); line-height:1.8; }
+        .cas-subheading{ font-size:13px; font-weight:700; color:var(--text-1); margin:10px 0 6px; }
+        .cas-subheading:first-child{ margin-top:0; }
+        .cas-numbered-item{ display:flex; gap:8px; margin-bottom:6px; }
+        .cas-num{ flex-shrink:0; width:18px; height:18px; margin-top:1px; border-radius:999px; background:var(--purple-dim); color:var(--purple); font-size:10.5px; font-weight:700; display:flex; align-items:center; justify-content:center; }
+        .cas-plain-list{ margin:0; padding-left:16px; }
+        .cas-plain-list li{ margin-bottom:4px; }
+        .cas-plain-text{ color:var(--text-1); }
+        .cas-timeline{ display:flex; flex-direction:column; gap:10px; }
+        .cas-timeline-row{ display:flex; align-items:center; gap:10px; }
+        .cas-timeline-dot{ width:8px; height:8px; border-radius:999px; background:var(--purple); flex-shrink:0; }
+        .cas-benefit-grid{ display:grid; grid-template-columns:repeat(2,1fr); gap:10px; }
+        @media (max-width:560px){ .cas-benefit-grid{ grid-template-columns:1fr; } }
+        .cas-benefit-card{ display:flex; align-items:flex-start; gap:8px; font-size:13.5px; }
+        .cas-warning-box{ display:flex; gap:10px; background:var(--amber-dim); border:1px solid rgba(184,131,11,0.25); border-radius:12px; padding:14px 16px; }
+        .cas-warning-title{ font-weight:700; color:var(--amber); margin-bottom:6px; font-size:13.5px; }
+        .cas-risk-list{ margin-top:14px; }
+        .cas-form-items{ margin-top:14px; padding-top:14px; border-top:1px solid var(--glass-border); }
+        .cas-form-note{ font-size:12.5px; color:var(--text-2); margin-bottom:8px; }
+        .cas-form-limit{ color:var(--text-2); font-size:12px; }
+        .cas-form-desc{ font-size:12.5px; color:var(--text-2); }
+
+        .cas-evidence-list{ display:flex; flex-direction:column; }
+        .cas-evidence-row{ padding:10px 0; border-top:1px solid var(--glass-border); }
+        .cas-evidence-row:first-child{ border-top:none; padding-top:0; }
+        .cas-evidence-head{ display:flex; align-items:center; gap:6px; margin-bottom:4px; }
+        .cas-evidence-claim{ font-size:13.5px; color:var(--text-1); line-height:1.6; }
+        .cas-evidence-meta{ font-size:12px; color:var(--text-2); margin-top:2px; }
+        .cas-evidence-sources{ font-size:12.5px; color:var(--text-2); margin-top:10px; padding-top:10px; border-top:1px solid var(--glass-border); }
+
+        .cas-aside{ position:sticky; top:24px; display:flex; flex-direction:column; gap:16px; }
+        .cas-aside-title{ font-size:14.5px; font-weight:700; margin-bottom:10px; }
+        .cas-status-list{ display:flex; flex-direction:column; gap:8px; }
+        .cas-status-row{ display:flex; justify-content:space-between; align-items:center; font-size:13.5px; }
+        .cas-stat-list{ display:flex; flex-direction:column; gap:8px; }
+        .cas-stat-row{ display:flex; justify-content:space-between; gap:10px; font-size:13px; padding-top:8px; border-top:1px solid var(--glass-border); }
+        .cas-stat-row:first-child{ border-top:none; padding-top:0; }
+        .cas-stat-label{ color:var(--text-2); }
+        .cas-stat-value{ font-weight:600; color:var(--text-1); text-align:right; }
+        .cas-next-title{ font-size:14.5px; font-weight:700; }
+        .cas-next-desc{ font-size:13px; color:var(--text-2); line-height:1.6; margin:6px 0 14px; }
+        .cas-next-btn{ width:100%; display:flex; align-items:center; justify-content:center; gap:8px; }
+      `}</style>
+
       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
         <button type="button" className="rb-back-button" onClick={onBack} aria-label="이전 화면으로 이동">
           {'←'}
         </button>
-        <div className="badge purple mono">{hasAnnouncement ? "공고문 분석 결과" : "공고문 미등록"}</div>
       </div>
-      <h1 style={{ margin: "12px 0 24px", fontSize: 26, fontWeight: 700 }}>
-        {hasAnnouncement ? (analysis?.announcement_title || "등록한 공고문을 확인하세요") : "등록된 공고문이 없어요"}
-      </h1>
+      <div className="cas-title-row">
+        <h1 className="cas-title">
+          {hasAnnouncement ? (analysis?.announcement_title || "등록한 공고문을 확인하세요") : "등록된 공고문이 없어요"}
+        </h1>
+        <span className="badge purple mono">{(mode && MODE_META[mode]?.badge) || "공모전 분석"}</span>
+        {!hasAnnouncement && <span className="badge amber mono">공고문 미등록</span>}
+      </div>
+      {STAGE_DESCRIPTIONS.analysis && <p className="cas-subtitle">{STAGE_DESCRIPTIONS.analysis}</p>}
 
       {error && <p style={{ color: "var(--coral)", fontSize: 13, marginBottom: 16 }}>{error}</p>}
 
-      {hasAnnouncement ? (
-        <>
-          <div className="rb-grid-2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 16 }}>
-            {cards.map((it, i) => (
-              <div key={i} className="card glass">
-                <it.icon size={17} color={`var(--${it.color})`} />
-                <div style={{ fontWeight: 600, fontSize: 13.5, margin: "10px 0 6px" }}>{it.title}</div>
-                {it.body && <div style={{ fontSize: 12.5, color: "var(--text-2)", lineHeight: 1.6 }}>{it.body}</div>}
-                {it.list && (
-                  it.list.length > 0
-                    ? <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12.5, color: "var(--text-2)", lineHeight: 1.7 }}>
-                        {it.list.map((v, j) => (
-                          <li
-                            key={j}
-                            onClick={v?.onClick}
-                            style={v?.onClick ? { cursor: "pointer", textDecorationLine: "underline", textDecorationStyle: "dotted" } : undefined}
-                          >
-                            {v?.label ?? v}
-                          </li>
-                        ))}
-                      </ul>
-                    : <div style={{ fontSize: 12.5, color: "var(--text-2)" }}>확인된 내용이 없어요.</div>
-                )}
-              </div>
-            ))}
-          </div>
+      <MetaSummaryRow items={metaItems} />
 
-          <button
-            className="btn-ghost"
-            style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 20 }}
-            onClick={() => setDetailOpen((v) => !v)}
-          >
-            {detailOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-            상세 분석 {detailOpen ? "접기" : "보기"}
-          </button>
-
-          {detailOpen && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 14, marginBottom: 24 }}>
-              <div className="card glass">
-                <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>추천 전략</div>
-                <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12.5, color: "var(--text-1)", lineHeight: 1.8 }}>
-                  {[...(strategy?.winning_points || []), ...(strategy?.recommended_direction || [])].map((v, i) => <li key={i}>{v}</li>)}
-                  {(strategy?.winning_points?.length || 0) + (strategy?.recommended_direction?.length || 0) === 0 && (
-                    <li style={{ color: "var(--text-2)" }}>제안할 전략을 판단할 근거가 부족해요.</li>
-                  )}
-                </ul>
-              </div>
-
-              <div className="card glass">
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
-                  <Calendar size={15} color="var(--purple)" />
-                  <div style={{ fontWeight: 700, fontSize: 14 }}>일정</div>
+      <div className="cas-layout">
+        <div style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 16 }}>
+          {hasAnnouncement ? (
+            <>
+              <AnalysisSummaryCard summary={strategy?.core_intent} onExpand={() => openDetail("strategy")} />
+              <EvaluationCriteriaSummary
+                groups={criteriaGroups}
+                expanded={criteriaExpanded}
+                onToggle={() => setCriteriaExpanded((v) => !v)}
+              />
+              <SimilarCaseSection
+                hasData={!!analysis?.has_similar_case_data}
+                works={similarWorks}
+                expanded={similarExpanded}
+                onToggle={() => setSimilarExpanded((v) => !v)}
+                onWorkClick={handleSimilarWorkClick}
+                loadingWork={workDetailLoading}
+              />
+              <CoreRequirementsSection
+                open={detailOpen}
+                onToggle={() => setDetailOpen((v) => !v)}
+                activeTab={detailTab}
+                onTabChange={setDetailTab}
+                facts={facts}
+                strategy={strategy}
+                formAnalysis={formAnalysis}
+              />
+              <EvidenceSection
+                evidence={evidence}
+                sourceDocs={analysis?.source_document_names || []}
+                expanded={evidenceExpanded}
+                onToggle={() => setEvidenceExpanded((v) => !v)}
+              />
+            </>
+          ) : (
+            <div className="card glass" style={{ borderColor: "var(--amber-dim)" }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                <AlertCircle size={15} color="var(--amber)" style={{ marginTop: 2, flexShrink: 0 }} />
+                <div style={{ fontSize: 12.5, color: "var(--text-1)", lineHeight: 1.6 }}>
+                  이전 화면에서 공고 URL이나 파일을 등록하지 않았어요 — 공식 심사기준 없이 일반적인 평가 관점으로 진행합니다.
                 </div>
-                {(facts?.key_dates?.length || 0) > 0 ? (
-                  <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12.5, color: "var(--text-1)", lineHeight: 1.8 }}>
-                    {facts.key_dates.map((date, i) => <li key={i}>{date}</li>)}
-                  </ul>
-                ) : (
-                  <div style={{ fontSize: 12.5, color: (facts?.deadline && facts.deadline !== '미공개') ? "var(--text-1)" : "var(--text-2)" }}>
-                    제출 마감: {facts?.deadline || "미공개"}
-                  </div>
-                )}
-              </div>
-
-              {detailFactSections.map((section) => (
-                <div key={section.title} className="card glass">
-                  <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>{section.title}</div>
-                  <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12.5, color: "var(--text-1)", lineHeight: 1.8 }}>
-                    {section.items.map((item, i) => <li key={i}>{item}</li>)}
-                    {section.items.length === 0 && <li style={{ color: "var(--text-2)" }}>{section.empty}</li>}
-                  </ul>
-                </div>
-              ))}
-
-              <div className="card glass">
-                <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>주의 리스크</div>
-                <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12.5, color: "var(--text-1)", lineHeight: 1.8 }}>
-                  {(strategy?.risk_flags || []).map((v, i) => <li key={i}>{v}</li>)}
-                  {(strategy?.risk_flags?.length || 0) === 0 && (
-                    <li style={{ color: "var(--text-2)" }}>추가로 분석된 주의 리스크가 없어요.</li>
-                  )}
-                </ul>
-              </div>
-
-              {/* 가은/Claude(2026-07-22, 요청: 신청양식 항목 패널 분리) — 신청양식을 실제로
-                  등록했고(has_application_form) 기입란이 발견됐을 때만(items.length > 0)
-                  노출한다. "평가에서 갈리는 지점"(위 카드, 심사 기준·배점)과 섞이지 않도록
-                  별도 카드로 둔다 — 신청양식이 여러 부문(예: 도시/기업)을 한 파일에 담고
-                  있으면 항목이 섞여 보일 수 있다는 것도 함께 안내한다. */}
-              {formAnalysis?.has_application_form && formAnalysis.items.length > 0 && (
-                <div className="card glass">
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
-                    <FileText size={15} color="var(--purple)" />
-                    <div style={{ fontWeight: 700, fontSize: 14 }}>신청양식에서 써야 할 항목</div>
-                  </div>
-                  <div style={{ fontSize: 11.5, color: "var(--text-2)", marginBottom: 10 }}>
-                    등록한 신청양식에서 찾은 기입란이에요. 여러 부문(도시/기업 등)이 한 문서에
-                    있으면 관련 없는 항목도 섞여 보일 수 있어요.
-                  </div>
-                  <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12.5, color: "var(--text-1)", lineHeight: 1.9 }}>
-                    {formAnalysis.items.map((item, i) => (
-                      <li key={i}>
-                        <strong style={{ fontWeight: 600 }}>{item.field_name}</strong>
-                        {item.char_limit != null && (
-                          <span className="mono" style={{ color: "var(--text-2)", fontSize: 11 }}> ({item.char_limit}자 이내)</span>
-                        )}
-                        {item.description && (
-                          <div style={{ fontSize: 11.5, color: "var(--text-2)" }}>{item.description}</div>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-
-              <div className="card glass">
-                <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>출처</div>
-                {evidence.length === 0 && <div style={{ fontSize: 12.5, color: "var(--text-2)" }}>표시할 근거가 없어요.</div>}
-                {evidence.map((e, i) => (
-                  <div key={i} style={{ padding: "8px 0", borderTop: i > 0 ? "1px solid var(--glass-border)" : "none" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start" }}>
-                      <div style={{ fontSize: 12.5, color: "var(--text-1)" }}>{e.claim}</div>
-                      <span className={`badge ${e.source_type === 'announcement' ? 'green' : 'purple'} mono`} style={{ flexShrink: 0 }}>
-                        {e.source_type === 'announcement' ? '공고문 근거' : 'AI 추론'}
-                      </span>
-                    </div>
-                    <div style={{ fontSize: 11, color: "var(--text-2)", marginTop: 2 }}>
-                      {e.location || (e.source_type === 'announcement' ? '위치 미상' : '추론')} · {_CONFIDENCE_LABEL[e.confidence] || e.confidence}
-                    </div>
-                  </div>
-                ))}
-                {(analysis?.source_document_names?.length || 0) > 0 && (
-                  <div style={{ fontSize: 11.5, color: "var(--text-2)", marginTop: 10 }}>
-                    참고 문서: {analysis.source_document_names.join(', ')}
-                  </div>
-                )}
               </div>
             </div>
           )}
-        </>
-      ) : (
-        <div className="card glass" style={{ borderColor: "var(--amber-dim)", marginBottom: 24 }}>
-          <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
-            <AlertCircle size={15} color="var(--amber)" style={{ marginTop: 2, flexShrink: 0 }} />
-            <div style={{ fontSize: 12.5, color: "var(--text-1)", lineHeight: 1.6 }}>
-              이전 화면에서 공고 URL이나 파일을 등록하지 않았어요 — 공식 심사기준 없이 일반적인 평가 관점으로 진행합니다.
-            </div>
-          </div>
         </div>
-      )}
 
-      <button className="btn-primary" style={{ display: "flex", alignItems: "center", gap: 8 }} onClick={onNext}>
-        {mode === "pre" ? "AI 위원과 주제 확정 시작" : "기획서 업로드하기"} <ArrowRight size={15} />
-      </button>
+        <AnalysisStatusPanel
+          mode={mode}
+          active="analysis"
+          statRows={statRows}
+          nextLabel={nextLabel}
+          nextDesc={nextDesc}
+          ctaLabel={ctaLabel}
+          onAdvance={handleAdvance}
+          advancing={advancing}
+        />
+      </div>
     </div>
 
     {workDetail && (
@@ -1414,7 +2135,7 @@ export default function ReviewBoardPrototype() {
       {stage === "upload" && (
         <UploadAndAnalyzeScreen projectId={projectId} onFeedbackReady={handleFeedbackReady} onBack={goPrev} initialDocuments={targetDocuments} />
       )}
-      {stage === "workbench" && <WorkbenchScreen projectId={projectId} />}
+      {stage === "workbench" && <WorkbenchScreen projectId={projectId} onNext={goNext} />}
       {stage === "report" && <VersionTrackerTestPage embedded projectId={projectId} />}
     </Shell>
   );

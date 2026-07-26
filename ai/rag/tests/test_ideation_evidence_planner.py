@@ -215,6 +215,45 @@ class TestEvaluateEvidenceEligibility:
         assert result["eligible"] is False
         assert "below_issue_relevance" in result["exclusion_reasons"]
 
+    def test_result_announcement_is_not_eligible_as_evaluation_evidence(self):
+        item = _criteria_item(text="(수)에 WSCE 공식 홈페이지를 통해 심사 결과 발표")
+        issue = {
+            "issue_id": "contest_fit",
+            "title": "공모전 적합성",
+            "query": "공모전 심사 기준 적합성",
+        }
+        result = evaluate_evidence_eligibility(
+            item,
+            persona_id="planning_expert",
+            effective_issue=issue,
+            runtime_scope={},
+        )
+        assert result["document_section_policy_pass"] is False
+        assert result["eligible"] is False
+        assert "administrative_criteria_content" in result["exclusion_reasons"]
+
+    def test_mixed_chunk_keeps_real_evaluation_criterion_eligible(self):
+        item = _criteria_item(
+            text=(
+                "(수)에 공식 홈페이지를 통해 심사 결과 발표\n"
+                "평가 기준 혁신성 (20)\n"
+                "- 기존 방식과 차별화된 해결 방법을 제시했는가?"
+            )
+        )
+        issue = {
+            "issue_id": "differentiation",
+            "title": "차별성",
+            "query": "기존 방식과 차별화된 해결 방법",
+        }
+        result = evaluate_evidence_eligibility(
+            item,
+            persona_id="planning_expert",
+            effective_issue=issue,
+            runtime_scope={},
+        )
+        assert result["document_section_policy_pass"] is True
+        assert result["eligible"] is True
+
     def test_candidate_scope_mismatch_excluded(self):
         item = _target_item()
         item["ideation_source_type"] = "ideation_candidate"
@@ -589,7 +628,56 @@ class TestBuildEvidencePlan:
             shadow_history=[],
         )
         assert plan["plan_id"].startswith("EP-")
-        assert plan["policy_version"] == "ideation-planner-v9"
+        assert plan["policy_version"] == "ideation-planner-v10"
+
+    def test_result_announcement_quote_is_never_selected_for_contest_fit(self):
+        issue = {
+            "issue_id": "contest_fit",
+            "title": "공모전 적합성",
+            "query": "공모전 심사 기준 적합성",
+        }
+        schedule = _criteria_item(
+            ref="E1",
+            chunk_id="chk_schedule",
+            text="(수)에 WSCE 공식 홈페이지를 통해 심사 결과 발표",
+        )
+        plan = build_evidence_plan(
+            persona_id="planning_expert",
+            effective_issue=issue,
+            retrieved_evidence=[schedule],
+            runtime_scope={},
+            shadow_history=[],
+        )
+        assert plan["selected_evidence"] == []
+        assert plan["empty_plan_reason"] in {
+            "role_policy_excluded_all",
+            "no_issue_relevant_evidence",
+        }
+
+    def test_mixed_schedule_and_evaluation_chunk_selects_only_evaluation_quote(self):
+        issue = {
+            "issue_id": "differentiation",
+            "title": "차별성",
+            "query": "기존 방식 대비 차별화된 해결 방법",
+        }
+        criteria = _criteria_item(
+            text=(
+                "(수)에 공식 홈페이지를 통해 심사 결과 발표\n"
+                "평가 기준 혁신성 (20)\n"
+                "- 기존 방식과 차별화된 해결 방법을 제시했는가?"
+            )
+        )
+        plan = build_evidence_plan(
+            persona_id="planning_expert",
+            effective_issue=issue,
+            retrieved_evidence=[criteria],
+            runtime_scope={},
+            shadow_history=[],
+        )
+        assert len(plan["selected_evidence"]) == 1
+        quote = plan["selected_evidence"][0]["quote"]
+        assert quote == "기존 방식과 차별화된 해결 방법을 제시했는가?"
+        assert "결과 발표" not in quote
 
     def test_problem_issue_rejects_expansion_quote_and_selects_problem_quote(self):
         issue = {

@@ -72,7 +72,7 @@ IdeationMode = Literal["refinement", "discovery"]
 ExpectedAnswerType = Literal["preference", "selection", "definition", "constraint", "evidence", "specification"]
 
 # 용준/Claude(2026-07-21, 질문 주제 구조화): 실제 사용자 테스트에서 "문제·목표 사용자·핵심
-# 가치·공모전 적합성이 정리되지 않았는데 로드맵부터 질문"하거나 "한 질문에서 여러 쟁점을
+# 가치가 정리되지 않았는데 로드맵부터 질문"하거나 "한 질문에서 여러 쟁점을
 # 동시에 묻는" 문제가 확인됐다. 이를 막기 위해 질문 하나가 다루는 주제를 명시적인 값
 # (question_topic)으로 구조화하고, 그 우선순위를 코드가 강제한다 — 이 순서는 "문제 정의가
 # 안 됐는데 확장 로드맵부터 묻는" 실패를 원천적으로 막기 위한 것이다(요청 목표 1~9번 순서
@@ -94,9 +94,18 @@ TOPIC_PRIORITY: tuple[str, ...] = (
     "roadmap",
 )
 
-# roadmap(확장 기능/도입 순서)은 이 5개 주제가 모두 resolved_topics에 있어야만 질문할 수
-# 있다(요청 2번 — "확장 기능과 로드맵을 너무 일찍 질문"하는 문제의 직접적인 원인 제거).
-ROADMAP_PREREQUISITE_TOPICS: frozenset[str] = frozenset({"problem", "target_user", "core_value", "contest_fit", "mvp"})
+# 공모전 적합성(contest_fit)은 후보 생성·최종 캔버스에는 계속 보존하지만, 전문가 회의의
+# 자동 의제로는 열지 않는다. 공고문의 결과 발표·접수 일정 같은 행정 문장을 심사 기준으로
+# 오인해 억지로 인용하는 실사용 실패가 확인됐기 때문이다. TOPIC_PRIORITY는 과거 세션의
+# issue_id 해석과 canonical family 판정을 위해 그대로 두고, 자동 질문·로테이션만 이 목록을
+# 사용한다.
+DISCUSSION_TOPIC_PRIORITY: tuple[str, ...] = tuple(
+    topic for topic in TOPIC_PRIORITY if topic != "contest_fit"
+)
+
+# roadmap(확장 기능/도입 순서)은 문제·사용자·가치·MVP가 모두 정리된 뒤에만 질문한다.
+# contest_fit은 자동 회의 의제에서 빠졌으므로 선행 조건에서도 제외한다.
+ROADMAP_PREREQUISITE_TOPICS: frozenset[str] = frozenset({"problem", "target_user", "core_value", "mvp"})
 
 
 def remaining_topics_for(resolved_topics: list[str] | None) -> list[str]:
@@ -106,7 +115,7 @@ def remaining_topics_for(resolved_topics: list[str] | None) -> list[str]:
     "질문 규칙으로만 금지"하는 것보다 더 확실한 강제 방법이다. resolved_topics가 None이면
     (구버전 state) 빈 리스트로 취급한다(하위 호환)."""
     resolved_set = set(resolved_topics or [])
-    remaining = [topic for topic in TOPIC_PRIORITY if topic not in resolved_set]
+    remaining = [topic for topic in DISCUSSION_TOPIC_PRIORITY if topic not in resolved_set]
     if "roadmap" in remaining and not ROADMAP_PREREQUISITE_TOPICS.issubset(resolved_set):
         remaining = [topic for topic in remaining if topic != "roadmap"]
     return remaining

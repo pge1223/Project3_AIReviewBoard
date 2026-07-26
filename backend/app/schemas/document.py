@@ -60,6 +60,16 @@ class FetchUrlResponse(UrlExtractionResult):
 # 실제로 확인되는 사실(official_facts)과 AI가 추론한 전략적 분석(strategic_analysis)을
 # 분리해서 반환한다. 공고문에 없는 정보를 지어내지 않는다 — 못 찾은 필드는 빈 배열/
 # "미공개" 문자열로 명시한다(값을 비워두는 대신 근거 없음 자체를 표시).
+class ScheduleItem(BaseModel):
+    event_label: str
+    start_date: str
+    end_date: str = ""
+    start_weekday: str = ""
+    end_weekday: str = ""
+    method: str = ""
+    source_text: str = ""
+
+
 class OfficialFacts(BaseModel):
     eligibility: list[str] = []
     deadline: str = "미공개"
@@ -71,6 +81,9 @@ class OfficialFacts(BaseModel):
     # 내려 이전 클라이언트와의 호환성을 보존한다.
     application_review_conditions: list[str] = []
     key_dates: list[str] = []
+    # key_dates는 기존 클라이언트 호환용으로 유지하고, 화면에서는 날짜의 의미를 잃지
+    # 않도록 행사명·기간·발표 방법이 분리된 구조화 일정을 우선 사용한다.
+    schedule_items: list[ScheduleItem] = []
     selection_benefits: list[str] = []
 
 

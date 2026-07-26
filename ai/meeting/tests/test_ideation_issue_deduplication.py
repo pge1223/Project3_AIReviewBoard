@@ -50,6 +50,20 @@ DATA_ISSUE_PHRASINGS = [
 ]
 
 
+def test_automatic_issue_rotation_skips_contest_fit():
+    next_family = _select_next_issue_family(
+        excluded_family="core_value",
+        open_issues=[],
+        resolved_issues=[
+            {"issue_id": "topic_problem", "title": "문제 정의", "family": "problem"},
+            {"issue_id": "topic_target_user", "title": "목표 사용자", "family": "target_user"},
+            {"issue_id": "topic_core_value", "title": "핵심 가치", "family": "core_value"},
+        ],
+        resolved_topics=["problem", "target_user", "core_value"],
+    )
+    assert next_family == "differentiation"
+
+
 # ---------------------------------------------------------------------------
 # 1. 순수 함수 단위 테스트 — normalize_issue_text / resolve_canonical_issue_family
 # ---------------------------------------------------------------------------

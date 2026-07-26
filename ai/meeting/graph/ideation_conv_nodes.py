@@ -34,6 +34,7 @@ from prompts import (
 )
 
 from .ideation_conv_state import (
+    DISCUSSION_TOPIC_PRIORITY,
     TOPIC_PRIORITY,
     ConvMessage,
     DiscussionRoundRecord,
@@ -661,7 +662,7 @@ def _make_validate_question_response(
 
     def _validate(raw: dict) -> str | None:
         topic = raw.get("question_topic")
-        if topic not in TOPIC_PRIORITY:
+        if topic not in DISCUSSION_TOPIC_PRIORITY:
             return "invalid_or_missing_question_topic"
         if topic in resolved_set:
             return "question_topic_already_resolved"
@@ -2524,7 +2525,7 @@ def _select_next_issue_family(
             covered.add(family)
     covered.update(resolved_topics or [])
 
-    for topic in TOPIC_PRIORITY:
+    for topic in DISCUSSION_TOPIC_PRIORITY:
         if topic not in covered:
             return topic
     return None

@@ -1215,9 +1215,6 @@ export function IdeationScreen({
               {statusLabelFor({ phase, starting, sending, finalizing, interrupting })}
             </span>
           )}
-          {ideationConv && (
-            <span className="badge purple mono">라운드 {ideationConv.round}/{ideationConv.max_rounds}</span>
-          )}
         </div>
 
         <ErrorBanner error={phaseFailure || error} onRetry={handleRestart} />

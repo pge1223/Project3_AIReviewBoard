@@ -26,12 +26,28 @@ from graph.ideation_conv_nodes import (  # noqa: E402
     make_conv_discussion_node,
     make_conv_question_node,
 )
+from graph.ideation_conv_state import (  # noqa: E402
+    DISCUSSION_TOPIC_PRIORITY,
+    remaining_topics_for,
+)
 
 NOTICE_AND_CRITERIA = {
     "competition_name": "지역 소상공인 디지털전환 공모전",
     "notice_document": "실현가능성, 차별성을 평가한다.",
 }
 USER_IDEA = {"description": "소상공인이 손님 문의에 자동으로 답하는 챗봇"}
+
+
+def test_contest_fit_is_preserved_but_excluded_from_automatic_discussion_topics():
+    remaining = remaining_topics_for([])
+    assert "contest_fit" not in DISCUSSION_TOPIC_PRIORITY
+    assert "contest_fit" not in remaining
+    assert remaining[:4] == ["problem", "target_user", "core_value", "differentiation"]
+
+
+def test_roadmap_prerequisites_do_not_require_contest_fit():
+    resolved = ["problem", "target_user", "core_value", "mvp"]
+    assert "roadmap" in remaining_topics_for(resolved)
 
 
 def _base_state(resolved_topics=None):
