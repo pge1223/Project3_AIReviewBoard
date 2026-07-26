@@ -14,6 +14,39 @@ from typing import Any
 
 _FIELD_ID_SAFE = re.compile(r"[^a-z0-9_]+")
 
+# 2026-07-26 라운드테이블 재설계 — frontend/src/pages/board/ideationConversationHelpers.js의
+# ADMINISTRATIVE_FIELD_KEYWORDS/isAdministrativeFormField와 반드시 동일하게 유지한다(둘 중
+# 하나만 바뀌면 "회의에서 다룰 항목 선택 모달"과 진행자가 다음 필드를 고르는 기준이
+# 어긋난다). 진행자가 고정 9단계 체크리스트 대신 이 신청서에 실제로 있는 "남은 내용 항목"을
+# 대상으로 다음 질문을 고르도록 바꾸면서, 그 후보군에서 행정/개인정보 항목을 코드로 먼저
+# 제외하기 위해 추가했다(예전에는 이 필터링을 LLM 프롬프트 지시문에만 맡겼다).
+_ADMINISTRATIVE_FIELD_KEYWORDS = (
+    "담당자", "성명", "전화", "이메일", "메일", "팩스", "홈페이지",
+    "사업자등록번호", "법인등록번호", "부서", "직위", "대표자",
+    "설립연도", "매출액", "매출", "경영실적", "자본금", "종업원", "고용 인원",
+    "신청 기관", "신청기관", "도시명", "주소", "기업(법인)명",
+)
+
+
+def is_administrative_form_field(field_name: str) -> bool:
+    name = (field_name or "").strip()
+    if not name:
+        return False
+    return any(keyword in name for keyword in _ADMINISTRATIVE_FIELD_KEYWORDS)
+
+
+def remaining_content_fields(draft: list[dict] | None) -> list[dict]:
+    """아직 확정되지 않았고 행정/개인정보 항목이 아닌 draft row만, 신청서 원래 순서대로
+    반환한다. 진행자가 고정 9단계 대신 이 리스트에서 다음 필드를 고른다(순서 자체를
+    강제하지 않고 후보군만 좁힌다 — 어떤 걸 먼저 다룰지는 진행자 프롬프트의 판단)."""
+    return [
+        row
+        for row in (draft or [])
+        if isinstance(row, dict)
+        and str(row.get("status") or "") != "confirmed"
+        and not is_administrative_form_field(row.get("field_name"))
+    ]
+
 
 def _field_id(item: dict, index: int) -> str:
     provided = str(item.get("field_id") or "").strip().lower()

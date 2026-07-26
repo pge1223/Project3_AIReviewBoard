@@ -28,7 +28,7 @@ import WorkbenchScreen from "./WorkbenchScreen";
 // 흐름 안에 embedded 모드로 끼워 넣는다. 이 파일(가은님 소유)의 변경은 워크벤치와 같은
 // 방식으로 라벨/흐름/렌더 3곳만 최소화했다.
 import VersionTrackerTestPage from "../VersionTrackerTestPage";
-import { IdeationScreen, IdeationResultScreen } from "./IdeationConversationScreen";
+import { IdeationScreen, IdeationResultScreen, ApplicationFormDraftScreen } from "./IdeationConversationScreen";
 
 /* 가은/Claude(2026-07-20): "작성 전(주제 발굴)/작성 후(문서 피드백)" 2-모드
  * 신규 플로우. docs/REVIEW_BOARD_서비스_방향성_정리_20260720.md의 방향을
@@ -49,6 +49,9 @@ const STAGE_LABELS = {
   // 회의"로 바꾼다. IdeationConversationScreen.jsx 쪽 배지 등 이 상수를 안 쓰는 곳은 영향 없음.
   ideation: "AI 아이디어 회의",
   ideation_result: "주제 확정",
+  // 가은/Claude(2026-07-27, 요청: "주제 확정하고 신청서 초안 버튼") — ideation_result에서
+  // "신청서 초안 만들기"를 누르면 이동하는 새 단계.
+  form_draft: "신청서 초안",
   upload: "기획서 업로드 · 분석",
   // 재인/Claude(2026-07-21): docs/REVIEW_BOARD_서비스_방향성_정리_20260720.md의
   // "5. 핵심 UI: 시각적 인터랙티브 워크벤치" 구현 — 실제 화면은
@@ -66,13 +69,16 @@ const STAGE_DESCRIPTIONS = {
   analysis: "공모전의 핵심 내용과 평가 기준을 분석합니다.",
   ideation: "AI 전문가들이 아이디어를 논의합니다.",
   ideation_result: "최종 아이디어를 선택하고 확정합니다.",
+  form_draft: "선택한 신청서 항목의 초안을 확인합니다.",
   upload: "평가받을 기획서를 업로드하고 분석을 시작합니다.",
   workbench: "AI 위원들의 피드백을 확인합니다.",
   report: "버전별 개선 결과를 확인합니다.",
 };
 
 const FLOW_BY_MODE = {
-  pre: ["entry", "analysis", "ideation", "ideation_result"],
+  // 가은/Claude(2026-07-27, 요청: "주제 확정하고 신청서 초안 버튼") — form_draft는
+  // ideation_result의 "신청서 초안 만들기" 버튼으로만 진입한다(goNext).
+  pre: ["entry", "analysis", "ideation", "ideation_result", "form_draft"],
   // 가은/Claude(2026-07-21): 실측 요청 — "작성 후(문서 피드백)"로 들어오면 공모전 분석
   // 화면 없이 바로 기획서 업로드·분석으로 간다. 공모전 분석은 주제를 정하기 전(작성 전)
   // 에나 필요한 단계라서다. entry에서 등록한 공고문(criteria)은 화면만 안 거칠 뿐,
@@ -2213,7 +2219,15 @@ export default function ReviewBoardPrototype() {
           saveError={ideaSaveError}
         />
       )}
-      {stage === "ideation_result" && <IdeationResultScreen ideationConv={ideationConv} onBack={goPrev} />}
+      {stage === "ideation_result" && (
+        <IdeationResultScreen
+          ideationConv={ideationConv}
+          setIdeationConv={setIdeationConv}
+          onBack={goPrev}
+          onNext={goNext}
+        />
+      )}
+      {stage === "form_draft" && <ApplicationFormDraftScreen ideationConv={ideationConv} onBack={goPrev} />}
       {stage === "upload" && (
         <UploadAndAnalyzeScreen projectId={projectId} onFeedbackReady={handleFeedbackReady} onBack={goPrev} initialDocuments={targetDocuments} />
       )}

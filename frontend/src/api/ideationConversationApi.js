@@ -240,6 +240,17 @@ export async function finalizeIdeationConversation(sessionId, model) {
   return handleResponse(res)
 }
 
+// 가은/Claude(2026-07-27, 요청: "주제 확정하고 아래에 신청서 초안 버튼") — finalize와 동일한
+// 요청 스키마(model 선택 필드만 있음)를 그대로 재사용한다.
+export async function generateApplicationFormDraft(sessionId, model) {
+  const res = await fetch(`${API_BASE_URL}/ideation-conversation/${sessionId}/form-draft`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ model: model || undefined }),
+  })
+  return handleResponse(res)
+}
+
 export async function getIdeationConversation(sessionId) {
   const res = await fetch(`${API_BASE_URL}/ideation-conversation/${sessionId}`, {
     headers: { ...authHeaders() },

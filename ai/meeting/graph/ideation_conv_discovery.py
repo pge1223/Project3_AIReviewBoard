@@ -286,6 +286,7 @@ def _merge_candidate_reviews(candidates: list[dict], reviews: list[dict]) -> lis
                 "feasibility": review.get("feasibility") or "medium",
                 "risks": review.get("risks") or [],
                 "dev_notes": review.get("dev_notes"),
+                "novelty_preservation": review.get("novelty_preservation") or "",
             }
         )
     return merged

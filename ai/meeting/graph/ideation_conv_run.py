@@ -13,6 +13,9 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+from prompts import build_ideation_conv_form_draft_prompt
+
+from .application_form_draft import apply_application_form_draft_patch, remaining_content_fields
 from .ideation_conv_build import assemble_ideation_conversation_graph
 from .ideation_conv_discovery import MAX_CANDIDATE_REGENERATIONS, is_regenerate_request
 from .ideation_conv_nodes import (
@@ -20,6 +23,7 @@ from .ideation_conv_nodes import (
     REVISION_TRIGGER_STANCES,
     _route_next_expert_turn,
     _runtime_scope_for,
+    _safe_call_structured_json,
     conversation_context_for,
     generate_expert_delegation_facilitator_recommendation,
     generate_expert_delegation_proposal,
@@ -838,7 +842,17 @@ def reply_ideation_conversation(
         evidence_planner=evidence_planner,
         external_evidence_lookup=external_evidence_lookup,
     )
-    return _drive_graph(graph, state, on_progress, on_snapshot, stop_after_expert_turn=stop_after_expert_turn)
+    result_state = _drive_graph(graph, state, on_progress, on_snapshot, stop_after_expert_turn=stop_after_expert_turn)
+
+    if result_state.get("forced_next_speaker") is not None:
+        # 2026-07-26 라운드테이블 재설계: apply_user_answer가 awaiting_user_decision 직후
+        # forced_next_speaker="facilitator"를 심어 discussion_facilitator로 바로 진입시킨다
+        # (사용자가 진행자의 질문/선택지에 막 답한 경우, 전문가를 다시 거치지 않기 위함).
+        # discussion_facilitator_node는 이 값을 스스로 리셋하지 않으므로(다른 두 전문가
+        # 노드와 달리 원래 forced 진입 대상이 아니었던 노드라서 — continue_ideation_expert_turn의
+        # 같은 정리 로직 참고) 다음 요청에 잔류하지 않도록 여기서 확실히 지운다.
+        result_state = IdeationConvState(**{**result_state, "forced_next_speaker": None})
+    return result_state
 
 
 def continue_ideation_expert_turn(
@@ -878,12 +892,24 @@ def continue_ideation_expert_turn(
     말해야 하는데 요청이 이상하게 감"): _route_next_expert_turn은 "방금 기획/개발위원이
     말한 직후"에만 불리도록 설계된 함수라(그 함수 자체 주석: "정상 흐름에서는 항상 방금
     전문가 발언 직후에만 이 라우터가 불린다"), 아직 이번 라운드에서 위원이 한 번도 안
-    말한 시점(방금 진행자 안건 소개만 끝난 직후)에 그대로 부르면 자기 방어 코드
-    (missing_expert_message)가 "facilitator"를 반환해버려 진행자가 또 진행자를 부르는
-    잘못된 결과가 나온다. 이 경우는 _route_next_expert_turn을 아예 부르지 않고, 그래프의
-    기본 진입 규칙(_route_entry의 기본값 = planning_expert_discussion, ideation_conv_build.py
-    ::_ENTRY_NODES)과 동일하게 "라운드 첫 턴은 항상 기획위원"으로 직접 정한다 — 이것도
-    새 판단 로직이 아니라 이미 있는 그래프 관례를 그대로 따르는 것뿐이다."""
+    말한 시점에 그대로 부르면 자기 방어 코드(missing_expert_message)가 "facilitator"를
+    반환해버려 진행자가 또 진행자를 부르는 잘못된 결과가 나온다. 이 경우는
+    _route_next_expert_turn을 아예 부르지 않는다.
+
+    용준/Claude(2026-07-26, 라운드테이블 재설계 — 실측: "후보 선택 직후 고정 1턴 없이
+    바로 위원이 말함"): 위 문단은 원래 "이 경우는 무조건 기획위원이 먼저 말한다"였다.
+    하지만 candidate_selection이 끝나면 항상 정지하는 _drive_graph의 single_turn 멈춤
+    지점(요청: "선택 확정 + 안건 소개"를 한 박자로 보여주기 위해 진행자 메시지 2개가
+    같은 스냅샷에 있으면 그래프가 discussion_facilitator를 실행하기도 전에 멈춘다) 때문에,
+    이 함수가 프론트의 자동 이어달리기(useEffect 루프, IdeationConversationScreen.jsx)로
+    다음 턴을 이어받을 때 이 지점을 항상 통과한다 — 즉 "이번 라운드에서 위원이 아직 말한
+    적 없음"은 두 가지 서로 다른 상황을 뭉뚱그리고 있었다: (a) 진행자가 방금 새 주제를
+    열어서(continue_round) 위원 차례가 된 경우 — 기획위원이 먼저 말하는 게 맞다, (b) 이
+    세션에서 discussion_facilitator가 아직 한 번도 실제 턴을 낸 적이 없는 경우
+    (candidate_selection이 붙인 정적 요약/안건 메시지뿐, structured 없음) — "고정 1턴"
+    요건(후보 선택 직후 진행자가 전문가 없이 먼저 요약+문제정의를 확인)에 따라 기획위원이
+    아니라 진행자가 먼저 말해야 한다. (a)/(b) 구분 없이 무조건 기획위원으로 보내던 게
+    바로 이 버그였다."""
     if previous_state.get("phase") != "expert_discussion":
         raise ValueError(
             "continue_ideation_expert_turn은 phase가 'expert_discussion'일 때만 호출할 수 "
@@ -892,12 +918,17 @@ def continue_ideation_expert_turn(
 
     messages = previous_state.get("messages") or []
     last_message = messages[-1] if messages else None
-    if last_message is None or last_message.get("speaker_id") not in ("planning_expert", "dev_expert"):
-        # 이번 라운드에서 위원이 아직 한 번도 안 말함 — _route_next_expert_turn을 쓸 수
-        # 없는 케이스(위 설명 참고). 그래프 기본 진입 규칙과 동일하게 기획위원이 먼저 말한다.
+    if last_message is not None and last_message.get("speaker_id") in ("planning_expert", "dev_expert"):
+        next_target = _route_next_expert_turn(previous_state)
+    elif any(m.get("speaker_id") == "ideation_facilitator" and m.get("structured") for m in messages):
+        # (a) 진행자가 이미 실제 턴을 낸 적이 있다 — 방금 새 주제를 연 것이므로 기획위원이
+        # 먼저 말한다(그래프 기본 진입 규칙과 동일한 관례).
         next_target = "planning_expert"
     else:
-        next_target = _route_next_expert_turn(previous_state)
+        # (b) 이 세션에서 진행자가 아직 한 번도 실제 턴을 낸 적이 없다 — "고정 1턴"이
+        # 먼저다. discussion_facilitator 노드 자신이 이 경우를 감지해(is_first_facilitator_turn)
+        # 전문가 없이 사용자에게 바로 묻는다.
+        next_target = "facilitator"
     if next_target not in _FORCED_ENTRY_TARGETS:
         # "failed" — 더 진행할 턴이 없다. 그대로 반환(호출부가 phase 등을 보고 처리).
         return previous_state
@@ -938,6 +969,102 @@ def finalize_ideation_conversation(
     state = request_finalize(previous_state)
     graph = assemble_ideation_conversation_graph(llm_call)
     return _drive_graph(graph, state, on_progress, on_snapshot)
+
+
+def generate_application_form_draft(
+    *,
+    previous_state: IdeationConvState,
+    llm_call: LLMCall,
+) -> IdeationConvState:
+    """가은/Claude(2026-07-27, 요청: "주제 확정하고 아래에 신청서 초안 버튼 하나 만들어서
+    페이지로 하나 띄워주자") — 주제가 확정된(phase="finalized") 세션에서, 사용자가 회의 중
+    선택한 신청양식 항목(application_form_items) 중 아직 대화로 확정되지 않은 필드를
+    idea_proposal(방금 만든 종합 결과)을 근거로 문서체로 채운다.
+
+    LangGraph 노드가 아니라 독립 함수다 — 그래프 라운드 진행과 무관한 1회성 후처리라
+    ideation_conv_build.py의 그래프 구조(다른 담당자가 계속 손대는 중인 라운드테이블
+    재설계)를 건드리지 않는다. status="confirmed"인 필드는 remaining_content_fields()가
+    애초에 target_fields에서 제외하므로 이 함수가 그 값을 덮어쓸 방법이 없다."""
+    if previous_state["phase"] != "finalized":
+        raise ValueError(
+            f"신청서 초안은 주제가 확정된 뒤에만 만들 수 있습니다: phase={previous_state['phase']!r}"
+        )
+    if not previous_state.get("application_form_items"):
+        raise ValueError("이 세션에는 선택된 신청 양식 항목이 없습니다.")
+
+    current_draft = previous_state.get("application_form_draft") or []
+    target_fields = remaining_content_fields(current_draft)
+    if not target_fields:
+        # 이미 대화 중 전부 확정됐다 — 새로 만들 것 없이 현재 상태 그대로 반환.
+        return previous_state
+
+    prompt = build_ideation_conv_form_draft_prompt(
+        previous_state["notice_and_criteria"],
+        previous_state.get("idea_proposal"),
+        current_draft,
+        target_fields,
+    )
+    target_ids = {str(row.get("field_id")) for row in target_fields}
+
+    def validate(raw: dict) -> str | None:
+        patch = raw.get("draft_patch")
+        if not isinstance(patch, list):
+            return "missing_or_empty_field:draft_patch"
+        patched_ids = {
+            str(item.get("field_id"))
+            for item in patch
+            if isinstance(item, dict) and str(item.get("value") or "").strip()
+        }
+        missing = target_ids - patched_ids
+        if missing:
+            return "missing_field_values:" + ",".join(sorted(missing))
+        return None
+
+    raw, ok, attempts = _safe_call_structured_json(llm_call, prompt, validate, "form_draft_finalize")
+    used = previous_state.get("llm_calls_used", 0) + attempts
+    if not ok:
+        trace_event(
+            "IDEATION_FORM_DRAFT_GENERATION_FAILED",
+            level=30,
+            session_id=previous_state.get("session_id"),
+            target_field_count=len(target_fields),
+        )
+        raise RuntimeError("신청서 초안 생성에 실패했습니다. 다시 시도해 주세요.")
+
+    updated_draft, applied = apply_application_form_draft_patch(
+        current_draft, raw.get("draft_patch"), confirmable_field_ids=target_ids
+    )
+    # 이 단계는 대화가 아니라 확정된 종합 결과를 근거로 쓰는 1회성 마무리 작성이므로,
+    # 적용된 필드는 곧바로 confirmed로 승격한다(draft_patch 원소에 status가 없으면
+    # apply_application_form_draft_patch 기본값이 "draft"라 여기서 다시 한 번 승격한다).
+    applied_ids = {row["field_id"] for row in applied}
+    for row in updated_draft:
+        if row.get("field_id") in applied_ids:
+            row["status"] = "confirmed"
+    # 가은/Claude(2026-07-27, 요청: "보완이 필요한 정보 섹션") — 본문에 넣지 못한(입력에
+    # 없어서 지어낼 수 없었던) 항목을 별도로 남긴다. 이번 호출로 새로 생성한 값을 그대로
+    # 대체한다(누적하지 않는다) — 재생성하면 그 사이 사용자가 채운 값 때문에 더 이상
+    # 유효하지 않은 예전 보완 요청이 남아있으면 안 되기 때문이다.
+    supplement_notes = [
+        note.strip()
+        for note in (raw.get("needs_supplementation") or [])
+        if isinstance(note, str) and note.strip()
+    ]
+    trace_event(
+        "IDEATION_FORM_DRAFT_GENERATED",
+        session_id=previous_state.get("session_id"),
+        target_field_count=len(target_fields),
+        applied_field_count=len(applied),
+        supplement_note_count=len(supplement_notes),
+    )
+    return IdeationConvState(
+        **{
+            **previous_state,
+            "application_form_draft": updated_draft,
+            "application_form_supplement_notes": supplement_notes,
+            "llm_calls_used": used,
+        }
+    )
 
 
 _TARGET_TO_FORCED_SPEAKER = {"planning_expert": "planning_expert", "dev_expert": "dev_expert"}

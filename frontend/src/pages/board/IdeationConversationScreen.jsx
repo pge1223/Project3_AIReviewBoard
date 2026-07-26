@@ -4,6 +4,7 @@ import {
   cancelIdeationConversation,
   continueIdeationExpertTurnStream,
   finalizeIdeationConversation,
+  generateApplicationFormDraft,
   getIdeationConversation,
   getLatestIdeationConversation,
   replyIdeationConversation,
@@ -350,7 +351,7 @@ function MessageBubble({ message, streaming = false, interrupted = false, allMes
     <div style={{ display: 'flex', justifyContent: isRight ? 'flex-end' : 'flex-start', marginBottom: 10 }}>
       <div style={{ maxWidth: '82%' }}>
         {meta.badgeClass && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: isRight ? 'flex-end' : 'flex-start', gap: 6, marginBottom: 4 }}>
             <span className={`badge ${meta.badgeClass} mono`}>{meta.label}</span>
           </div>
         )}
@@ -503,6 +504,30 @@ function CandidateCard({ candidate, index, onSelect, disabled, selected = false 
             <div style={{ fontSize: 14, color: 'var(--text-1)', lineHeight: 1.6 }}>
               <strong style={{ color: 'var(--text-2)', fontWeight: 600 }}>핵심 가치 · </strong>
               {candidate.core_value}
+            </div>
+          )}
+          {candidate.innovation_axis && (
+            <div style={{ fontSize: 14, color: 'var(--text-1)', lineHeight: 1.6 }}>
+              <strong style={{ color: 'var(--text-2)', fontWeight: 600 }}>혁신 축 · </strong>
+              {candidate.innovation_axis}
+            </div>
+          )}
+          {candidate.novel_mechanism && (
+            <div style={{ fontSize: 14, color: 'var(--text-1)', lineHeight: 1.6 }}>
+              <strong style={{ color: 'var(--text-2)', fontWeight: 600 }}>핵심 참신성 · </strong>
+              {candidate.novel_mechanism}
+            </div>
+          )}
+          {candidate.existing_approach && candidate.existing_limitation && (
+            <div style={{ fontSize: 14, color: 'var(--text-1)', lineHeight: 1.6 }}>
+              <strong style={{ color: 'var(--text-2)', fontWeight: 600 }}>기존 방식의 한계 · </strong>
+              {candidate.existing_approach} — {candidate.existing_limitation}
+            </div>
+          )}
+          {candidate.novelty_preservation && (
+            <div style={{ fontSize: 14, color: 'var(--text-1)', lineHeight: 1.6 }}>
+              <strong style={{ color: 'var(--text-2)', fontWeight: 600 }}>참신성 검증 MVP · </strong>
+              {candidate.novelty_preservation}
             </div>
           )}
           {candidate.main_features?.length > 0 && (
@@ -1154,6 +1179,18 @@ export function IdeationScreen({
   )
   const isCandidateSelected = (candidate) =>
     selectedCandidateKeys.has(candidate.candidate_id) || selectedCandidateKeys.has(candidate.title)
+  // 2026-07-26 라운드테이블 재설계 — 진행자가 needs_user_decision=true와 함께 반환하는
+  // structured.choices(백엔드는 이미 보내고 있었지만 프론트가 안 쓰고 있었다)를 후보 카드와
+  // 같은 자리·같은 클릭→자유텍스트 패턴으로 노출한다. phase가 awaiting_user_decision일
+  // 때만 의미가 있고(그 외엔 이미 답변된 지난 선택지라 다시 눌러도 무효), canonicalMessages의
+  // 마지막 진행자 메시지만 본다 — 그보다 이전 메시지의 choices는 이미 지난 사이클이다.
+  const latestFacilitatorMessage = [...canonicalMessages]
+    .reverse()
+    .find((m) => m.speaker_id === 'ideation_facilitator')
+  const latestFacilitatorChoices =
+    phase === 'awaiting_user_decision' && latestFacilitatorMessage?.structured?.needs_user_decision
+      ? latestFacilitatorMessage.structured.choices || []
+      : []
   // 용준/Claude(2026-07-22, 요청: "잠시만" 버튼) — 실제로 기획/개발 위원이 발언을
   // 스트리밍하는 동안에만(말풍선이 하나 이상 생겨야) 활성화한다. 이미 취소 확인을 기다리는
   // 중이면(interrupting) 다시 누를 수 없다.
@@ -1461,6 +1498,13 @@ export function IdeationScreen({
       ]
     : []
 
+  // TEMP DEBUG (RAG 연결 확인용, 확인 끝나면 삭제) — useRag는 이번 세션이 RAG를 "요청"
+  // 했는지만 말해준다(criteriaDocuments 색인 완료 여부 기준). 실제로 근거가 붙었는지는
+  // 지금까지 나온 위원 발언 중 linked_evidence_refs가 있는 메시지 수로 판단한다.
+  const ragDebugRequested = resolveUseRag(projectId, criteriaDocuments)
+  const ragDebugLinkedCount = visibleMessages.filter((m) => (m.linked_evidence_refs || []).length > 0).length
+  const ragDebugExpertCount = visibleMessages.filter((m) => m.speaker_id !== 'ideation_facilitator' && m.speaker_id !== 'user').length
+
   return (
     <div className="rb-ideation-layout">
       <StreamingCursorStyle />
@@ -1487,6 +1531,21 @@ export function IdeationScreen({
             >
               <Download size={13} /> JSON 내보내기
             </button>
+          )}
+          {ideationConv && (
+            // TEMP DEBUG (RAG 연결 확인용, 확인 끝나면 삭제)
+            <span
+              title="RAG 요청 여부 / 근거 연결된 위원 발언 수 (임시 디버그)"
+              style={{
+                fontSize: 11,
+                padding: '3px 7px',
+                borderRadius: 999,
+                border: '1px solid var(--glass-border)',
+                color: ragDebugRequested ? 'var(--purple)' : 'var(--text-2)',
+              }}
+            >
+              RAG {ragDebugRequested ? 'ON' : 'OFF'} · 근거 {ragDebugLinkedCount}/{ragDebugExpertCount}
+            </span>
           )}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 2 }}>
@@ -1629,6 +1688,28 @@ export function IdeationScreen({
                   />
                 ))}
               </div>
+            </div>
+          )}
+          {/* 2026-07-26 라운드테이블 재설계 — 진행자가 매 사이클 던지는 선택지를 후보
+              카드와 같은 자리에 버튼으로 노출한다(요청: "사용자가 주어진 선택지로 참여").
+              클릭하면 선택지 라벨을 그대로 자유텍스트로 보낸다 — 후보 카드와 동일한 패턴이라
+              백엔드 응답 계약을 바꾸지 않는다. 직접 입력은 아래 항상 떠 있는 입력창으로도
+              가능하므로 별도 "직접 입력" 버튼을 강제하지 않는다(진행자가 필요하면 선택지
+              안에 "직접 입력" 항목을 이미 포함해서 준다). */}
+          {latestFacilitatorChoices.length > 0 && (
+            <div style={{ marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              {latestFacilitatorChoices.map((choice, i) => (
+                <button
+                  key={choice.id || i}
+                  type="button"
+                  className="btn-ghost"
+                  style={{ padding: '8px 14px', fontSize: 14.5, borderRadius: 999, textAlign: 'left' }}
+                  onClick={() => handleSend(choice.label)}
+                  disabled={!canReplyOrContinue}
+                >
+                  {choice.label}
+                </button>
+              ))}
             </div>
           )}
           <div ref={chatEndRef} />
@@ -1795,14 +1876,11 @@ export function IdeationScreen({
           userSelectionMessage={ideationConv?.user_selection_message}
         />
 
-        {/* 가은/Claude(2026-07-26, dev #131-167 merge 후 재이식) — 신청서 항목 선택
-            모달에서 확정한 항목을 회의 중에도 계속 보여준다(items가 비어있으면
-            ApplicationFormPanel 자체가 null을 반환해 숨는다). dev 쪽엔
-            application_form_draft(항목별 실시간 작성 상태) 데이터 모델이 없어서
-            draft는 넘기지 않는다 — 전부 "아직 작성되지 않았어요"로 보이는 대신, 최소
-            "이 항목들을 준비해야 한다"는 목록 자체는 다시 보인다. */}
-        <ApplicationFormPanel items={applicationFormItems} />
-
+        {/* 가은/Claude(2026-07-27, 요청: "AI 아이디어 회의 페이지에 신청서 작성항목 패널
+            없애줘") — 회의 중 오른쪽 패널에 노출하던 ApplicationFormPanel을 제거했다.
+            신청서 초안은 이제 주제 확정 후 별도 페이지(ApplicationFormDraftScreen,
+            stage="form_draft")에서만 보여준다 — ApplicationFormPanel 자체는 그 화면에서
+            계속 재사용하므로 컴포넌트/import는 그대로 둔다. */}
         <IdeaCanvasPanel ideationConv={ideationConv} analysis={announcementAnalysis} />
 
         {ideationConv && (ideationConv.consensus?.length > 0 || ideationConv.unresolved_issues?.length > 0) && (
@@ -1906,7 +1984,28 @@ function proposalValueDisplay(value) {
   return String(value)
 }
 
-export function IdeationResultScreen({ ideationConv, onBack }) {
+export function IdeationResultScreen({ ideationConv, setIdeationConv, onBack, onNext }) {
+  // 가은/Claude(2026-07-27, 요청: "주제 확정하고 아래에 신청서 초안 버튼 하나 만들어서
+  // 페이지로 하나 띄워주자") — 신청서 항목을 선택한 세션에서만 버튼을 보여준다(선택 안 한
+  // 세션엔 채울 필드 자체가 없다).
+  const [generatingFormDraft, setGeneratingFormDraft] = useState(false)
+  const [formDraftError, setFormDraftError] = useState(null)
+
+  async function handleGenerateFormDraft() {
+    if (generatingFormDraft) return
+    setFormDraftError(null)
+    setGeneratingFormDraft(true)
+    try {
+      const data = await generateApplicationFormDraft(ideationConv.session_id)
+      setIdeationConv?.(data)
+      onNext?.()
+    } catch (err) {
+      setFormDraftError(classifyIdeationConvError(err))
+    } finally {
+      setGeneratingFormDraft(false)
+    }
+  }
+
   if (!ideationConv || ideationConv.phase !== 'finalized' || !ideationConv.idea_proposal) {
     return (
       <div style={{ maxWidth: 760 }}>
@@ -1977,6 +2076,91 @@ export function IdeationResultScreen({ ideationConv, onBack }) {
           {ideationConv.merge_analysis && (
             <MergeAnalysisPanel mergeAnalysis={ideationConv.merge_analysis} sourceCandidates={ideationConv.source_candidates} />
           )}
+        </div>
+      )}
+
+      {(ideationConv.application_form_items || []).length > 0 && (
+        <div style={{ marginTop: 20 }}>
+          {formDraftError && (
+            <p style={{ color: 'var(--coral)', fontSize: 14.5, marginBottom: 10 }}>{formDraftError.message}</p>
+          )}
+          <button
+            type="button"
+            className="btn-primary"
+            style={{ display: 'flex', alignItems: 'center', gap: 8 }}
+            onClick={handleGenerateFormDraft}
+            disabled={generatingFormDraft}
+          >
+            {generatingFormDraft ? '신청서 초안 작성 중...' : '신청서 초안 만들기'}
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// 가은/Claude(2026-07-27, 요청: "주제 확정하고 아래에 신청서 초안 버튼 하나 만들어서 페이지로
+// 하나 띄워주자") — IdeationResultScreen의 "신청서 초안 만들기" 버튼으로만 진입한다(goNext).
+// 필드 렌더링 자체는 새로 만들지 않고 기존 ApplicationFormPanel(회의 화면 오른쪽 패널에서
+// 이미 쓰던 컴포넌트)을 그대로 재사용한다 — items/draft 스키마가 동일하기 때문.
+export function ApplicationFormDraftScreen({ ideationConv, onBack }) {
+  const items = ideationConv?.application_form_items || []
+  const draft = ideationConv?.application_form_draft || []
+
+  if (!ideationConv || items.length === 0) {
+    return (
+      <div style={{ maxWidth: 760 }}>
+        <div className="badge amber mono" style={{ marginBottom: 12 }}>신청서 항목 없음</div>
+        <h2 style={{ fontSize: 21, fontWeight: 700, marginBottom: 16 }}>이 세션에는 선택된 신청서 항목이 없어요</h2>
+        <p style={{ fontSize: 14.5, color: 'var(--text-2)' }}>
+          회의를 시작하기 전 신청서 양식 항목을 선택해야 초안을 만들 수 있어요.
+        </p>
+        {onBack && (
+          <button type="button" className="btn-ghost" style={{ marginTop: 16, padding: '5px 10px', fontSize: 13.5 }} onClick={onBack}>
+            ← 이전
+          </button>
+        )}
+      </div>
+    )
+  }
+
+  const draftById = new Map(draft.map((row) => [row.field_id, row]))
+  const unfinishedCount = items.filter((item, i) => {
+    const row = draftById.get(item.field_id || `form_field_${i + 1}`)
+    return !row?.value
+  }).length
+  // 가은/Claude(2026-07-27, 요청: "보완이 필요한 정보 섹션") — 본문에 넣지 못한(입력에
+  // 없어서 지어낼 수 없었던) 항목을 별도 카드로 보여준다. 본문 값과 섞이지 않게 항상
+  // 분리해서 보여준다(프롬프트의 [출력 규칙] 4번과 대응).
+  const supplementNotes = ideationConv.application_form_supplement_notes || []
+
+  return (
+    <div style={{ maxWidth: 780 }}>
+      <div className="badge green mono" style={{ marginBottom: 12 }}>신청서 초안</div>
+      {onBack && (
+        <button type="button" className="btn-ghost" style={{ marginBottom: 12, padding: '5px 10px', fontSize: 13.5 }} onClick={onBack}>
+          ← 이전
+        </button>
+      )}
+      <h2 style={{ fontSize: 23, fontWeight: 700, marginBottom: 8 }}>
+        {ideationConv.idea_proposal?.idea_name || '신청서 초안'}
+      </h2>
+      <p style={{ fontSize: 14, color: 'var(--text-2)', marginBottom: 16, lineHeight: 1.6 }}>
+        회의에서 확정한 아이디어를 근거로 채운 초안입니다. 제출 전 내용을 꼭 검토해 주세요.
+        {unfinishedCount > 0 && ` (아직 채워지지 않은 항목 ${unfinishedCount}개)`}
+      </p>
+      <ApplicationFormPanel items={items} draft={draft} />
+      {supplementNotes.length > 0 && (
+        <div className="card glass" style={{ marginTop: 16, borderColor: 'var(--amber, var(--coral))' }}>
+          <div style={{ fontSize: 14.5, fontWeight: 700, marginBottom: 10 }}>보완이 필요한 정보</div>
+          <p style={{ fontSize: 13, color: 'var(--text-2)', marginBottom: 10, lineHeight: 1.6 }}>
+            회의·확정 결과에 없어서 초안에 넣지 못한 내용이에요. 제출 전 직접 확인해서 채워주세요.
+          </p>
+          <ul style={{ margin: 0, paddingLeft: 18, fontSize: 14, lineHeight: 1.8 }}>
+            {supplementNotes.map((note, i) => (
+              <li key={i}>{note}</li>
+            ))}
+          </ul>
         </div>
       )}
     </div>
