@@ -1,10 +1,11 @@
 import { Fragment, useEffect, useRef, useState } from 'react'
-import { AlertCircle, ChevronDown, ChevronUp, RefreshCw, Send, Sparkles } from 'lucide-react'
+import { AlertCircle, ArrowRight, CheckCircle2, ChevronDown, ChevronUp, Circle, Lightbulb, ListChecks, RefreshCw, Send, Sparkles, Users } from 'lucide-react'
 import {
   cancelIdeationConversation,
   continueIdeationExpertTurnStream,
   finalizeIdeationConversation,
   getIdeationConversation,
+  getLatestIdeationConversation,
   replyIdeationConversation,
   replyIdeationConversationStream,
   startIdeationConversation,
@@ -88,11 +89,62 @@ function ideationSessionStorageKey(projectId) {
 // 커서 깜빡임 애니메이션 — Shell(ReviewBoardPrototype.jsx)의 전역 <style>을 건드리지 않고
 // 이 컴포넌트 전용으로 한 번만 주입한다(기존 코드베이스가 Shell에서 이미 쓰는 "JSX 안에
 // <style> 태그를 직접 렌더링"하는 패턴 그대로).
+// 용준/Claude(2026-07-25, 요청: 3열 레이아웃 — 왼쪽 전체 Stepper(Shell navrail, 220px)는
+// 그대로 두고, 이 화면 안에서는 "중앙 대화 / 오른쪽 참여 위원·아이디어·캔버스" 2열만 새로
+// 짠다. 데스크톱은 고정 420px 오른쪽 패널 + sticky, 태블릿(<=1180px)은 오른쪽 패널이 중앙
+// 아래로 내려오며 sticky를 끄고, 모바일(<=780px)은 이미 Shell이 navrail을 숨기므로 이
+// 화면 안에서는 그대로 단일 열이 유지된다(요청한 모바일 순서 "단계 → 대화 → 제안 목록 →
+// CTA"는 센터 다음에 오른쪽 패널이 오는 DOM 순서 그대로 만족된다). .badge.blue는 개발
+// 위원 배지 색(요청: "파랑 계열")을 위해 이 페이지에만 추가한다 — Shell(공용 파일)의
+// .badge.purple/.coral/.green/.amber/.grey 정의는 건드리지 않는다.
 function StreamingCursorStyle() {
   return (
     <style>{`
       @keyframes rb-ideation-cursor-blink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
       .rb-ideation-cursor { display: inline-block; width: 2px; margin-left: 1px; background: currentColor; animation: rb-ideation-cursor-blink 1s step-start infinite; }
+      .rb-root .badge.blue{ background: rgba(59,130,246,0.12); color: #2f6fd6; }
+      .rb-ideation-layout .badge{ font-size:12.5px; font-weight:600; padding:4px 10px; }
+      .rb-ideation-layout .badge.green{ color:#087557; background:#dcf7ee; }
+      .rb-ideation-layout .badge.purple{ color:#5e3ec8; background:#eee9ff; }
+      .rb-ideation-layout .badge.blue{ color:#245fb7; background:#e5efff; }
+      .rb-ideation-layout .badge.amber{ color:#805800; background:#f8edcf; }
+      .rb-ideation-layout .rb-ideation-meta-item{ border-color:rgba(28,26,46,0.14); background:rgba(255,255,255,0.86); }
+      .rb-ideation-layout .rb-ideation-meta-label{ font-size:12.5px; font-weight:600; color:#625d72; }
+      .rb-ideation-layout .rb-ideation-meta-label svg{ color:var(--purple); stroke-width:2.2; }
+      .rb-ideation-layout .rb-ideation-meta-value{ margin-top:7px; font-size:18px; line-height:1.2; }
+      .rb-ideation-layout .btn-primary{ min-height:46px; color:#fff; font-weight:700; }
+      .rb-ideation-layout .btn-primary:disabled{
+        opacity:1; background:#eceef1; color:#8a8f98; border:1px solid #dcdfe4;
+        box-shadow:none; cursor:not-allowed;
+      }
+      .rb-ideation-layout .btn-ghost:disabled{ opacity:1; color:#6c6578; background:#f1eef5; cursor:not-allowed; }
+      .rb-ideation-notice{
+        margin:4px 0; padding:10px 12px; border-radius:10px; border:1px solid #ddd5f4;
+        background:#f7f4ff; color:#514a61; font-size:14px; font-weight:600; line-height:1.55;
+      }
+      /* 용준/Claude(2026-07-26, 요청: "아이디어 기획 캔버스는 참여 위원 오른쪽에") —
+         참여 위원 패널과 캔버스를 한 열에 위아래로 쌓지 않고, 채팅 열 옆에 각각
+         독립된 열로 나란히 배치한다(3열: 회의 대화 / 참여 위원 / 기획 캔버스). */
+      .rb-ideation-layout{
+        --text-2:#6f697d;
+        display:grid; grid-template-columns:minmax(0,1fr) 480px 340px;
+        gap:20px; align-items:start; max-width:1680px;
+      }
+      .rb-ideation-side{ position:sticky; top:24px; margin-top:40px; display:flex; flex-direction:column; gap:12px; }
+      .rb-ideation-canvas-col{ position:sticky; top:24px; margin-top:40px; display:flex; flex-direction:column; gap:12px; }
+      .rb-ideation-meta{ display:flex; flex-wrap:wrap; gap:10px; margin-bottom:14px; }
+      .rb-ideation-meta-item{ flex:1 1 120px; border-radius:12px; padding:10px 12px; }
+      .rb-ideation-meta-label{ display:flex; align-items:center; gap:5px; margin-bottom:3px; }
+      .rb-ideation-meta-value{ font-weight:700; color:var(--text-0); }
+      @media (max-width: 1500px){
+        .rb-ideation-layout{ grid-template-columns: minmax(0,1fr) 460px; }
+        .rb-ideation-canvas-col{ position:static; grid-column: 1 / -1; margin-top:0; }
+      }
+      @media (max-width: 1180px){
+        .rb-ideation-layout{ grid-template-columns: minmax(0,1fr); }
+        .rb-ideation-side{ position:static; margin-top:0; }
+        .rb-ideation-canvas-col{ grid-column: auto; margin-top:0; }
+      }
     `}</style>
   )
 }
@@ -107,7 +159,7 @@ function RespondingToCaption({ message, allMessages = [] }) {
   const targetLabel = SPEAKER_META[actualSpeakerId]?.label
   if (!targetLabel) return null
   return (
-    <div style={{ fontSize: 11, color: 'var(--text-2)', marginBottom: 3 }}>↳ {targetLabel}에게 응답</div>
+    <div style={{ fontSize: 13.5, color: 'var(--text-2)', marginBottom: 3 }}>↳ {targetLabel}에게 응답</div>
   )
 }
 
@@ -131,7 +183,7 @@ function EvidenceToggle({ evidence, linkedEvidenceRefs, claims }) {
       <div
         style={{
           marginTop: 4,
-          fontSize: 11.5,
+          fontSize: 13,
           color: 'var(--text-2)',
           display: 'inline-flex',
           alignItems: 'center',
@@ -148,10 +200,11 @@ function EvidenceToggle({ evidence, linkedEvidenceRefs, claims }) {
   return (
     <div style={{ marginTop: 4 }}>
       <button
+        type="button"
         onClick={() => setOpen((v) => !v)}
         style={{
           background: 'none', border: 'none', padding: 0, cursor: 'pointer',
-          fontSize: 11.5, color: 'var(--text-2)', display: 'flex', alignItems: 'center', gap: 2,
+          fontSize: 13, color: 'var(--text-2)', display: 'flex', alignItems: 'center', gap: 2,
         }}
       >
         {open ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
@@ -163,7 +216,7 @@ function EvidenceToggle({ evidence, linkedEvidenceRefs, claims }) {
             <div
               key={e.chunk_id || i}
               style={{
-                fontSize: 11.5, color: 'var(--text-1)', lineHeight: 1.5,
+                fontSize: 13, color: 'var(--text-1)', lineHeight: 1.5,
                 background: 'var(--bg-0)', border: '1px solid var(--glass-border)', borderRadius: 8, padding: '6px 8px',
               }}
             >
@@ -174,11 +227,11 @@ function EvidenceToggle({ evidence, linkedEvidenceRefs, claims }) {
                 </div>
               )}
               {e.section && (
-                <div style={{ fontSize: 10.5, color: 'var(--text-2)', marginBottom: 2 }}>평가항목: {e.section}</div>
+                <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 2 }}>평가항목: {e.section}</div>
               )}
               {(e.text || e.quote) && <div style={{ marginBottom: 2 }}>"{e.text || e.quote}"</div>}
               {e.source_url && (
-                <a href={e.source_url} target="_blank" rel="noreferrer" style={{ fontSize: 10.5, color: 'var(--purple-dim)' }}>
+                <a href={e.source_url} target="_blank" rel="noreferrer" style={{ fontSize: 13.5, fontWeight: 600, color: '#5e3ec8' }}>
                   원문 보기
                 </a>
               )}
@@ -187,7 +240,7 @@ function EvidenceToggle({ evidence, linkedEvidenceRefs, claims }) {
           {items.length === 0 && (
             <div
               style={{
-                fontSize: 11.5, color: 'var(--text-2)', fontStyle: 'italic',
+                fontSize: 13, color: 'var(--text-2)', fontStyle: 'italic',
                 background: 'var(--bg-0)', border: '1px solid var(--glass-border)', borderRadius: 8, padding: '6px 8px',
               }}
             >
@@ -211,7 +264,7 @@ function FacilitatorSummaryCard({ structured }) {
     <div
       style={{
         marginTop: 6, padding: '8px 10px', borderRadius: 10,
-        background: 'var(--bg-0)', border: '1px solid var(--glass-border)', fontSize: 12,
+        background: 'var(--bg-0)', border: '1px solid var(--glass-border)', fontSize: 14.5,
       }}
     >
       {agreements.length > 0 && (
@@ -234,9 +287,15 @@ function FacilitatorSummaryCard({ structured }) {
   )
 }
 
-function MessageBubble({ message, streaming = false, interrupted = false, allMessages = [] }) {
+function MessageBubble({ message, streaming = false, interrupted = false, allMessages = [], isLatest = false }) {
   const meta = speakerMetaFor(message)
   const isRight = meta.align === 'right'
+  const accentColor = {
+    ideation_facilitator: '#16a37a',
+    planning_expert: '#7c5cea',
+    dev_expert: '#3b82f6',
+    user: '#7c5cea',
+  }[message.speaker_id] || '#7c5cea'
   // 스트리밍 중인 말풍선은 displayedContent(타이핑 큐가 드러낸 만큼)만 보여준다 —
   // content(서버에서 실제로 받은 전체 텍스트)를 그대로 쓰면 델타가 도착하는 순간
   // 문장이 통째로 튀어나와 타이핑 효과가 사라진다. canonical(완료된) 메시지는
@@ -256,7 +315,7 @@ function MessageBubble({ message, streaming = false, interrupted = false, allMes
   if (!hasContent && !streaming) {
     return (
       <div style={{ display: 'flex', justifyContent: isRight ? 'flex-end' : 'flex-start', marginBottom: 10 }}>
-        <div style={{ fontSize: 12.5, color: 'var(--coral)' }}>
+        <div style={{ fontSize: 14, color: 'var(--coral)' }}>
           <AlertCircle size={12} style={{ verticalAlign: -1, marginRight: 4 }} />
           {meta.label}의 응답을 만드는 중 오류가 발생했습니다.
         </div>
@@ -280,20 +339,24 @@ function MessageBubble({ message, streaming = false, interrupted = false, allMes
     <div style={{ display: 'flex', justifyContent: isRight ? 'flex-end' : 'flex-start', marginBottom: 10 }}>
       <div style={{ maxWidth: '82%' }}>
         {meta.badgeClass && (
-          <div className={`badge ${meta.badgeClass} mono`} style={{ marginBottom: 4 }}>
-            {meta.label}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+            <span className={`badge ${meta.badgeClass} mono`}>{meta.label}</span>
           </div>
         )}
         {!streaming && <RespondingToCaption message={message} allMessages={allMessages} />}
         <div
           style={{
             background: isRight ? 'var(--purple-dim)' : 'var(--bg-1)',
-            border: '1px solid var(--glass-border)',
+            border: isLatest ? `1px solid ${accentColor}66` : '1px solid var(--glass-border)',
+            borderLeft: isLatest ? `4px solid ${accentColor}` : undefined,
             borderRadius: 12,
-            padding: '10px 14px',
-            fontSize: 13.5,
-            lineHeight: 1.6,
+            padding: '12px 15px',
+            color: 'var(--text-0)',
+            fontSize: 16,
+            fontWeight: 500,
+            lineHeight: 1.7,
             whiteSpace: 'pre-wrap',
+            boxShadow: isLatest ? '0 4px 14px rgba(28,26,46,0.06)' : 'none',
             opacity: interrupted || isReviewing ? 0.6 : 1,
           }}
         >
@@ -305,7 +368,7 @@ function MessageBubble({ message, streaming = false, interrupted = false, allMes
             뿐이며 agreements/decisions/resolved_issues 등 어떤 canonical 상태에도
             포함되지 않는다(서버가 애초에 저장하지 않았으므로). */}
         {interrupted && (
-          <div style={{ fontSize: 11.5, color: 'var(--text-2)', marginTop: 3, fontStyle: 'italic' }}>
+          <div style={{ fontSize: 13, color: 'var(--text-2)', marginTop: 3, fontStyle: 'italic' }}>
             [사용자에 의해 발언이 중단됐습니다]
           </div>
         )}
@@ -313,7 +376,7 @@ function MessageBubble({ message, streaming = false, interrupted = false, allMes
             대기 중임을 알린다. willRetry가 false면(재시도 없이 안전한 fallback을 기다리는
             중) 곧 회의 진행 자체가 멈추지 않는다는 것을 알 수 있게 문구를 살짝 다르게 준다. */}
         {isReviewing && (
-          <div style={{ fontSize: 11.5, color: 'var(--text-2)', marginTop: 3, fontStyle: 'italic' }}>
+          <div style={{ fontSize: 13, color: 'var(--text-2)', marginTop: 3, fontStyle: 'italic' }}>
             {message.willRetry === false ? '더 나은 답변으로 정리하고 있습니다…' : '응답을 다시 검토하고 있습니다…'}
           </div>
         )}
@@ -343,7 +406,7 @@ function InterruptionMarker({ speakerId }) {
       style={{
         margin: '4px 0 8px',
         color: 'var(--text-2)',
-        fontSize: 12,
+        fontSize: 14.5,
         fontStyle: 'italic',
       }}
     >
@@ -352,25 +415,72 @@ function InterruptionMarker({ speakerId }) {
   )
 }
 
-function CandidateCard({ candidate, index, onSelect, disabled }) {
+// 용준/Claude(2026-07-25, 요청: "각 후보마다 큰 보라색 버튼을 반복해서 표시하지 말고,
+// 카드 전체를 클릭 가능한 선택 카드로") — 반복되던 "이 후보 선택" 버튼을 없애고 카드
+// 전체를 role="button"으로 만들었다. 선택 확정 API 호출(onSelect → handleSend →
+// candidateSelectMessage)은 그대로다 — 프론트가 후보를 자체 해석하지 않고 항상 "n번"
+// 문구로 백엔드 candidate_selection 로직을 거치는 기존 방식을 그대로 유지한다. "상세
+// 보기" 토글은 카드 클릭(선택)과 별개 동작이라 stopPropagation으로 분리한다.
+function CandidateCard({ candidate, index, onSelect, disabled, selected = false }) {
   const [expanded, setExpanded] = useState(false)
+
+  function handleCardActivate() {
+    if (disabled || selected) return
+    onSelect(index)
+  }
+
   return (
-    <div className="card glass" style={{ marginBottom: 10, padding: 14 }}>
-      <div style={{ fontSize: 11.5, color: 'var(--text-2)', marginBottom: 2 }}>후보 {index + 1}</div>
-      <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 6 }}>{candidate.title}</div>
-      <div style={{ fontSize: 12.5, color: 'var(--text-1)', lineHeight: 1.6, marginBottom: 4 }}>
-        <strong style={{ color: 'var(--text-2)', fontWeight: 600 }}>해결할 문제 · </strong>
-        {candidate.problem}
+    <div
+      role="button"
+      tabIndex={disabled || selected ? -1 : 0}
+      aria-pressed={selected}
+      aria-disabled={disabled || selected}
+      onClick={handleCardActivate}
+      onKeyDown={(e) => {
+        if (e.key !== 'Enter' && e.key !== ' ') return
+        e.preventDefault()
+        handleCardActivate()
+      }}
+      className="card glass"
+      style={{
+        marginBottom: 10,
+        padding: 14,
+        cursor: disabled || selected ? 'default' : 'pointer',
+        border: selected ? '2px solid var(--purple)' : '1px solid var(--glass-border)',
+        background: selected ? '#f5f1ff' : disabled ? '#faf9fc' : 'var(--bg-1)',
+        opacity: 1,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 2, gap: 8 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: '#625d72' }}>후보 {index + 1}</div>
+        {selected ? (
+          <CheckCircle2 size={18} color="var(--purple)" style={{ flexShrink: 0 }} />
+        ) : (
+          <Circle size={16} color="var(--glass-border)" style={{ flexShrink: 0 }} />
+        )}
       </div>
-      <div style={{ fontSize: 12.5, color: 'var(--text-1)', lineHeight: 1.6, marginBottom: 4 }}>
-        <strong style={{ color: 'var(--text-2)', fontWeight: 600 }}>목표 사용자 · </strong>
-        {candidate.target_user}
-      </div>
+      {selected && (
+        <span className="badge purple mono" style={{ fontSize: 12, marginBottom: 6, display: 'inline-block' }}>선택됨</span>
+      )}
+      <div style={{ fontSize: 17, fontWeight: 700, color: 'var(--text-0)', marginBottom: 7 }}>{candidate.title}</div>
+      {candidate.problem && (
+        <div style={{ fontSize: 15.5, fontWeight: 500, color: 'var(--text-0)', lineHeight: 1.7, marginBottom: 5 }}>
+          <strong style={{ color: '#514a61', fontWeight: 700 }}>해결할 문제 · </strong>
+          {candidate.problem}
+        </div>
+      )}
+      {candidate.target_user && (
+        <div style={{ fontSize: 15.5, fontWeight: 500, color: 'var(--text-0)', lineHeight: 1.7, marginBottom: 5 }}>
+          <strong style={{ color: '#514a61', fontWeight: 700 }}>목표 사용자 · </strong>
+          {candidate.target_user}
+        </div>
+      )}
 
       <button
+        type="button"
         className="btn-ghost"
-        style={{ padding: '4px 10px', fontSize: 11.5, marginTop: 4, marginBottom: expanded ? 8 : 0, display: 'flex', alignItems: 'center', gap: 4 }}
-        onClick={() => setExpanded((v) => !v)}
+        style={{ padding: '4px 10px', fontSize: 13, marginTop: 4, marginBottom: expanded ? 8 : 0, display: 'flex', alignItems: 'center', gap: 4 }}
+        onClick={(e) => { e.stopPropagation(); setExpanded((v) => !v) }}
       >
         {expanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
         {expanded ? '간단히 보기' : '상세 보기'}
@@ -378,24 +488,28 @@ function CandidateCard({ candidate, index, onSelect, disabled }) {
 
       {expanded && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 6 }}>
-          <div style={{ fontSize: 12.5, color: 'var(--text-1)', lineHeight: 1.6 }}>
-            <strong style={{ color: 'var(--text-2)', fontWeight: 600 }}>핵심 가치 · </strong>
-            {candidate.core_value}
-          </div>
+          {candidate.core_value && (
+            <div style={{ fontSize: 14, color: 'var(--text-1)', lineHeight: 1.6 }}>
+              <strong style={{ color: 'var(--text-2)', fontWeight: 600 }}>핵심 가치 · </strong>
+              {candidate.core_value}
+            </div>
+          )}
           {candidate.main_features?.length > 0 && (
-            <div style={{ fontSize: 12.5, color: 'var(--text-1)' }}>
+            <div style={{ fontSize: 14, color: 'var(--text-1)' }}>
               <strong style={{ color: 'var(--text-2)', fontWeight: 600 }}>주요 기능</strong>
               <ul style={{ margin: '4px 0 0', paddingLeft: 16, lineHeight: 1.7 }}>
                 {candidate.main_features.map((f, i) => <li key={i}>{f}</li>)}
               </ul>
             </div>
           )}
-          <div style={{ fontSize: 12.5, color: 'var(--text-1)', lineHeight: 1.6 }}>
-            <strong style={{ color: 'var(--text-2)', fontWeight: 600 }}>공모전 적합성 · </strong>
-            {candidate.contest_fit || '확인되지 않음'}
-          </div>
+          {candidate.contest_fit && (
+            <div style={{ fontSize: 14, color: 'var(--text-1)', lineHeight: 1.6 }}>
+              <strong style={{ color: 'var(--text-2)', fontWeight: 600 }}>차별점 · </strong>
+              {candidate.contest_fit}
+            </div>
+          )}
           {candidate.risks?.length > 0 && (
-            <div style={{ fontSize: 12.5, color: 'var(--text-1)' }}>
+            <div style={{ fontSize: 14, color: 'var(--text-1)' }}>
               <strong style={{ color: 'var(--text-2)', fontWeight: 600 }}>주요 위험</strong>
               <ul style={{ margin: '4px 0 0', paddingLeft: 16, lineHeight: 1.7 }}>
                 {candidate.risks.map((r, i) => <li key={i}>{r}</li>)}
@@ -405,13 +519,11 @@ function CandidateCard({ candidate, index, onSelect, disabled }) {
         </div>
       )}
 
-      <div style={{ fontSize: 11.5, color: 'var(--text-2)', marginBottom: 10 }}>
-        실현 가능성 {FEASIBILITY_LABEL[candidate.feasibility] || '미상'}
-      </div>
-
-      <button className="btn-primary" style={{ width: '100%', padding: '8px 0', fontSize: 12.5 }} disabled={disabled} onClick={() => onSelect(index)}>
-        이 후보 선택
-      </button>
+      {candidate.feasibility && (
+        <div style={{ fontSize: 13, color: 'var(--text-2)' }}>
+          실현 가능성 {FEASIBILITY_LABEL[candidate.feasibility] || '미상'}
+        </div>
+      )}
     </div>
   )
 }
@@ -420,30 +532,30 @@ function MergeAnalysisPanel({ mergeAnalysis, sourceCandidates, userSelectionMess
   if (!mergeAnalysis) return null
   return (
     <div className="card glass" style={{ marginBottom: 12, padding: 14 }}>
-      <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>결합 분석</div>
+      <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 8 }}>결합 분석</div>
       {userSelectionMessage && (
-        <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 8 }}>
+        <div style={{ fontSize: 13.5, color: 'var(--text-2)', marginBottom: 8 }}>
           원문 요청 · “{userSelectionMessage}”
         </div>
       )}
       {sourceCandidates?.length > 0 && (
-        <div style={{ fontSize: 12.5, color: 'var(--text-1)', marginBottom: 8 }}>
+        <div style={{ fontSize: 14, color: 'var(--text-1)', marginBottom: 8 }}>
           <strong style={{ color: 'var(--text-2)', fontWeight: 600 }}>원본 후보 · </strong>
           {sourceCandidates.map((c) => c.title).join(' · ')}
         </div>
       )}
-      <div style={{ fontSize: 12.5, color: 'var(--text-1)', lineHeight: 1.6, marginBottom: 4 }}>
+      <div style={{ fontSize: 14, color: 'var(--text-1)', lineHeight: 1.6, marginBottom: 4 }}>
         <strong style={{ color: 'var(--text-2)', fontWeight: 600 }}>공통 문제 · </strong>{mergeAnalysis.common_problem}
       </div>
-      <div style={{ fontSize: 12.5, color: 'var(--text-1)', lineHeight: 1.6, marginBottom: 4 }}>
+      <div style={{ fontSize: 14, color: 'var(--text-1)', lineHeight: 1.6, marginBottom: 4 }}>
         <strong style={{ color: 'var(--text-2)', fontWeight: 600 }}>공통 가치 · </strong>{mergeAnalysis.common_value}
       </div>
-      <div style={{ fontSize: 12.5, color: 'var(--text-1)', lineHeight: 1.6, marginBottom: 4 }}>
+      <div style={{ fontSize: 14, color: 'var(--text-1)', lineHeight: 1.6, marginBottom: 4 }}>
         <strong style={{ color: 'var(--text-2)', fontWeight: 600 }}>결합 적합도 · </strong>
         {FEASIBILITY_LABEL[mergeAnalysis.fit] || mergeAnalysis.fit || '미상'}
       </div>
       {mergeAnalysis.primary_features?.length > 0 && (
-        <div style={{ fontSize: 12.5, color: 'var(--text-1)', marginBottom: 4 }}>
+        <div style={{ fontSize: 14, color: 'var(--text-1)', marginBottom: 4 }}>
           <strong style={{ color: 'var(--text-2)', fontWeight: 600 }}>주 기능</strong>
           <ul style={{ margin: '4px 0 0', paddingLeft: 16, lineHeight: 1.6 }}>
             {mergeAnalysis.primary_features.map((f, i) => <li key={i}>{f}</li>)}
@@ -451,7 +563,7 @@ function MergeAnalysisPanel({ mergeAnalysis, sourceCandidates, userSelectionMess
         </div>
       )}
       {mergeAnalysis.secondary_features?.length > 0 && (
-        <div style={{ fontSize: 12.5, color: 'var(--text-1)', marginBottom: 4 }}>
+        <div style={{ fontSize: 14, color: 'var(--text-1)', marginBottom: 4 }}>
           <strong style={{ color: 'var(--text-2)', fontWeight: 600 }}>보조 기능</strong>
           <ul style={{ margin: '4px 0 0', paddingLeft: 16, lineHeight: 1.6 }}>
             {mergeAnalysis.secondary_features.map((f, i) => <li key={i}>{f}</li>)}
@@ -459,7 +571,7 @@ function MergeAnalysisPanel({ mergeAnalysis, sourceCandidates, userSelectionMess
         </div>
       )}
       {mergeAnalysis.conflicts?.length > 0 && (
-        <div style={{ fontSize: 12.5, color: 'var(--text-1)', marginBottom: 4 }}>
+        <div style={{ fontSize: 14, color: 'var(--text-1)', marginBottom: 4 }}>
           <strong style={{ color: 'var(--text-2)', fontWeight: 600 }}>충돌 지점</strong>
           <ul style={{ margin: '4px 0 0', paddingLeft: 16, lineHeight: 1.6 }}>
             {mergeAnalysis.conflicts.map((c, i) => <li key={i}>{c}</li>)}
@@ -467,7 +579,7 @@ function MergeAnalysisPanel({ mergeAnalysis, sourceCandidates, userSelectionMess
         </div>
       )}
       {mergeAnalysis.open_questions?.length > 0 && (
-        <div style={{ fontSize: 12.5, color: 'var(--text-1)' }}>
+        <div style={{ fontSize: 14, color: 'var(--text-1)' }}>
           <strong style={{ color: 'var(--text-2)', fontWeight: 600 }}>미확정 사항</strong>
           <ul style={{ margin: '4px 0 0', paddingLeft: 16, lineHeight: 1.6 }}>
             {mergeAnalysis.open_questions.map((q, i) => <li key={i}>{q}</li>)}
@@ -487,16 +599,16 @@ function ErrorBanner({ error, onRetry }) {
     >
       <AlertCircle size={16} color="var(--coral)" style={{ marginTop: 1, flexShrink: 0 }} />
       <div style={{ flex: 1 }}>
-        <div style={{ fontSize: 13, color: 'var(--text-0)', lineHeight: 1.6 }}>{error.message}</div>
+        <div style={{ fontSize: 14.5, color: 'var(--text-0)', lineHeight: 1.6 }}>{error.message}</div>
         {(error.code || error.failedNode) && (
-          <div style={{ marginTop: 5, fontSize: 11.5, color: 'var(--text-2)', fontFamily: 'var(--mono)' }}>
+          <div style={{ marginTop: 5, fontSize: 13, color: 'var(--text-2)', fontFamily: 'var(--mono)' }}>
             {error.code && `오류 코드: ${error.code}`}
             {error.code && error.failedNode && ' · '}
             {error.failedNode && `실패 노드: ${error.failedNode}`}
           </div>
         )}
         {onRetry && (
-          <button className="btn-ghost" style={{ marginTop: 10, padding: '6px 12px', fontSize: 12, display: 'flex', alignItems: 'center', gap: 6 }} onClick={onRetry}>
+          <button type="button" className="btn-ghost" style={{ marginTop: 10, padding: '6px 12px', fontSize: 13.5, display: 'flex', alignItems: 'center', gap: 6 }} onClick={onRetry}>
             <RefreshCw size={12} /> 다시 시도
           </button>
         )}
@@ -771,7 +883,20 @@ export function IdeationScreen({
     const key = ideationSessionStorageKey(projectId)
     const savedSessionId = key ? sessionStorage.getItem(key) : null
     if (!savedSessionId) {
-      runStart()
+      if (!projectId) {
+        runStart()
+        return
+      }
+      setStarting(true)
+      getAnnouncementAnalysis(projectId).then(setAnnouncementAnalysis).catch(() => {})
+      getLatestIdeationConversation(projectId)
+        .then((data) => {
+          if (!data) return runStart()
+          setIdeationConv(data)
+          if (key) sessionStorage.setItem(key, data.session_id)
+        })
+        .catch((err) => setError(classifyIdeationConvError(err)))
+        .finally(() => setStarting(false))
       return
     }
     setStarting(true)
@@ -780,7 +905,11 @@ export function IdeationScreen({
     }
     getIdeationConversation(savedSessionId)
       .then((data) => setIdeationConv(data))
-      .catch(() => {
+      .catch((err) => {
+        if (err?.status !== 404) {
+          setError(classifyIdeationConvError(err))
+          return
+        }
         if (key) sessionStorage.removeItem(key)
         return runStart()
       })
@@ -941,6 +1070,13 @@ export function IdeationScreen({
   // 우선하고 streamState 쪽의 같은 id는 제거한다. interruptionMarkers는 메시지가 아니라
   // 렌더링용 마커라 여기(교차 참조용 allMessages)에는 안 넣는다.
   const visibleMessages = dedupeMessagesById([...canonicalMessages, ...streamState.messages])
+  const latestVisibleMessageId = [
+    ...canonicalMessages,
+    ...(optimisticUserMessage ? [optimisticUserMessage] : []),
+    ...streamState.messages,
+  ]
+    .filter((message) => (message?.displayedContent ?? message?.content ?? '').trim())
+    .at(-1)?.message_id
   const busy = starting || sending || finalizing || saving
   // awaiting_user_decision도 입력을 막지 않는다("더 이야기하기") — 백엔드
   // apply_user_answer가 이 경우도 받아 두 전문가 보완 의견으로 이어간다.
@@ -950,6 +1086,18 @@ export function IdeationScreen({
     && !busy
   const hasCandidates = (ideationConv?.idea_candidates?.length || 0) > 0
   const hasSelected = !!ideationConv?.selected_idea
+  // 용준/Claude(2026-07-25, 요청: 아이디어 목록에서 선택 상태를 명확히 보여주기) —
+  // selected_idea/source_candidates는 백엔드가 이미 확정한 값이다(단일 선택은 원본
+  // candidate_id를 그대로 갖고, 결합은 source_candidates에 원본 두 후보가 담긴다). 프론트는
+  // candidate_id 우선, 없으면 title로 후보 카드와 대조해 "선택됨" 표시만 붙인다.
+  const selectedCandidateKeys = new Set(
+    [ideationConv?.selected_idea, ...(ideationConv?.source_candidates || [])]
+      .filter(Boolean)
+      .flatMap((idea) => [idea.candidate_id, idea.title])
+      .filter(Boolean),
+  )
+  const isCandidateSelected = (candidate) =>
+    selectedCandidateKeys.has(candidate.candidate_id) || selectedCandidateKeys.has(candidate.title)
   // 용준/Claude(2026-07-22, 요청: "잠시만" 버튼) — 실제로 기획/개발 위원이 발언을
   // 스트리밍하는 동안에만(말풍선이 하나 이상 생겨야) 활성화한다. 이미 취소 확인을 기다리는
   // 중이면(interrupting) 다시 누를 수 없다.
@@ -1177,9 +1325,10 @@ export function IdeationScreen({
     return (
       <div style={{ maxWidth: 860 }}>
         <div className="badge green mono" style={{ marginBottom: 10 }}>주제 확정 완료</div>
-        <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 16 }}>이미 이 회의로 주제를 확정했어요</h2>
-        {saveError && <p style={{ color: 'var(--coral)', fontSize: 13, marginBottom: 12 }}>{saveError}</p>}
+        <h2 style={{ fontSize: 21, fontWeight: 700, marginBottom: 16 }}>이미 이 회의로 주제를 확정했어요</h2>
+        {saveError && <p style={{ color: 'var(--coral)', fontSize: 14.5, marginBottom: 12 }}>{saveError}</p>}
         <button
+          type="button"
           className="btn-primary"
           style={{ display: 'flex', alignItems: 'center', gap: 8 }}
           onClick={() => onFinalized(ideationConv)}
@@ -1191,38 +1340,93 @@ export function IdeationScreen({
     )
   }
 
+  // 용준/Claude(2026-07-25, 요청: 상단 상태 요약 바) — "회의 진행 시간"은 서버가 주는
+  // 값이 없어(세션에 시작 타임스탬프 필드 자체가 없음) 하드코딩하지 않고 뺐다. 대신 실제로
+  // 있는 값(라운드, 참여 위원 수, 논의 중인 아이디어 수, 다음 단계 라벨)만 보여준다.
+  const nextStepLabel = phase === 'finalized' ? '완료' : '주제 확정'
+  const metaItems = ideationConv
+    ? [
+        // 용준/Claude(2026-07-26, 요청: "/3은 필요없고 실시간 라운드 숫자만, 4라운드
+        // 넘어가면 4로") — max_rounds는 백엔드가 무한 루프를 막는 안전 상한일 뿐
+        // "정확히 이 라운드까지"라는 목표치가 아니므로 더 이상 분모로 보여주지 않는다.
+        // ideationConv.round 값 자체를 그대로 보여주면 라운드가 늘어날 때마다 자동으로
+        // 최신 숫자가 표시된다.
+        { icon: ListChecks, label: '진행 라운드', value: `${ideationConv.round ?? 0}` },
+        { icon: Users, label: '참여 위원', value: '3명' },
+        { icon: Lightbulb, label: '논의 아이디어', value: `${ideationConv.idea_candidates?.length ?? 0}개` },
+        { icon: ArrowRight, label: '다음 단계', value: nextStepLabel },
+      ]
+    : []
+
   return (
-    <div className="rb-grid-2" style={{ maxWidth: 1570, display: 'grid', gridTemplateColumns: '1fr 80px 468px 80px 320px', gap: 20 }}>
+    <div className="rb-ideation-layout">
+      <StreamingCursorStyle />
       <div>
-        <div className="badge coral mono" style={{ marginBottom: 10 }}>주제 아이디어 회의</div>
-        {onBack && (
-          <button className="btn-ghost" style={{ marginBottom: 10, padding: '5px 10px', fontSize: 12 }} onClick={onBack} disabled={busy}>
-            ← 이전
-          </button>
-        )}
-        {ideationConv?.competition_name ? (
-          <>
-            <div style={{ fontSize: 12, color: 'var(--text-2)', fontFamily: 'var(--mono)', marginBottom: 4 }}>공모전 주제</div>
-            <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>{ideationConv.competition_name}</h2>
-            <div style={{ fontSize: 13, color: 'var(--text-2)', marginBottom: 10 }}>기획 위원 · 개발 위원과 함께 좁혀가는 중</div>
-          </>
-        ) : (
-          <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 10 }}>기획 위원 · 개발 위원과 함께 좁혀가는 중</h2>
-        )}
-        <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
+          {onBack && (
+            <button type="button" className="btn-ghost" style={{ padding: '5px 10px', fontSize: 13.5 }} onClick={onBack} disabled={busy}>
+              ← 이전
+            </button>
+          )}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 2 }}>
+          <h2 style={{ fontSize: 27, fontWeight: 700, color: 'var(--text-0)', letterSpacing: '-0.02em' }}>AI 아이디어 회의</h2>
           {ideationConv && (
             <span className="badge amber mono">
               {statusLabelFor({ phase, starting, sending, finalizing, interrupting })}
             </span>
           )}
         </div>
+        <div style={{ fontSize: 16, fontWeight: 500, color: '#625d72', marginBottom: 14, lineHeight: 1.5 }}>
+          공모전 분석 결과를 바탕으로 진행자, 기획 위원, 개발 위원이 함께 아이디어를 논의하고 있습니다.
+        </div>
+        {ideationConv?.competition_name && (
+          <div
+            style={{
+              display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16,
+              padding: '12px 16px', borderRadius: 10,
+              background: '#fff', border: '1px solid var(--border-1, #e4e0ee)',
+            }}
+          >
+            <span
+              style={{
+                flexShrink: 0, fontSize: 12, fontWeight: 700, color: '#918d9f',
+                letterSpacing: '0.02em', border: '1px solid #dcd7ea', borderRadius: 6,
+                padding: '3px 8px',
+              }}
+            >
+              이번 회의 주제
+            </span>
+            <span style={{ fontSize: 20, fontWeight: 800, color: '#111', letterSpacing: '-0.01em' }}>
+              {ideationConv.competition_name}
+            </span>
+          </div>
+        )}
 
         <ErrorBanner error={phaseFailure || error} onRetry={handleRestart} />
-        <StreamingCursorStyle />
 
+        {/* 용준/Claude(2026-07-25, 요청: "회의 대화 영역 상단에 가로형 상태 요약 카드") —
+            round/idea_candidates.length/phase는 전부 ideationConv에 이미 있는 실제 값이다. */}
+        {metaItems.length > 0 && (
+          <div className="rb-ideation-meta">
+            {metaItems.map(({ icon: Icon, label, value }) => (
+              <div key={label} className="card glass rb-ideation-meta-item">
+                <div className="rb-ideation-meta-label"><Icon size={11} /> {label}</div>
+                <div className="rb-ideation-meta-value">{value}</div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+          <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text-0)' }}>회의 대화</div>
+          {ideationConv && phase !== 'finalized' && phase !== 'failed' && (
+            <span className="badge green mono" style={{ fontSize: 12 }}>실시간</span>
+          )}
+        </div>
         <div className="card glass" style={{ minHeight: 360, maxHeight: 520, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4, padding: 16 }}>
           {starting && !ideationConv && (
-            <p style={{ color: 'var(--text-2)', fontSize: 13 }}>
+            <p className="rb-ideation-notice">
               {startPhaseLabel ? `${startPhaseLabel}...` : '공모전 분석을 바탕으로 아이디어 후보를 만들고 있어요...'}
             </p>
           )}
@@ -1231,7 +1435,11 @@ export function IdeationScreen({
             .map((marker) => <InterruptionMarker key={marker.markerId} speakerId={marker.speakerId} />)}
           {canonicalMessages.map((m) => (
             <Fragment key={m.message_id}>
-              <MessageBubble message={m} allMessages={visibleMessages} />
+              <MessageBubble
+                message={m}
+                allMessages={visibleMessages}
+                isLatest={m.message_id === latestVisibleMessageId}
+              />
               {interruptionMarkers
                 .filter((marker) => marker.afterMessageId === m.message_id)
                 .map((marker) => <InterruptionMarker key={marker.markerId} speakerId={marker.speakerId} />)}
@@ -1242,62 +1450,64 @@ export function IdeationScreen({
               finalizeStream/sendNonStreaming이 도착 즉시 지운다 - 그래서 진짜 메시지와
               동시에 두 번 보이는 순간은 없다). */}
           {optimisticUserMessage && (
-            <MessageBubble message={optimisticUserMessage} allMessages={visibleMessages} />
+            <MessageBubble
+              message={optimisticUserMessage}
+              allMessages={visibleMessages}
+              isLatest={optimisticUserMessage.message_id === latestVisibleMessageId}
+            />
           )}
           {/* 스트리밍 임시 메시지 — message_start를 받는 즉시 말풍선이 생기고, 실제 LLM
               델타가 도착하는 대로 안에서 텍스트가 자란다(완성 후 재생하는 효과 아님).
               streamState는 최종 state 이벤트가 오면 즉시 비워지므로, 이 목록과 위
               ideationConv.messages가 같은 내용으로 동시에 남아 중복되는 순간은 없다. */}
           {streamState.messages.map((m) => (
-            <MessageBubble key={m.message_id} message={m} streaming allMessages={visibleMessages} />
+            <MessageBubble
+              key={m.message_id}
+              message={m}
+              streaming
+              allMessages={visibleMessages}
+              isLatest={m.message_id === latestVisibleMessageId}
+            />
           ))}
           {sending && streamState.messages.length === 0 && (
-            <p style={{ fontSize: 12.5, color: 'var(--text-2)' }}>
+            <p className="rb-ideation-notice">
               {streamState.phaseLabel || `${statusLabelFor({ phase, starting, sending, finalizing })}...`}
             </p>
           )}
           {finalizing && (
-            <p style={{ fontSize: 12.5, color: 'var(--text-2)' }}>
+            <p className="rb-ideation-notice">
               {statusLabelFor({ phase, starting, sending, finalizing })}...
             </p>
           )}
-          {/* 가은/Claude(2026-07-23, 요청: 후보 패널을 대화창 안으로) — 진행자가 선택을
-              요청하는 첫 버블("제안된 후보 중... 답할 수 있습니다") 바로 아래에 후보
-              카드를 띄운다. 이전엔 오른쪽 사이드 패널에 항상 떠 있었는데, 대화 흐름
-              밖이라 어느 버블에 대한 응답인지 연결이 약했다. phase가
+          {/* 용준/Claude(2026-07-25, 요청: "아이디어 후보를 채팅 영역 안으로") — 오른쪽은
+              참여 위원 전용 공간으로 비우고, 후보 카드는 진행자의 선택 안내 메시지
+              바로 아래(대화 흐름 안)에 특수 메시지 형태로 보여준다. phase가
               awaiting_candidate_selection인 동안은 항상 그 마지막 메시지가 이 선택
               질문이므로, 메시지 목록 맨 끝에 붙이면 자연히 그 버블 바로 아래에 온다.
-              선택하면 phase가 바뀌어(hasSelected) 이 블록 자체가 사라진다. */}
-          {phase === 'awaiting_candidate_selection' && hasCandidates && !hasSelected && (
+              선택 확정(handleSend → candidateSelectMessage)은 기존 로직 그대로다 —
+              카드 클릭도 텍스트 "n번" 입력과 같은 API 호출을 탄다. */}
+          {phase === 'awaiting_candidate_selection' && hasCandidates && (
             <div style={{ marginTop: 4 }}>
-              <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              <div style={{ fontSize: 13.5, color: 'var(--text-2)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                 주제 후보
               </div>
-              {ideationConv.idea_candidates.map((c, i) => (
-                <CandidateCard key={c.candidate_id || i} candidate={c} index={i} onSelect={(idx) => handleSend(candidateSelectMessage(idx))} disabled={!canReplyOrContinue} />
-              ))}
-              <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}>
-                <button
-                  aria-label="다시 추천"
-                  title="다시 추천"
-                  disabled={!canReplyOrContinue}
-                  onClick={() => handleSend(REGENERATE_MESSAGE)}
-                  style={{
-                    background: 'none',
-                    border: '1px solid var(--glass-border)',
-                    borderRadius: 999,
-                    width: 30,
-                    height: 30,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    cursor: canReplyOrContinue ? 'pointer' : 'default',
-                    opacity: canReplyOrContinue ? 1 : 0.5,
-                    color: 'var(--text-2)',
-                  }}
-                >
-                  <RefreshCw size={14} />
-                </button>
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: ideationConv.idea_candidates.length > 1 ? 'repeat(auto-fit, minmax(220px, 1fr))' : '1fr',
+                  gap: 10,
+                }}
+              >
+                {ideationConv.idea_candidates.map((c, i) => (
+                  <CandidateCard
+                    key={c.candidate_id || i}
+                    candidate={c}
+                    index={i}
+                    selected={isCandidateSelected(c)}
+                    onSelect={(idx) => handleSend(candidateSelectMessage(idx))}
+                    disabled={!canReplyOrContinue || hasSelected}
+                  />
+                ))}
               </div>
             </div>
           )}
@@ -1309,7 +1519,7 @@ export function IdeationScreen({
             효과 아님). */}
         {canInterject && (
           <div style={{ marginTop: 8 }}>
-            <button className="btn-ghost" style={{ fontSize: 12, borderColor: 'var(--amber, var(--coral))' }} onClick={handleInterject}>
+            <button type="button" className="btn-ghost" style={{ fontSize: 13.5, borderColor: 'var(--amber, var(--coral))' }} onClick={handleInterject}>
               잠시만
             </button>
           </div>
@@ -1319,17 +1529,17 @@ export function IdeationScreen({
             반응하는지"를 명시한다. 선택된 위원이 먼저 답하고 상대 위원이 이어서 검토한다. */}
         {awaitingInterjectTarget && (
           <div style={{ marginTop: 8 }}>
-            <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 6 }}>
+            <div style={{ fontSize: 13.5, color: 'var(--text-2)', marginBottom: 6 }}>
               어느 의견에 대해 말씀하시겠어요?
             </div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              <button className="btn-ghost" style={{ fontSize: 12 }} onClick={() => setInterjectTarget('planning_expert')}>
+              <button type="button" className="btn-ghost" style={{ fontSize: 13.5 }} onClick={() => setInterjectTarget('planning_expert')}>
                 기획 위원 의견에
               </button>
-              <button className="btn-ghost" style={{ fontSize: 12 }} onClick={() => setInterjectTarget('dev_expert')}>
+              <button type="button" className="btn-ghost" style={{ fontSize: 13.5 }} onClick={() => setInterjectTarget('dev_expert')}>
                 개발 위원 의견에
               </button>
-              <button className="btn-ghost" style={{ fontSize: 12 }} onClick={() => setInterjectTarget('both')}>
+              <button type="button" className="btn-ghost" style={{ fontSize: 13.5 }} onClick={() => setInterjectTarget('both')}>
                 두 의견 모두에
               </button>
             </div>
@@ -1355,14 +1565,20 @@ export function IdeationScreen({
                     ? '회의 처리 오류가 발생했습니다. 위의 다시 시도 버튼을 눌러주세요.'
                   : !canReplyOrContinue
                     ? '전문가 응답을 기다리는 중입니다'
-                    : phase === 'awaiting_user_decision'
-                      ? '필요하면 의견을 남겨주세요 (선택 사항)'
-                      : '답변을 입력하세요')
+                    : phase === 'awaiting_candidate_selection'
+                      ? '답변을 입력하거나 후보를 선택해 주세요.'
+                      : phase === 'awaiting_user_decision'
+                        ? '필요하면 의견을 남겨주세요 (선택 사항)'
+                        : hasSelected
+                          ? '선택한 아이디어에 대해 추가 의견을 입력해 주세요.'
+                          : '답변을 입력하세요')
               }
               disabled={!canReplyOrContinue && !chosenInterjectTarget && !awaitingInterjectTarget}
-              style={{ flex: 1, background: 'var(--bg-1)', border: '1px solid var(--glass-border)', borderRadius: 10, padding: '10px 14px', color: 'var(--text-0)', fontSize: 13 }}
+              style={{ flex: 1, background: 'var(--bg-1)', border: '1px solid var(--glass-border)', borderRadius: 10, padding: '10px 14px', color: 'var(--text-0)', fontSize: 15.5 }}
             />
             <button
+              type="button"
+              aria-label="메시지 보내기"
               className="btn-primary"
               style={{ padding: '10px 14px' }}
               disabled={(!canReplyOrContinue && !chosenInterjectTarget) || !draft.trim()}
@@ -1373,32 +1589,77 @@ export function IdeationScreen({
           </div>
         )}
 
-        {/* 가은/Claude(2026-07-23, 요청: "다시 추천"을 후보 패널의 새로고침 아이콘으로 이동) —
-            이 버튼은 후보 카드 아래(위 채팅 영역)로 옮겼다. "전문가 추천"은 후보 자체를
-            새로 만드는 게 아니라 다른 답변 경로라 그대로 입력창 아래에 남긴다. */}
+        {/* 선택한 아이디어 안내는 채팅 입력창 아래에 표시한다. selected_idea는 백엔드가
+            확정한 값이며, 선택 취소 API나 phase 되돌리기 동작은 제공하지 않는다. */}
+        {ideationConv?.selected_idea?.title && (
+          <div
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+              marginTop: 12, padding: '13px 16px', borderRadius: 12,
+              background: 'var(--bg-1)', border: '1px solid var(--glass-border)',
+            }}
+          >
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-2)' }}>선택한 아이디어</div>
+              <div style={{ marginTop: 2, fontSize: 17, fontWeight: 600, color: 'var(--text-0)' }}>
+                {ideationConv.selected_idea.title}
+              </div>
+              <div style={{ marginTop: 3, fontSize: 14.5, fontWeight: 500, color: 'var(--text-2)', lineHeight: 1.65 }}>
+                현재 이 아이디어를 중심으로 회의 중입니다.
+              </div>
+            </div>
+            <CheckCircle2 size={21} color="var(--text-2)" style={{ flexShrink: 0 }} />
+          </div>
+        )}
+
+        {/* "전문가 추천"은 후보 자체를 새로 만드는 게 아니라 다른 답변 경로라 입력창
+            아래에 남긴다. "다시 추천"은 후보 카드가 오른쪽 패널로 옮겨가면서 이 자리로
+            같이 옮겨왔다(기존 handleSend(REGENERATE_MESSAGE) 로직 그대로). */}
         {phase === 'awaiting_candidate_selection' && (
           <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-            <button className="btn-ghost" style={{ fontSize: 12 }} disabled={!canReplyOrContinue} onClick={() => handleSend(EXPERT_RECOMMEND_MESSAGE)}>
+            <button type="button" className="btn-ghost" style={{ fontSize: 13.5 }} disabled={!canReplyOrContinue} onClick={() => handleSend(EXPERT_RECOMMEND_MESSAGE)}>
               전문가 추천
+            </button>
+            <button
+              type="button"
+              className="btn-ghost"
+              style={{ fontSize: 13.5, display: 'flex', alignItems: 'center', gap: 4 }}
+              disabled={!canReplyOrContinue}
+              onClick={() => handleSend(REGENERATE_MESSAGE)}
+            >
+              <RefreshCw size={12} /> 다시 추천
             </button>
           </div>
         )}
       </div>
 
-      {/* 재인/Claude(2026-07-24, 실측: "아바타가 채팅 쪽에 쏠려 보임"): 처음엔 아바타-캔버스
-          사이에만 스페이서(160px)를 뒀더니 채팅-아바타 간격(그리드 기본 gap 20px)보다
-          아바타-캔버스 간격이 훨씬 넓어서 아바타 블록이 왼쪽(채팅 쪽)으로 쏠려 보였다.
-          스페이서를 양쪽에 80px씩 나눠서 아바타 블록이 채팅-캔버스 사이에서 가운데
-          오도록 했다(위 gridTemplateColumns '1fr 80px 468px 80px 320px'). */}
-      <div aria-hidden="true" />
+      {/* 용준/Claude(2026-07-25, 요청: "오른쪽 영역은 참여 AI 휴먼 전용 공간으로 사용") —
+          아이디어 제안 목록은 채팅 안으로 옮겨갔으니 오른쪽 패널에는 더 이상 두지 않는다.
+          아바타 패널을 이 열의 시각적 핵심으로 둔다. 데스크톱에서는 sticky, 태블릿
+          이하에서는 중앙 아래로 내려간다(위 rb-ideation-side 참고).
+          용준/Claude(2026-07-26, 요청: "아이디어 기획 캔버스는 참여 위원 오른쪽에") —
+          캔버스/합의사항/CTA는 이 열 아래에 이어붙이지 않고 별도의 세 번째 열
+          (rb-ideation-canvas-col)로 분리했다. */}
+      <div className="rb-ideation-side">
+        <div className="card glass">
+          <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text-0)', marginBottom: 3 }}>참여 위원</div>
+          <div style={{ fontSize: 14.5, fontWeight: 500, color: '#625d72', lineHeight: 1.65, marginBottom: 12 }}>
+            진행자 · 기획 위원 · 개발 위원이 실시간으로 함께 회의해요.
+          </div>
+          {/* 재인/Claude(2026-07-26, dev #166 병합): 용준님이 만든 이 레이아웃(참여 위원
+              카드 안에 아바타 배치)은 그대로 두되, prop만 새 구조로 교체했다. 예전
+              onNeedNextSpeaker(페이싱 타이머가 "다음 화자 불러줘"를 알리던 방식)는
+              제거됐고(handleAvatarNeedNextSpeaker 함수 자체가 없어서 그대로 두면
+              ReferenceError), 지금은 텍스트를 미리 받아두고 아바타가 실제로 재생을
+              시작할 때마다 onRevealed로 하나씩 공개하는 방식이다. */}
+          <IdeationAvatarStage
+            playQueue={avatarPlayQueue}
+            onRevealed={() => setAvatarRevealedCount((n) => n + 1)}
+          />
+        </div>
+      </div>
 
-      <IdeationAvatarStage
-        playQueue={avatarPlayQueue}
-        onRevealed={() => setAvatarRevealedCount((n) => n + 1)}
-      />
-
-      <div aria-hidden="true" />
-      <div>
+      <div className="rb-ideation-canvas-col">
         <MergeAnalysisPanel
           mergeAnalysis={ideationConv?.merge_analysis}
           sourceCandidates={ideationConv?.source_candidates}
@@ -1407,25 +1668,20 @@ export function IdeationScreen({
 
         <IdeaCanvasPanel ideationConv={ideationConv} analysis={announcementAnalysis} />
 
-        {/* 가은/Claude(2026-07-23, 요청: "후보 선택하면 아이디어 선택 패널 없애줘") — 후보
-            카드는 대화창 안(선택 질문 버블 아래)에서 보여주고, 선택 후에는 이 자리에
-            요약 카드도 더 이상 띄우지 않는다. 선택 결과는 아래 IdeaCanvasPanel(문제
-            상황/타깃 사용자 등)과 대화 자체로 계속 드러난다. */}
-
         {ideationConv && (ideationConv.consensus?.length > 0 || ideationConv.unresolved_issues?.length > 0) && (
           <div className="card glass" style={{ marginBottom: 12, padding: 14 }}>
             {ideationConv.consensus?.length > 0 && (
               <div style={{ marginBottom: 10 }}>
-                <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--text-2)', marginBottom: 4 }}>합의 사항</div>
-                <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12, lineHeight: 1.7 }}>
+                <div style={{ fontSize: 15, fontWeight: 700, color: '#514a61', marginBottom: 4 }}>합의 사항</div>
+                <ul style={{ margin: 0, paddingLeft: 18, fontSize: 15.5, fontWeight: 500, color: 'var(--text-0)', lineHeight: 1.7 }}>
                   {ideationConv.consensus.map((c, i) => <li key={i}>{c}</li>)}
                 </ul>
               </div>
             )}
             {ideationConv.unresolved_issues?.length > 0 && (
               <div>
-                <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--text-2)', marginBottom: 4 }}>미해결 쟁점</div>
-                <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12, lineHeight: 1.7 }}>
+                <div style={{ fontSize: 15, fontWeight: 700, color: '#514a61', marginBottom: 4 }}>미해결 쟁점</div>
+                <ul style={{ margin: 0, paddingLeft: 18, fontSize: 15.5, fontWeight: 500, color: 'var(--text-0)', lineHeight: 1.7 }}>
                   {ideationConv.unresolved_issues.map((u, i) => <li key={i}>{u}</li>)}
                 </ul>
               </div>
@@ -1433,12 +1689,32 @@ export function IdeationScreen({
           </div>
         )}
 
-        <button className="btn-primary" style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }} disabled={!canFinalize} onClick={handleFinalize}>
+        {/* 용준/Claude(2026-07-25, 요청: "버튼은 한 곳에만, 상태별 문구를 명확하게") —
+            handleFinalize/canFinalize는 그대로고, 라벨과 비활성 사유만 3단계로 나눈다.
+            "회의를 바탕으로 주제 확정하기"는 후보는 골랐지만 위원 논의가 아직 끝나지
+            않은 상태를 알려주는 라벨일 뿐, 이 버튼 자체가 그 논의를 진행시키지는
+            않는다(논의는 채팅으로 계속된다) — 그래서 이 상태에서도 버튼은 비활성이다. */}
+        <div style={{ fontSize: 14.5, fontWeight: 500, color: '#514a61', marginBottom: 8, lineHeight: 1.65 }}>
+          지금까지 논의된 내용을 바탕으로 최종 주제를 확정하고 다음 단계로 이동합니다.
+        </div>
+        <button
+          type="button"
+          className="btn-primary"
+          style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
+          disabled={!canFinalize}
+          onClick={handleFinalize}
+        >
           <Sparkles size={14} />
-          {finalizing ? '초안 생성 중...' : '주제 확정하고 이어서 받기'}
+          {finalizing
+            ? '초안 생성 중...'
+            : canFinalize
+              ? '주제 확정 단계로 이동하기 →'
+              : '회의를 바탕으로 주제 확정하기 →'}
         </button>
         {!canFinalize && ideationConv && phase !== 'finalized' && phase !== 'failed' && (
-          <p style={{ fontSize: 11.5, color: 'var(--text-2)', marginTop: 8 }}>{nextActionGuideFor(phase)}</p>
+          <p style={{ fontSize: 14.5, fontWeight: 600, color: '#514a61', marginTop: 9, lineHeight: 1.55 }}>
+            {!hasSelected && hasCandidates ? '먼저 아이디어 후보를 선택해 주세요.' : nextActionGuideFor(phase)}
+          </p>
         )}
       </div>
     </div>
@@ -1498,8 +1774,8 @@ export function IdeationResultScreen({ ideationConv, onBack }) {
     return (
       <div style={{ maxWidth: 760 }}>
         <div className="badge amber mono" style={{ marginBottom: 12 }}>아직 확정되지 않음</div>
-        <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 16 }}>주제 발전 회의를 먼저 완료해 주세요</h2>
-        <p style={{ fontSize: 13, color: 'var(--text-2)' }}>
+        <h2 style={{ fontSize: 21, fontWeight: 700, marginBottom: 16 }}>주제 발전 회의를 먼저 완료해 주세요</h2>
+        <p style={{ fontSize: 14.5, color: 'var(--text-2)' }}>
           "주제 아이디어 회의" 단계에서 후보를 선택하고 전문가 질문에 답한 뒤, 확정 버튼을 눌러야 결과가 만들어져요.
         </p>
       </div>
@@ -1514,50 +1790,50 @@ export function IdeationResultScreen({ ideationConv, onBack }) {
     <div style={{ maxWidth: 780 }}>
       <div className="badge green mono" style={{ marginBottom: 12 }}>주제 확정 · 기획서 작성 출발점</div>
       {onBack && (
-        <button className="btn-ghost" style={{ marginBottom: 12, padding: '5px 10px', fontSize: 12 }} onClick={onBack}>
+        <button type="button" className="btn-ghost" style={{ marginBottom: 12, padding: '5px 10px', fontSize: 13.5 }} onClick={onBack}>
           ← 이전
         </button>
       )}
-      <h2 style={{ fontSize: 22, fontWeight: 700, marginBottom: 20 }}>{proposal.idea_name || '확정된 주제'}</h2>
+      <h2 style={{ fontSize: 23, fontWeight: 700, marginBottom: 20 }}>{proposal.idea_name || '확정된 주제'}</h2>
 
       <div className="card glass">
         {PROPOSAL_ROWS.map(([key, label], i) => (
           <div key={key} style={{ display: 'grid', gridTemplateColumns: '150px 1fr', gap: 16, padding: '14px 0', borderTop: i > 0 ? '1px solid var(--glass-border)' : 'none' }}>
-            <div style={{ fontSize: 12, color: 'var(--text-2)', fontFamily: 'var(--mono)' }}>{label}</div>
-            <div style={{ fontSize: 13.5, lineHeight: 1.6 }}>{proposalValueDisplay(proposal[key])}</div>
+            <div style={{ fontSize: 13.5, color: 'var(--text-2)', fontFamily: 'var(--mono)' }}>{label}</div>
+            <div style={{ fontSize: 14.5, lineHeight: 1.6 }}>{proposalValueDisplay(proposal[key])}</div>
           </div>
         ))}
       </div>
 
       {hasDiscoveryHistory && (
         <div className="card glass" style={{ marginTop: 16 }}>
-          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 12 }}>아이디어 발굴 이력</div>
+          <div style={{ fontSize: 14.5, fontWeight: 700, marginBottom: 12 }}>아이디어 발굴 이력</div>
 
           <div style={{ marginBottom: 12 }}>
-            <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--text-2)', marginBottom: 6 }}>최초 후보</div>
-            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12.5, lineHeight: 1.7 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-2)', marginBottom: 6 }}>최초 후보</div>
+            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 14, lineHeight: 1.7 }}>
               {originalCandidates.map((c) => <li key={c.candidate_id}>{c.title}</li>)}
             </ul>
           </div>
 
           {ideationConv.selected_idea && (
             <div style={{ marginBottom: 12 }}>
-              <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--text-2)', marginBottom: 6 }}>선택하거나 결합한 후보</div>
-              <div style={{ fontSize: 12.5, lineHeight: 1.6 }}>{ideationConv.selected_idea.title}</div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-2)', marginBottom: 6 }}>선택하거나 결합한 후보</div>
+              <div style={{ fontSize: 14, lineHeight: 1.6 }}>{ideationConv.selected_idea.title}</div>
             </div>
           )}
 
           {ideationConv.selection_reason && (
             <div style={{ marginBottom: 12 }}>
-              <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--text-2)', marginBottom: 6 }}>선택 이유</div>
-              <div style={{ fontSize: 12.5, lineHeight: 1.6 }}>{ideationConv.selection_reason}</div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-2)', marginBottom: 6 }}>선택 이유</div>
+              <div style={{ fontSize: 14, lineHeight: 1.6 }}>{ideationConv.selection_reason}</div>
             </div>
           )}
 
           {ideationConv.user_selection_message && (
             <div style={{ marginBottom: 12 }}>
-              <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--text-2)', marginBottom: 6 }}>사용자 원문 선택 요청</div>
-              <div style={{ fontSize: 12.5, lineHeight: 1.6 }}>“{ideationConv.user_selection_message}”</div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-2)', marginBottom: 6 }}>사용자 원문 선택 요청</div>
+              <div style={{ fontSize: 14, lineHeight: 1.6 }}>“{ideationConv.user_selection_message}”</div>
             </div>
           )}
 

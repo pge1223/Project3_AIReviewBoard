@@ -297,7 +297,7 @@ const styles = {
       'radial-gradient(800px 500px at 50% 110%, rgba(224,96,61,0.06), transparent 55%), ' +
       '#faf8f4',
     color: '#1c1a2e',
-    fontFamily: "'Pretendard', -apple-system, sans-serif",
+    fontFamily: "'Pretendard Variable', Pretendard, -apple-system, sans-serif",
   },
   main: { flex: 1, minWidth: 0, padding: '32px 40px', maxWidth: 760, overflowY: 'auto' },
   headerRow: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 },
