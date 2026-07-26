@@ -666,10 +666,15 @@ export function IdeationScreen({
   // 발언을 중복으로 다시 큐잉하지 않게 막는다.
   const [avatarPlayQueue, setAvatarPlayQueue] = useState([])
   const queuedAvatarIdsRef = useRef(new Set())
-  // 재인/Claude(2026-07-23): handleAvatarNeedNextSpeaker가 지금 진행 중인 continue-turn
-  // fetch를 추적한다 — "잠시만"이 그 사이에 눌리면 abort()로 끊어서, 이미 중단한 뒤에
-  // 뒤늦게 도착하는 응답이 canonical state를 다시 덮어쓰지 않게 막는다(handleInterject
-  // 참고). handleAvatarNeedNextSpeaker 자신이 sending/interrupting/interjectTarget이 걸려
+  // 재인/Claude(2026-07-24, 요청: "채팅 텍스트도 아바타 재생 순서에 맞춰 공개"): 지금까지
+  // 실제로 재생을 시작한 아바타 발언 개수. IdeationAvatarStage가 각 항목을 화면에 틀기
+  // 시작하는 순간(video.play() 성공 시점)마다 onRevealed로 하나씩 늘려준다 — 재생은
+  // 항상 큐 순서대로(=메시지 순서대로) 진행되므로 개수만 세도 순서가 정확히 맞는다.
+  const [avatarRevealedCount, setAvatarRevealedCount] = useState(0)
+  // 재인/Claude(2026-07-23, 2026-07-24 갱신): 아래 eager fetch effect가 지금 진행 중인
+  // continue-turn fetch를 추적한다 — "잠시만"이 그 사이에 눌리면 abort()로 끊어서, 이미
+  // 중단한 뒤에 뒤늦게 도착하는 응답이 canonical state를 다시 덮어쓰지 않게 막는다
+  // (handleInterject 참고). 그 effect 자신이 sending/interrupting/interjectTarget이 걸려
   // 있으면 애초에 새로 시작하지 않으므로, 세션 락 409 자체는 이 ref 없이도 이미 피한다 —
   // 이 ref는 그 이후(이미 시작된 호출)에 대한 정리용이다.
   const avatarTurnAbortRef = useRef(null)
@@ -934,78 +939,96 @@ export function IdeationScreen({
     }
   }, [ideationConv?.messages])
 
-  // 재인/Claude(2026-07-23): 아바타 재생 도중 "재생 끝나기 3초 전" 타이머가 울릴 때
-  // 호출된다. 새 사용자 발언 없이 다음 위원(기획/개발) 발언 1건만 더 요청한다
-  // (continue-turn/stream — 백엔드 continue_ideation_expert_turn, ai/meeting/graph 쪽
-  // 회의 로직은 전혀 안 건드리고 "언제 다음 턴을 요청하느냐"만 다루는 함수). 응답이 오면
-  // canonical state를 그대로 갱신하고, 위의 큐잉 effect(ideationConv?.messages 감시)가
-  // 새 메시지를 자동으로 avatarPlayQueue에 넣어 다음 위원 재생으로 이어진다.
+  // 재인/Claude(2026-07-24, 요청: "텍스트는 미리 다 뽑아두고 코랩만 순서대로 처리"):
+  // 예전엔 아바타 pacing timer가 "재생 끝나기 8초 전"에 불러줘야만 다음 턴을 요청했다
+  // (handleAvatarNeedNextSpeaker가 IdeationAvatarStage의 onNeedNextSpeaker로 연결).
+  // 이제 텍스트 생성은 아바타 재생 타이밍과 완전히 분리한다 — 응답이 도착하는 즉시,
+  // phase가 여전히 expert_discussion이면 곧바로 다음 턴을 요청해서 회의 로직이 허용하는
+  // 한 최대한 빠르게 이어붙인다(예전 아바타 연동 전 방식과 동일). 실제로 사용자에게
+  // 보여주는 시점(채팅 텍스트 노출 + 아바타 재생)은 IdeationAvatarStage 쪽에서 별도로
+  // 조절한다(아래 avatarRevealedCount 참고) — 여기서는 "다음 턴이 뭔지 최대한 빨리
+  // 알아내는" 역할만 한다. 회의 로직(누가 다음에 말할지, 언제 라운드가 끝나는지) 자체는
+  // continue_ideation_expert_turn을 그대로 재사용하므로 전혀 안 건드렸다.
   //
   // sending/interrupting/interjectTarget 중 하나라도 걸려 있으면 부르지 않는다 — 사용자가
   // 직접 reply/interject를 보내는 중이면 같은 세션에 동시 요청을 보내 백엔드 세션 락
-  // 409를 유발할 수 있다(호출 자체를 막는 게 가장 안전 — 실패해도 치명적이지 않지만,
-  // 아바타가 조용히 멈추는 것보다 애초에 안 보내는 편이 낫다). phase가 이미
-  // "expert_discussion"이 아니면(라운드가 이미 끝났거나 사용자가 먼저 답해 다음 라운드로
-  // 넘어간 경우) 마찬가지로 부르지 않는다 — 백엔드도 같은 조건을 다시 검사하지만, 프론트
-  // 에서 먼저 걸러야 불필요한 요청/에러 로그를 줄인다.
-  async function handleAvatarNeedNextSpeaker(finishedSpeakerId) {
-    console.log('[avatar-debug] handleAvatarNeedNextSpeaker CALLED', {
-      finishedSpeakerId,
-      hasSessionId: !!ideationConv?.session_id,
-      phase: ideationConv?.phase,
-      sending,
-      interrupting,
-      interjectTarget,
-    })
-    if (!ideationConv?.session_id) {
-      console.log('[avatar-debug] bail: no session_id')
-      return
-    }
-    if (ideationConv.phase !== 'expert_discussion') {
-      console.log('[avatar-debug] bail: phase !== expert_discussion', ideationConv.phase)
-      return
-    }
-    if (sending || interrupting || interjectTarget) {
-      console.log('[avatar-debug] bail: sending/interrupting/interjectTarget guard', { sending, interrupting, interjectTarget })
-      return
-    }
+  // 409를 유발할 수 있다. avatarTurnAbortRef.current가 이미 걸려 있으면(이전 호출이 아직
+  // 진행 중) 또 시작하지 않는다 — 이 ref는 handleInterject("잠시만")가 그대로 재사용해서
+  // 중단 시 함께 끊는다(아래 avatarTurnAbortRef 선언부 참고, 코드 변경 없음).
+  //
+  // 재인/Claude(2026-07-25, 실측: "기획위원 한 번 말하고 그대로 멈춤" - 콘솔/백엔드 로그로
+  // 확정): 처음엔 이 effect가 ideationConv(객체 전체)를 deps로 삼아서, 자기 자신의
+  // setIdeationConv 호출로 매번 다시 실행되며 "다음 턴 요청"을 이어갔다. 근데 그러면
+  // 매번 이 effect의 클린업(controller.abort())과 async 콜백의 finally
+  // (avatarTurnAbortRef.current = null)가 경쟁한다 - 클린업이 먼저 실행된 시점엔 아직
+  // finally가 ref를 안 지웠을 수 있어서, 바로 이어서 실행되는 새 effect가
+  // "avatarTurnAbortRef.current가 있으니 이미 진행 중"으로 오판하고 아무것도 안 하고
+  // 끝나버린다 - 그러면 그 뒤로는 아무도 다시 안 불러서 대화가 영원히 멈춘다(실측
+  // 재현: 기획위원 발언 후 continue-turn 요청 자체가 다시 안 나감). 고친 방법: 렌더
+  // 사이클(effect 재실행)에 의존해서 다음 턴을 잇지 않고, 이 안에서 while 루프로
+  // 직접 이어서 요청한다 - deps에서도 ideationConv(전체 객체)를 빼고 session_id/phase만
+  // 남겨서, 이 루프 자신의 setIdeationConv 호출로 effect가 다시 트리거되는 일 자체가
+  // 없게 했다(그러면 클린업도 안 도니 경쟁 자체가 발생하지 않는다). session_id/phase가
+  // "진짜로" 바뀌거나 sending/interrupting/interjectTarget이 바뀔 때만 재평가한다.
+  useEffect(() => {
+    if (!ideationConv?.session_id) return
+    if (ideationConv.phase !== 'expert_discussion') return
+    if (sending || interrupting || interjectTarget) return
+    if (avatarTurnAbortRef.current) return
 
-    console.log('[avatar-debug] calling continueIdeationExpertTurnStream', { sessionId: ideationConv.session_id })
     const controller = new AbortController()
     avatarTurnAbortRef.current = controller
-    try {
-      await continueIdeationExpertTurnStream(ideationConv.session_id, {
-        signal: controller.signal,
-        onEvent: (event) => {
-          console.log('[avatar-debug] continue-turn event', event.type, event)
-          if (event.type === 'state') {
-            setIdeationConv(event.state)
-            // 재인/Claude(2026-07-23, 실측: "기획위원 발언이 화면에 2번 뜸"): 이 canonical
-            // 갱신은 handleSend의 타이핑 효과 루프(streamState/pendingFinalRef/tick)를 전혀
-            // 거치지 않는다 - 그쪽이 아직 스트리밍 임시 메시지를 못 지운 상태(sending이
-            // 막 false로 바뀐 직후처럼)에서 이 이벤트가 오면, 같은 발언이 streamState
-            // (임시, 다른 message_id)랑 canonical(방금 갱신됨) 양쪽에 동시에 남아 화면에
-            // 두 번 그려질 수 있다. ideationStreamReducer.js 상단 주석의 설계 의도
-            // ("스트리밍 미리보기와 최종 메시지가 절대 동시에 렌더링될 수 없다")를 이
-            // 경로에서도 그대로 지키려고, canonical을 바꿀 때 스트리밍 임시 상태도 같이
-            // 확실하게 비운다.
-            setStreamState(createEmptyStreamState())
-          } else if (event.type === 'error') {
-            console.warn('[ideation-avatar] continue-turn 실패, speaker=', finishedSpeakerId, event)
-          }
-        },
-      })
-      console.log('[avatar-debug] continueIdeationExpertTurnStream resolved OK')
-    } catch (err) {
-      // 조용히 무시한다 — 이 호출은 최선을 다해 다음 위원을 미리 준비시키는 배경 동작이라,
-      // 실패해도(400 phase 불일치, 세션 만료, abort 등) 화면에 에러를 띄우지 않는다.
-      if (err?.name !== 'AbortError') {
-        console.warn('[ideation-avatar] continue-turn 요청 실패, speaker=', finishedSpeakerId, err)
+    let cancelled = false
+    let currentSessionId = ideationConv.session_id
+
+    ;(async () => {
+      try {
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          let nextState = null
+          console.log('[avatar-debug] eager fetch: calling continueIdeationExpertTurnStream', { sessionId: currentSessionId })
+          // eslint-disable-next-line no-await-in-loop
+          await continueIdeationExpertTurnStream(currentSessionId, {
+            signal: controller.signal,
+            onEvent: (event) => {
+              if (cancelled) return
+              console.log('[avatar-debug] continue-turn event', event.type, event)
+              if (event.type === 'state') {
+                nextState = event.state
+                setIdeationConv(event.state)
+                // 재인/Claude(2026-07-23, 실측: "기획위원 발언이 화면에 2번 뜸"): 이 canonical
+                // 갱신은 handleSend의 타이핑 효과 루프(streamState/pendingFinalRef/tick)를 전혀
+                // 거치지 않는다 - 그쪽이 아직 스트리밍 임시 메시지를 못 지운 상태에서 이
+                // 이벤트가 오면, 같은 발언이 streamState(임시, 다른 message_id)랑
+                // canonical(방금 갱신됨) 양쪽에 동시에 남아 화면에 두 번 그려질 수 있다.
+                // canonical을 바꿀 때 스트리밍 임시 상태도 같이 확실하게 비운다.
+                setStreamState(createEmptyStreamState())
+              } else if (event.type === 'error') {
+                console.warn('[ideation-avatar] continue-turn 실패', event)
+              }
+            },
+          })
+          console.log('[avatar-debug] eager fetch: continueIdeationExpertTurnStream resolved OK', { phase: nextState?.phase })
+          if (cancelled || !nextState || nextState.phase !== 'expert_discussion') break
+          currentSessionId = nextState.session_id
+        }
+      } catch (err) {
+        // 조용히 무시한다 — 이 호출은 최선을 다해 다음 턴을 미리 준비시키는 배경 동작이라,
+        // 실패해도(400 phase 불일치, 세션 만료, abort 등) 화면에 에러를 띄우지 않는다.
+        if (err?.name !== 'AbortError') {
+          console.warn('[ideation-avatar] continue-turn 요청 실패', err)
+        }
+      } finally {
+        if (avatarTurnAbortRef.current === controller) avatarTurnAbortRef.current = null
       }
-    } finally {
-      if (avatarTurnAbortRef.current === controller) avatarTurnAbortRef.current = null
+    })()
+
+    return () => {
+      cancelled = true
+      controller.abort()
     }
-  }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ideationConv?.session_id, ideationConv?.phase, sending, interrupting, interjectTarget])
 
   const phase = ideationConv?.phase
   const phaseFailure = phase === 'failed'
@@ -1015,7 +1038,24 @@ export function IdeationScreen({
         failedNode: ideationConv?.failed_node || ideationConv?.error?.failed_node,
       }
     : null
-  const canonicalMessages = dedupeMessagesById(ideationConv?.messages)
+  // 재인/Claude(2026-07-24, 요청: "채팅 텍스트도 아바타 재생 순서에 맞춰 공개"): 텍스트은
+  // 이제 아바타 재생과 무관하게 미리 다 뽑혀 ideationConv.messages(canonical)에 들어와
+  // 있을 수 있다. avatarRevealedCount(IdeationAvatarStage가 각 아바타 발언을 실제로
+  // 재생하기 시작할 때마다 하나씩 늘려줌 — 순서 보장됨, 아래 setAvatarRevealedCount 참고)
+  // 만큼만 "아바타 대상 발언"을 공개하고, 아직 안 밝혀진 아바타 발언 지점부터는(그
+  // 뒤에 온 비아바타 메시지 포함) 전부 숨긴다 — 순서를 지키기 위해서다(나중에 온 문구가
+  // 아직 재생 안 한 위원 발언보다 먼저 보이면 안 됨). 아바타 대상이 아닌 메시지(고정
+  // 문구 중 코랩 제외 대상, 사용자 메시지 등)는 게이팅 없이 즉시 보인다.
+  const rawMessages = ideationConv?.messages || []
+  let avatarSeenCount = 0
+  const revealCutoffIndex = rawMessages.findIndex((m) => {
+    const isAvatarTracked = AVATAR_SPEAKER_IDS.has(m.speaker_id) && !(m.content || '').startsWith(AVATAR_EXCLUDED_CONTENT_PREFIX)
+    if (!isAvatarTracked) return false
+    avatarSeenCount += 1
+    return avatarSeenCount > avatarRevealedCount
+  })
+  const revealedMessages = revealCutoffIndex === -1 ? rawMessages : rawMessages.slice(0, revealCutoffIndex)
+  const canonicalMessages = dedupeMessagesById(revealedMessages)
   // 재인/Claude(2026-07-23, 실측: "메시지가 2개 겹쳐 나옴" — 서버 확인 결과 실제 메시지는
   // 1건뿐이었다): canonical과 streamState는 서로 겹칠 수 있다 — 특히 single_turn 응답처럼
   // 아주 짧은 메시지는 canonical(finalizeStream)로 넘어가는 순간과 streamState가 비워지는
@@ -1119,9 +1159,11 @@ export function IdeationScreen({
         targetSpeakerId: target || undefined,
         opinionTargetSpeakerId: target || undefined,
         interruptedSpeakerId: target ? interruptedSpeakerId || undefined : undefined,
-        // 재인/Claude(2026-07-23): 이 화면은 항상 아바타를 재생하므로, 라운드를 새로 여는
-        // reply라도 위원 발언이 한 번에 다 몰려오지 않고 첫 발언부터 페이싱 대상이 되도록
-        // 매번 true로 보낸다(handleAvatarNeedNextSpeaker가 나머지 턴을 이어서 요청함).
+        // 재인/Claude(2026-07-23, 2026-07-24 갱신): 이 화면은 항상 아바타를 재생하므로,
+        // 라운드를 새로 여는 reply라도 위원 발언이 한 번에 다 몰려오지 않고 딱 1건만
+        // 오게 매번 true로 보낸다(위쪽 eager fetch effect가 나머지 턴을 이어서 요청함 —
+        // 텍스트는 이제 아바타 재생과 무관하게 미리 다 뽑히지만, 채팅/아바타 노출은
+        // avatarRevealedCount로 여전히 하나씩 순서대로 공개된다).
         singleTurn: true,
         onEvent: (event) => {
           if (event.type === 'state') {
@@ -1598,9 +1640,15 @@ export function IdeationScreen({
           <div style={{ fontSize: 14.5, fontWeight: 500, color: '#625d72', lineHeight: 1.65, marginBottom: 12 }}>
             진행자 · 기획 위원 · 개발 위원이 실시간으로 함께 회의해요.
           </div>
+          {/* 재인/Claude(2026-07-26, dev #166 병합): 용준님이 만든 이 레이아웃(참여 위원
+              카드 안에 아바타 배치)은 그대로 두되, prop만 새 구조로 교체했다. 예전
+              onNeedNextSpeaker(페이싱 타이머가 "다음 화자 불러줘"를 알리던 방식)는
+              제거됐고(handleAvatarNeedNextSpeaker 함수 자체가 없어서 그대로 두면
+              ReferenceError), 지금은 텍스트를 미리 받아두고 아바타가 실제로 재생을
+              시작할 때마다 onRevealed로 하나씩 공개하는 방식이다. */}
           <IdeationAvatarStage
             playQueue={avatarPlayQueue}
-            onNeedNextSpeaker={handleAvatarNeedNextSpeaker}
+            onRevealed={() => setAvatarRevealedCount((n) => n + 1)}
           />
         </div>
       </div>
