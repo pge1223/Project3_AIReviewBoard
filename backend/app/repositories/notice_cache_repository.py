@@ -8,6 +8,13 @@ class NoticeAnalysisCacheRepository:
         db = get_db()
         return db[NoticeAnalysisCacheModel.collection_name]
 
+    async def ensure_indexes(self) -> None:
+        collection = self.get_collection()
+        await collection.create_index(
+            [("cache_key", 1), ("analysis_kind", 1)],
+            unique=True
+        )
+
     # 가은/Claude(2026-07-23): analysis_kind를 cache_key와 함께 매치해야 한다 —
     # 미분류(document_type=None) 문서는 announcement/application_form 양쪽에서 다
     # 조회될 수 있어서, cache_key만으로는 어느 분석 결과인지 구분이 안 된다.

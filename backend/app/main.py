@@ -24,6 +24,7 @@ from app.api.routes.workbench import router as workbench_router  # 재인/Claude
 from app.repositories.ideation_conversation_session_repository import (
     IdeationConversationSessionRepository,
 )
+from app.repositories.notice_cache_repository import NoticeAnalysisCacheRepository
 from app.core.logger import logger
 from ai.rag.converters.diagnostics import HwpDiagnosticsResult, log_hwp_diagnostics, run_hwp_diagnostics
 
@@ -85,6 +86,7 @@ async def startup():
     await connect_db()
     if settings.ENABLE_IDEATION_PREVIEW:
         await IdeationConversationSessionRepository().ensure_indexes()
+        await NoticeAnalysisCacheRepository().ensure_indexes()
 
     try:
         hwp_diagnostics = await run_in_threadpool(run_hwp_diagnostics)
