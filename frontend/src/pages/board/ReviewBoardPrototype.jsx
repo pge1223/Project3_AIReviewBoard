@@ -164,8 +164,10 @@ function Shell({ children, active, mode, onNavigate, showNav }) {
         .rb-root .badge.green{ background:var(--green-dim); color:var(--green); }
         .rb-root .badge.amber{ background:var(--amber-dim); color:var(--amber); }
         .rb-root .badge.grey{ background:var(--bg-2); color:var(--text-2); }
-        .rb-root .btn-primary{ background:linear-gradient(135deg, var(--purple), #8b6ef0); color:#0b0a16; font-weight:600; border:none; border-radius:12px; padding:11px 20px; cursor:pointer; font-size:16px; }
-        .rb-root .btn-primary:disabled{ opacity:0.4; cursor:not-allowed; }
+        .rb-root .btn-primary{ background:linear-gradient(135deg, var(--purple), #8b6ef0); color:#0b0a16; font-weight:600; border:none; border-radius:12px; padding:11px 20px; cursor:pointer; font-size:16px; box-shadow:0 4px 0 #5a3fc4, 0 6px 14px rgba(124,92,234,0.35); transform:translateY(0); transition:transform .12s ease, box-shadow .12s ease; }
+        .rb-root .btn-primary:hover:not(:disabled){ box-shadow:0 5px 0 #5a3fc4, 0 8px 18px rgba(124,92,234,0.4); transform:translateY(-1px); }
+        .rb-root .btn-primary:active:not(:disabled){ box-shadow:0 1px 0 #5a3fc4, 0 2px 6px rgba(124,92,234,0.3); transform:translateY(3px); }
+        .rb-root .btn-primary:disabled{ opacity:0.4; cursor:not-allowed; box-shadow:none; }
         .rb-root .btn-ghost{ background:transparent; border:1px solid var(--glass-border); color:var(--text-1); border-radius:12px; padding:10px 18px; cursor:pointer; font-size:16px; }
         .rb-root .btn-ghost:hover{ background:var(--bg-2); }
         .rb-root .card{ border-radius:16px; padding:20px; }

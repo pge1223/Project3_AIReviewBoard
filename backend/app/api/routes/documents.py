@@ -49,6 +49,7 @@ from ai.rag.domain.config import DEFAULT_COLLECTION_NAME
 from ai.rag.embedding.kure_embedder import KUREEmbedder
 from ai.rag.retrieval.chroma_store import ChromaVectorStore
 from ai.rag.retrieval.service import RAGIndexingService
+from ai.rag.retrieval.exceptions import RAGIndexingError
 from ai.rag.embedding.config import EMBEDDING_VERSION
 import chromadb
 
@@ -144,7 +145,8 @@ def _get_chroma_client() -> chromadb.ClientAPI:
     """documents.py 싱글턴이 쓰는 chromadb client를 그대로 반환한다. 같은
     CHROMA_PERSIST_DIR을 가리키는 별도의 chromadb.PersistentClient를 프로세스 안에
     또 만들지 않기 위함 — 다른 컬렉션(예: similar_cases)을 쓰더라도 client(=엔진 연결)
-    자체는 공유해야 한다(2026-07-18, meetings.py 중복 PersistentClient 조사 참고)."""
+    자체는 공유해야 한다(2026-07-18, meetings.py 중복 PersistentClient 조사 참고).
+    DEFAULT_COLLECTION_NAME 변경은 프로세스 재시작 후 반영된다."""
     return _get_indexing_service().vector_store.client
 
 
@@ -274,14 +276,57 @@ async def _index_webpage_background(
             time.time() - _index_started,
         )
         status_value = "indexing_timeout"
-    except Exception:
+    except Exception as exc:
         logger.exception(
             "[fetch-url] 색인(백그라운드) 실패: document_id=%s elapsed=%.1fs",
             document_id,
             time.time() - _index_started,
         )
         status_value = "indexing_failed"
-    await document_repo.update_fields(document_id, {"status": status_value})
+        await document_repo.update_fields(
+            document_id,
+            {"status": status_value, "indexing_error": _safe_indexing_error(exc)},
+        )
+        return
+    await document_repo.update_fields(
+        document_id,
+        {"status": status_value, "indexing_error": None},
+    )
+
+
+async def _refetch_and_index_webpage_background(
+    *,
+    document_id: str,
+    project_id: str,
+    url: str,
+    title: str,
+) -> None:
+    """실패한 URL 문서를 재시도할 때 원문을 다시 수집·정제한 뒤 동일 색인 경로로 보낸다."""
+    try:
+        result = await run_in_threadpool(load_from_url, url)
+        if result.page_content is None:
+            raise ValueError("URL에서 색인 가능한 본문을 찾지 못했습니다")
+        merged_page_content, cleaned = await run_in_threadpool(_apply_cleaning, result.page_content)
+        await document_repo.update_fields(
+            document_id,
+            {
+                "parsed_text": merged_page_content.text,
+                "file_size": merged_page_content.text_length,
+            },
+        )
+        await _index_webpage_background(
+            document_id=document_id,
+            project_id=project_id,
+            url=url,
+            title=title,
+            cleaned=cleaned,
+        )
+    except Exception as exc:
+        logger.exception("[fetch-url] 재색인 실패: document_id=%s", document_id)
+        await document_repo.update_fields(
+            document_id,
+            {"status": "indexing_failed", "indexing_error": _safe_indexing_error(exc)},
+        )
 
 
 # 가은/Claude(2026-07-21): 실측 요청 — 파일 업로드(평가 대상 기획서 포함)가 느리다.
@@ -290,6 +335,40 @@ async def _index_webpage_background(
 # 응답은 즉시(status="indexing") 돌아가고, 프론트는 기존 status 엔드포인트(DOC-004)를
 # 폴링한다. 타임아웃은 웹페이지보다 여유 있게 둔다(HWP→PDF 변환 + 대용량 파일 고려).
 _FILE_INDEXING_TIMEOUT_SECONDS = 180
+
+
+def _safe_indexing_error(exc: Exception) -> dict:
+    """프런트에 노출 가능한 색인 실패 정보만 만든다.
+
+    원본 예외 문자열에는 로컬 경로·외부 응답 등이 포함될 수 있으므로 저장하지 않는다.
+    RAGIndexingError가 보장하는 stage만 사용하고 나머지는 parse_or_prepare로 묶는다.
+    """
+    stage = exc.stage if isinstance(exc, RAGIndexingError) else "parse_or_prepare"
+    messages = {
+        "embed": "문서 임베딩 단계에서 오류가 발생했습니다. 잠시 후 다시 시도해주세요.",
+        "chroma_upsert": "벡터 저장 단계에서 오류가 발생했습니다. 잠시 후 다시 시도해주세요.",
+        "parse_or_prepare": "문서를 읽거나 색인 준비를 하는 중 오류가 발생했습니다.",
+    }
+    root_cause = exc
+    seen: set[int] = set()
+    while root_cause.__cause__ is not None and id(root_cause) not in seen:
+        seen.add(id(root_cause))
+        root_cause = root_cause.__cause__
+    return {
+        "stage": stage,
+        "error_type": type(exc).__name__,
+        "cause_type": type(root_cause).__name__,
+        # 운영 진단용으로 MongoDB에만 저장한다. 상태 API에서는 아래
+        # _public_indexing_error()가 이 필드를 제거한다.
+        "diagnostic": str(root_cause)[:500],
+        "message": messages.get(stage, messages["parse_or_prepare"]),
+    }
+
+
+def _public_indexing_error(value: Optional[dict]) -> Optional[dict]:
+    if not value:
+        return None
+    return {key: value.get(key) for key in ("stage", "error_type", "cause_type", "message") if value.get(key)}
 
 
 async def _index_file_background(
@@ -317,6 +396,7 @@ async def _index_file_background(
                 "status": "indexed" if stored_count > 0 else "indexed_empty",
                 "parsed_text": parsed_text,
                 "conversion_metadata": conversion_metadata,
+                "indexing_error": None,
             },
         )
         logger.info(
@@ -350,13 +430,16 @@ async def _index_file_background(
                 },
             },
         )
-    except Exception:
+    except Exception as exc:
         logger.exception(
             "[upload] 색인(백그라운드) 실패: document_id=%s elapsed=%.1fs",
             document_id,
             time.time() - _index_started,
         )
-        await document_repo.update_fields(document_id, {"status": "indexing_failed"})
+        await document_repo.update_fields(
+            document_id,
+            {"status": "indexing_failed", "indexing_error": _safe_indexing_error(exc)},
+        )
 
 
 # 가은/Claude (2026-07-15): 비회원 로그인은 Authorization 헤더 없이 그대로 들어온다 —
@@ -591,6 +674,7 @@ async def upload_document(
         updated_at=document.updated_at,
         document_role=document.document_role,
         conversion_metadata=document.conversion_metadata,
+        indexing_error=document.indexing_error,
         unsupported_attachments=document.unsupported_attachments,
     )
 
@@ -648,6 +732,7 @@ async def get_documents(
             updated_at=d["updated_at"],
             document_role=d.get("document_role", "target"),
             conversion_metadata=d.get("conversion_metadata"),
+            indexing_error=_public_indexing_error(d.get("indexing_error")),
             unsupported_attachments=d.get("unsupported_attachments"),
         )
         for d in documents
@@ -703,7 +788,79 @@ async def get_document_status(
         # 참고) HWP/HWPX 변환 실패 안내(user_message)를 업로드 응답에 실을 수 없게 됐다 —
         # 폴링하는 프론트가 여기서 읽는다. 순수 추가 필드(기존 폴링 클라이언트는 무시하면 그대로 동작).
         "conversion_metadata": document.get("conversion_metadata"),
+        "indexing_error": _public_indexing_error(document.get("indexing_error")),
     }
+
+
+@router.post("/{project_id}/{document_id}/retry-indexing")
+async def retry_document_indexing(
+    project_id: str,
+    document_id: str,
+    authorization: Optional[str] = Header(None, alias="authorization"),
+):
+    """실패·타임아웃 문서를 새 레코드 생성 없이 같은 document_id로 재색인한다."""
+    user_email = get_current_user(authorization)
+    await verify_project_owner(project_id, user_email)
+    document = await document_repo.find_by_id(document_id)
+    if not document or document.get("project_id") != project_id:
+        raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다")
+    if document.get("status") not in {"indexing_failed", "indexing_timeout", "conversion_failed"}:
+        raise HTTPException(status_code=409, detail="실패하거나 타임아웃된 문서만 재색인할 수 있습니다")
+
+    await document_repo.update_fields(
+        document_id,
+        {"status": "indexing", "indexing_error": None},
+    )
+
+    if document.get("source_type") == "url":
+        url = str(document.get("file_path") or document.get("stored_filename") or "").strip()
+        if not url:
+            await document_repo.update_fields(
+                document_id,
+                {
+                    "status": "indexing_failed",
+                    "indexing_error": {
+                        "stage": "parse_or_prepare",
+                        "error_type": "MissingSourceUrl",
+                        "message": "재색인할 원본 URL을 찾지 못했습니다.",
+                    },
+                },
+            )
+            raise HTTPException(status_code=422, detail="재색인할 원본 URL을 찾지 못했습니다")
+        asyncio.create_task(
+            _refetch_and_index_webpage_background(
+                document_id=document_id,
+                project_id=project_id,
+                url=url,
+                title=document.get("original_filename") or url,
+            )
+        )
+    else:
+        file_path = str(document.get("file_path") or "")
+        if not file_path or not Path(file_path).is_file():
+            await document_repo.update_fields(
+                document_id,
+                {
+                    "status": "indexing_failed",
+                    "indexing_error": {
+                        "stage": "parse_or_prepare",
+                        "error_type": "MissingSourceFile",
+                        "message": "재색인할 원본 파일을 찾지 못했습니다.",
+                    },
+                },
+            )
+            raise HTTPException(status_code=422, detail="재색인할 원본 파일을 찾지 못했습니다")
+        asyncio.create_task(
+            _index_file_background(
+                document_id=document_id,
+                project_id=project_id,
+                file_path=file_path,
+                filename=document.get("original_filename") or Path(file_path).name,
+                document_role=document.get("document_role", "target"),
+            )
+        )
+
+    return {"document_id": document_id, "status": "indexing"}
 
 
 # DOC-006: 문서 미리보기

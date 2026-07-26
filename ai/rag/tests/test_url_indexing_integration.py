@@ -41,6 +41,7 @@ if os.environ.get("RUN_URL_INTEGRATION") != "1":
 from ai.rag.chunking.chunker import chunk_document
 from ai.rag.chunking.schemas import ChunkSourceContext, SourceType
 from ai.rag.domain import IndexingContext
+from ai.rag.domain.config import DEFAULT_COLLECTION_NAME
 from ai.rag.embedding.kure_embedder import KUREEmbedder
 from ai.rag.embedding.schemas import EmbeddingConfig
 from ai.rag.loaders.url_loader import load_from_url
@@ -55,7 +56,7 @@ _REPRO_URL = (
     "?bbs_id=60caf1aeb54b45748c80d1652e706438&searchkey=&searchtxt=&miv_pageNo="
 )
 
-_COLLECTION = "project_documents_kure_v1"
+_COLLECTION = DEFAULT_COLLECTION_NAME
 
 # 2026-07-18 PR 리뷰 지적사항 대응: 이 값이 선언만 되고 실제로 타임아웃에 적용되지
 # 않아, hang이 재발하면 이 opt-in 테스트 자체도 무한 대기했다(단순 buggy no-op).

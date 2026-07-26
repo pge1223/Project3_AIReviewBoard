@@ -145,6 +145,9 @@ function StreamingCursorStyle() {
         .rb-ideation-side{ position:static; margin-top:0; }
         .rb-ideation-canvas-col{ grid-column: auto; margin-top:0; }
       }
+      .rb-ideation-candidate-card{ transition: transform .18s ease, box-shadow .18s ease; }
+      .rb-ideation-candidate-card--interactive:hover{ transform: translateY(-4px); box-shadow: 0 10px 24px rgba(124,92,234,0.18); }
+      .rb-ideation-candidate-card--interactive:active{ transform: translateY(-1px); box-shadow: 0 4px 10px rgba(124,92,234,0.16); transition-duration: .06s; }
     `}</style>
   )
 }
@@ -435,7 +438,7 @@ function CandidateCard({ candidate, index, onSelect, disabled, selected = false 
         e.preventDefault()
         handleCardActivate()
       }}
-      className="card glass"
+      className={`card glass rb-ideation-candidate-card${disabled || selected ? '' : ' rb-ideation-candidate-card--interactive'}`}
       style={{
         marginBottom: 10,
         padding: 14,

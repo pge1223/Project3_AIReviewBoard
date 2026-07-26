@@ -7,6 +7,7 @@ import chromadb
 import pytest
 
 from ai.rag.domain import IndexingContext
+from ai.rag.domain.config import DEFAULT_COLLECTION_NAME
 from ai.rag.domain.schemas import CollectionConfigMismatchError, InvalidTopKError
 from ai.rag.embedding.schemas import EmbeddedChunk, EmbeddingResult
 from ai.rag.retrieval.chroma_store import ChromaVectorStore, build_record_id, create_persistent_client
@@ -14,7 +15,7 @@ from ai.rag.retrieval.chroma_store import ChromaVectorStore, build_record_id, cr
 _DIM = 4
 _MODEL = "fake-model"
 _VERSION = "embedding_v1"
-_COLLECTION = "project_documents_kure_v1"
+_COLLECTION = DEFAULT_COLLECTION_NAME
 
 
 def _vec(seed: float) -> list[float]:
