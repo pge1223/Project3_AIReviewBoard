@@ -59,7 +59,7 @@ class Settings(BaseSettings):
     # JWT
     JWT_SECRET_KEY: str = "sherpa-secret-key-change-in-production"
     JWT_ALGORITHM: str = "HS256"
-    JWT_EXPIRE_MINUTES: int = 60
+    JWT_EXPIRE_MINUTES: int = 720
 
     # 용준/Claude(2026-07-20): 개발용 아이디어 발전 회의(ideation) 프리뷰 API 활성화 여부.
     # 기본값 False — main.py가 이 값이 True일 때만 ideation_preview 라우터를 등록한다.
