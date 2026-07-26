@@ -2126,6 +2126,23 @@ export function ApplicationFormDraftScreen({ ideationConv, onBack }) {
           </ul>
         </div>
       )}
+
+      {(ideationConv.application_form_items || []).length > 0 && (
+        <div style={{ marginTop: 20 }}>
+          {formDraftError && (
+            <p style={{ color: 'var(--coral)', fontSize: 14.5, marginBottom: 10 }}>{formDraftError.message}</p>
+          )}
+          <button
+            type="button"
+            className="btn-primary"
+            style={{ display: 'flex', alignItems: 'center', gap: 8 }}
+            onClick={handleGenerateFormDraft}
+            disabled={generatingFormDraft}
+          >
+            {generatingFormDraft ? '신청서 초안 작성 중...' : '신청서 초안 만들기'}
+          </button>
+        </div>
+      )}
     </div>
   )
 }
