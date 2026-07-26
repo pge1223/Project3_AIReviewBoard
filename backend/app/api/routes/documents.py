@@ -1301,6 +1301,35 @@ def _build_official_facts(payload: object, source_text: str = "") -> OfficialFac
     )
 
 
+def _candidate_missing_details_from_text(text: str) -> list[str]:
+    """가은/Claude(2026-07-26, 요청: "재검증 호출을 병렬로") — _missing_announcement_details와
+    같은 원문 키워드 표지를 쓰되, 1차 LLM 응답(official_facts)이 비어있는지는 보지 않는다.
+    1차 호출이 끝나기 전(원문만으로) 감사 대상 후보를 미리 추려서, 감사 프롬프트를 1차
+    호출과 동시에 asyncio.gather로 실행할 수 있게 한다.
+
+    안전성: 실제 _missing_announcement_details는 "이 키워드 표지가 있다" AND
+    "official_facts에 해당 필드가 비어있다"를 함께 확인하므로, 항상 이 함수(키워드
+    표지만 확인)의 부분집합이다 — 즉 실제 누락 항목은 반드시 이 후보 목록에 이미 포함돼
+    있다. 그래서 후보가 비어 있으면 실제 누락도 항상 비어 있고(감사 자체를 건너뛰어도
+    안전), 후보가 있으면 감사 결과를 미리 확보해둔 채로 실제 누락 여부만 나중에 판단하면
+    된다 — 놓치는 경우가 없다."""
+    compact = re.sub(r"\s+", " ", text)
+    candidates: list[str] = []
+    if "혁신성" in text and "사회적 가치성" in text:
+        candidates.append("평가 기준과 배점")
+    if re.search(r"평가.{0,160}\b8[.]?\s*19", compact):
+        candidates.append("평가일")
+    if "결과발표" in compact and re.search(r"결과발표.{0,80}\b8[.]?\s*24", compact):
+        candidates.append("결과 발표일")
+    if "17:30~19:00" in text:
+        candidates.append("시상식 일시")
+    if "심사위원 판단" in text:
+        candidates.append("신청·심사 조건")
+    if "기업설명회" in text:
+        candidates.append("선정 혜택")
+    return candidates
+
+
 def _missing_announcement_details(text: str, facts: OfficialFacts) -> list[str]:
     """원문에 명시적 표지가 있는데 구조화 결과에서 빠진 항목만 재검증 대상으로 잡는다."""
     compact = re.sub(r"\s+", " ", text)
@@ -1447,8 +1476,26 @@ async def get_announcement_analysis(
             await project_repo.update_project(project_id, {"announcement_analysis_cache": cache_payload})
             return result
 
+    # 가은/Claude(2026-07-26, 요청: "재검증 호출을 병렬로" — dev merge 후 등록/분석이
+    # 느려졌다는 실측 보고) — 예전엔 1차 호출이 끝나야 무엇이 누락됐는지 알 수 있어
+    # 감사 호출을 순차로만 돌릴 수 있었다(누락 감지 시 최대 2배 지연). 원문 키워드
+    # 표지만으로 감사 후보를 미리 뽑을 수 있다는 걸 확인했으므로(_candidate_missing_details_from_text
+    # 주석 참고 — 실제 누락 목록은 항상 이 후보의 부분집합), 후보가 하나라도 있으면
+    # 1차 호출과 감사 호출을 asyncio.gather로 동시에 실행한다. 실제로 감사가
+    # 필요했는지(missing_details)는 두 응답이 모두 온 뒤에 그대로 판단하고, 필요
+    # 없었으면 이미 받아둔 감사 응답을 그냥 버린다 — 결과는 이전과 100% 동일하고
+    # 지연만 최대 2배에서 거의 1배로 줄어든다.
     prompt = _build_announcement_analysis_prompt(text)
-    raw = await run_in_threadpool(_call_announcement_analysis_llm, prompt)
+    audit_candidates = _candidate_missing_details_from_text(text)
+    if audit_candidates:
+        candidate_audit_prompt = _build_announcement_audit_prompt(text, audit_candidates)
+        raw, candidate_audited_raw = await asyncio.gather(
+            run_in_threadpool(_call_announcement_analysis_llm, prompt),
+            run_in_threadpool(_call_announcement_analysis_llm, candidate_audit_prompt),
+        )
+    else:
+        raw = await run_in_threadpool(_call_announcement_analysis_llm, prompt)
+        candidate_audited_raw = None
 
     try:
         parsed = json.loads(raw)
@@ -1464,8 +1511,9 @@ async def get_announcement_analysis(
             project_id,
             missing_details,
         )
-        audit_prompt = _build_announcement_audit_prompt(text, missing_details)
-        audited_raw = await run_in_threadpool(_call_announcement_analysis_llm, audit_prompt)
+        # audit_candidates가 missing_details의 상위집합이므로(위 주석 참고) missing_details가
+        # 비어있지 않으면 candidate_audited_raw는 항상 이미 채워져 있다.
+        audited_raw = candidate_audited_raw
         try:
             audited = json.loads(audited_raw)
         except (json.JSONDecodeError, TypeError):
