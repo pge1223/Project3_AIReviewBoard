@@ -60,6 +60,7 @@ from graph import (  # noqa: E402
     configure_ideation_trace,
     continue_ideation_expert_turn,
     finalize_ideation_conversation,
+    generate_application_form_draft,
     is_late_request_event,
     reset_trace_context,
     reply_ideation_conversation,
@@ -822,6 +823,9 @@ def _serialize_state(state: IdeationConvState) -> dict:
         "application_form_items": state.get("application_form_items", []),
         # 진행자 v02의 누적 신청서 초안. 구버전 세션은 빈 배열로 직렬화한다.
         "application_form_draft": state.get("application_form_draft", []),
+        # 가은/Claude(2026-07-27, 요청: "보완이 필요한 정보 섹션") — generate_application_form_draft가
+        # 본문에 넣지 못한 항목을 남긴 목록. 구버전 세션/미생성 상태는 빈 배열.
+        "application_form_supplement_notes": state.get("application_form_supplement_notes", []),
         "error": (
             {"code": "IDEATION_CONV_NODE_FAILED", "message": f"{state.get('failed_node')} 노드에서 실패했습니다."}
             if state["phase"] == "failed"
@@ -1631,6 +1635,51 @@ async def finalize_conversation(
         except Exception:
             logger.exception("[ideation-conversation] 최종 확정 실패 session_id=%s", session_id)
             raise HTTPException(status_code=502, detail="최종 확정 중 오류가 발생했습니다. 서버 로그를 확인하세요.")
+
+        _store.update(session_id, state)
+        await _persist_session_record(record)
+        return _serialize_state(state)
+    finally:
+        _store.release(session_id)
+
+
+@router.post("/{session_id}/form-draft")
+async def generate_form_draft(
+    session_id: str,
+    request: FinalizeRequest,
+    authorization: Optional[str] = Header(None, alias="authorization"),
+):
+    """가은/Claude(2026-07-27, 요청: "주제 확정하고 아래에 신청서 초안 버튼") — 주제가
+    확정된(phase="finalized") 세션에서, 사용자가 회의 중 선택한 신청양식 항목 중 아직
+    대화로 확정되지 않은 필드를 idea_proposal 근거로 채운다. /finalize와 동일한 요청 스키마
+    (FinalizeRequest — model 선택 필드만 있음)를 재사용한다."""
+    _require_preview_enabled()
+    user_email = get_current_user(authorization)
+    await _restore_session_record(session_id, user_email)
+    try:
+        record = _acquire_session_record_or_404(session_id)
+    except _SessionBusyError:
+        raise HTTPException(status_code=409, detail="이 세션은 이미 다른 요청을 처리하고 있습니다.")
+
+    try:
+        llm_call = _build_llm_call(session_id, _effective_model(request.model))
+
+        try:
+            state = await run_in_threadpool(
+                generate_application_form_draft,
+                previous_state=record.state,
+                llm_call=llm_call,
+            )
+        except ValueError as exc:
+            # phase != finalized, 또는 선택된 신청 양식 항목이 없음.
+            raise HTTPException(status_code=400, detail=str(exc))
+        except RuntimeError as exc:
+            # LLM이 두 번(최초 1회 + 재시도 1회) 모두 대상 필드를 채우지 못함 — 세션 자체는
+            # 계속 사용 가능해야 하므로 finalize와 달리 phase를 failed로 만들지 않는다.
+            raise HTTPException(status_code=502, detail=str(exc))
+        except Exception:
+            logger.exception("[ideation-conversation] 신청서 초안 생성 실패 session_id=%s", session_id)
+            raise HTTPException(status_code=502, detail="신청서 초안 생성 중 오류가 발생했습니다. 서버 로그를 확인하세요.")
 
         _store.update(session_id, state)
         await _persist_session_record(record)

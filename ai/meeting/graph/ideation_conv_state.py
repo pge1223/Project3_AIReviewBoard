@@ -299,6 +299,11 @@ class IdeationConvState(TypedDict):
     # 진행자 v02가 매 턴 draft_patch로 갱신하는 신청 양식 초안. 원본 양식 항목은 보존하고
     # 별도 상태로 관리하므로 구 프롬프트로 롤백해도 application_form_items 계약은 바뀌지 않는다.
     application_form_draft: list[dict]
+    # 가은/Claude(2026-07-27, 요청: "보완이 필요한 정보 섹션") — generate_application_form_draft()가
+    # 신청서 초안을 쓰면서 입력(idea_proposal/existing_draft)에 없어 본문에 넣지 못한 항목을
+    # 여기에 남긴다. 구버전 저장 state에는 이 키가 없을 수 있으므로 읽는 쪽은 항상
+    # `.get("application_form_supplement_notes", [])`로 접근한다(하위 호환).
+    application_form_supplement_notes: list[str]
     failed_node: str | None
     llm_calls_used: int
     # 용준/Claude(2026-07-20): 같은 쟁점(pending_question)으로 재질문한 횟수. 사용자가
@@ -550,6 +555,7 @@ def initial_conv_state(
         idea_canvas=None,
         application_form_items=application_form_items or [],
         application_form_draft=initialize_application_form_draft(application_form_items),
+        application_form_supplement_notes=[],
         failed_node=None,
         llm_calls_used=0,
         answer_retry_count=0,
@@ -617,21 +623,34 @@ def apply_user_answer(previous_state: IdeationConvState, answer_message: ConvMes
         next_phase = "developer_question"
     elif prev_phase == "awaiting_developer_answer":
         next_phase = "expert_discussion"
-    elif prev_phase in {"awaiting_user_decision", "discussion_complete"}:
+    elif prev_phase == "discussion_complete":
         # 요청 8번 "필요한 경우 추가 질문 라운드" — 시스템이 스스로 판단해 다음 라운드로
         # 넘어가는 경우(next_action="continue_round")와 별개로, 사용자가 확정 버튼을
         # 누르지 않고 자유롭게 한 마디 더 남기면 그 발언도 두 전문가의 보완 의견 대상이
         # 된다. round는 새로 늘리지 않는다 — 새 질문 사이클이 시작된 게 아니라 같은
         # 라운드의 대화가 이어지는 것이기 때문이다.
         next_phase = "expert_discussion"
+    elif prev_phase == "awaiting_user_decision":
+        # 2026-07-26 라운드테이블 재설계(진행자 주도 사이클): 이 phase는 진행자가 방금
+        # 선택지/질문을 던지고 사용자 결정을 기다리던 지점이다. 사용자가 답했다는 것은
+        # "이번 사이클의 사용자 참여"가 끝났다는 뜻이므로, 전문가를 다시 거치지 않고
+        # 곧장 진행자에게 돌려준다(전문가는 진행자가 질문을 던지기 전에만 개입한다는
+        # 목표 루프). phase 자체는 그래프 진입점 표(_ENTRY_NODES)와 맞추기 위해 여전히
+        # "expert_discussion"으로 두고, forced_next_speaker로 실제 목적지만 바꾼다 —
+        # ideation_conv_build.py::_route_entry의 _FORCED_SPEAKER_TO_NODE["facilitator"]가
+        # discussion_facilitator로 직접 진입시킨다.
+        next_phase = "expert_discussion"
     else:
         raise ValueError(f"사용자 답변을 받을 수 없는 phase입니다: {prev_phase!r}")
+
+    forced_next_speaker = "facilitator" if prev_phase == "awaiting_user_decision" else None
 
     return IdeationConvState(
         **{
             **previous_state,
             "messages": previous_state["messages"] + [answer_message],
             "phase": next_phase,
+            "forced_next_speaker": forced_next_speaker,
             "pending_question": None,
             "pending_expected_answer_type": None,
             "pending_question_topic": None,
