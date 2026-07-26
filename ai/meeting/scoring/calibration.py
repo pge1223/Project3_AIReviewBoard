@@ -432,11 +432,17 @@ def build_score_cap(
         )
 
     if _needs_method_evidence(criterion) and not _has_concrete_method(criterion_text, kind):
+        # 실현 가능성 축은 모델·알고리즘이 아니라 구현 실체(프로토타입·인프라·일정)를
+        # 검사하므로(_has_concrete_method), 사용자에게 보이는 사유도 축에 맞춰 표현한다.
         signals.append(
             {
                 "code": "S4",
                 "cap_ratio": Decimal("0.40"),
-                "reason": "구체적인 모델·알고리즘·절차·기술 방법이 명시되지 않음",
+                "reason": (
+                    "구현 계획의 실체(프로토타입·인프라·개발 일정 등 실행 방법)가 명시되지 않음"
+                    if kind == "feasibility"
+                    else "구체적인 모델·알고리즘·절차·기술 방법이 명시되지 않음"
+                ),
             }
         )
 
