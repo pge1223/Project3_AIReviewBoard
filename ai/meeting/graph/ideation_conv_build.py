@@ -119,10 +119,14 @@ def _route_after_candidate_planning(state: IdeationConvState) -> str:
 
 
 def _route_after_candidate_selection(state: IdeationConvState) -> str:
-    """후보 선택 결과와 신청 양식 유무에 따라 다음 노드를 고른다.
+    """후보 선택 결과에 따라 다음 노드를 고른다.
 
-    신청 양식이 있으면 진행자가 첫 문제 범위 선택지를 제시하고, 없으면 기존 전문가
-    라운드테이블로 진입한다. 재추천 요청은 후보 생성으로 돌아가며 나머지는 입력을 기다린다.
+    2026-07-26 라운드테이블 재설계: 신청 양식 유무와 무관하게 후보 선택 직후에는 항상
+    진행자가 먼저 선택 후보를 요약하고 문제정의를 확인하는 고정 1턴을 연다(목표 루프의
+    "고정 1턴" 요건) — "to_form_coach"/"to_refinement" 두 키 모두 discussion_facilitator로
+    간다(아래 엣지 매핑 참고). 신청 양식 유무는 이후 discussion_facilitator 내부에서
+    (필드 채우기로 전환할지) 판단할 뿐, 진입 노드 자체를 가르지 않는다. 재추천 요청은
+    후보 생성으로 돌아가며 나머지는 입력을 기다린다.
     """
     phase = state.get("phase")
     if phase == "failed":
@@ -283,11 +287,10 @@ def assemble_ideation_conversation_graph(
         "candidate_selection",
         _route_after_candidate_selection,
         {
-            # 신청 양식이 있으면 전문가 토론 전에 진행자가 첫 문제 범위 선택지를 제시한다.
+            # 신청 양식 유무와 무관하게 후보 확정 직후에는 항상 진행자가 먼저 선택 후보를
+            # 요약하고 문제정의를 확인한다(목표 루프의 고정 1턴) — 두 키 모두 같은 목적지.
             "to_form_coach": "discussion_facilitator",
-            # 신청 양식이 없는 기존 세션은 후보 확정 직후 라운드테이블로 바로 들어간다.
-            # 안내 메시지는 ideation_conv_discovery.py에서 미리 붙인다.
-            "to_refinement": "planning_expert_discussion",
+            "to_refinement": "discussion_facilitator",
             "regenerate": "candidate_planning",
             "await_selection": END,
             "failed": END,
