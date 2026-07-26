@@ -944,6 +944,9 @@ function buildVersionsFromHistory(versions) {
     submitted_at: v.submitted_at,
     total_score: v.total_score ?? 0,
     max_total: v.max_score ?? 100, // 측정 가능 항목 배점 합(주관 항목 제외 시 100 미만)
+    // 버전별 AI 피드백 스냅샷(오탈자·맥락·분량밀도) — 그 버전 문서를 검사한 기록.
+    // 없으면 null(스냅샷 도입 전 회의) → 렌더에서 정직하게 "기록 없음" 처리.
+    ai_feedback: v.ai_feedback || null,
     criteria: (v.criteria || []).map((c) => {
       const newSet = new Set(c.new_issues || [])
       const issues = c.issues || []
@@ -1016,8 +1019,10 @@ const AI_FEEDBACK = {
 function FormatSummary({ format }) {
   if (!format) return null
   const hasReq = format.required_min != null || format.required_max != null
+  // 표기: "20p / 30p"(단일 기준), "20p / 10~30p"(범위), 기준을 못 찾으면 "20p / 기준 없음"
+  // ("기준 기준 없음" 중복 표기 버그 수정, 경이 2026-07-26)
   const req = !hasReq ? '기준 없음'
-    : format.required_min === format.required_max ? `${format.required_min}p`
+    : format.required_min === format.required_max ? `${format.required_max}p`
     : `${format.required_min ?? ''}~${format.required_max ?? ''}p`
   const cov = format.overall_coverage != null ? Math.round(format.overall_coverage * 100) : null
   const pageOk = format.page_verdict == null || format.page_verdict === '충족'
@@ -1044,7 +1049,7 @@ function FormatSummary({ format }) {
       </div>
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
         <Metric label="분량 (페이지 수)" ok={pageOk} verdict={format.page_verdict || '기준 없음'}
-          big={`${format.actual_pages ?? '?'}p / 기준 ${req}`} msg={format.page_message} />
+          big={`${format.actual_pages ?? '?'}p / ${req}`} msg={format.page_message} />
         <Metric label="밀도 (채움률)" ok={densOk} verdict={format.overall_verdict || '기준 없음'}
           big={cov != null ? `${cov}%` : '—'} msg={format.density_message} />
       </div>
@@ -1052,11 +1057,44 @@ function FormatSummary({ format }) {
   )
 }
 
-function AiFeedbackPanel({ findings, format }) {
+// AI 피드백 안내 탭 — '중요한 정보'(기본 접힘): 채움률만 보고 글자로만 채우는 오해를 막는
+// 실무 팁(경이 요청 2026-07-26). 클릭하면 펼쳐진다.
+function ImportantInfoTab() {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="card glass" style={{ marginBottom: 14, padding: '4px 20px' }}>
+      <button type="button" onClick={() => setOpen((v) => !v)}
+        style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 8, background: 'none', border: 'none', cursor: 'pointer', padding: '13px 0', textAlign: 'left' }}>
+        <AlertTriangle size={15} style={{ color: '#b8830b', flexShrink: 0 }} />
+        <span style={{ fontSize: 13.5, fontWeight: 800, color: '#1c1a2e', flex: 1 }}>중요한 정보</span>
+        <ChevronDown size={15} style={{ flexShrink: 0, color: '#918d9f', transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.18s ease' }} />
+      </button>
+      {open && (
+        <div className="vt-fade" style={{ padding: '0 0 13px', fontSize: 13, lineHeight: 1.7, color: '#1c1a2e' }}>
+          글씨만 가득 채우기보다 <b>대시보드(도표, 시각화 자료 등)</b> 관련 자료들도 넣어야 <b>서류 심사에 통과합니다.</b>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function AiFeedbackPanel({ findings, format, missingVersion }) {
   const list = findings || []
+  // 스냅샷 없는 옛 버전 — 최신 문서 검사 결과를 대신 보여주면 그 버전의 기록인 것처럼
+  // 오해되므로(오귀속), 기록이 없다는 사실을 그대로 알린다.
+  if (missingVersion) {
+    return (
+      <div className="card glass" style={{ padding: '22px 24px', textAlign: 'center', color: '#918d9f', fontSize: 13, lineHeight: 1.7 }}>
+        <b style={{ color: '#5b5770' }}>{missingVersion} 제출 시점의 AI 피드백 기록이 없습니다.</b><br />
+        버전별 검사 기록(분량·밀도·오탈자·맥락) 저장은 이후 제출되는 수정본부터 적용됩니다 —
+        다른 버전의 검사 결과를 이 버전의 것처럼 보여주지 않습니다.
+      </div>
+    )
+  }
   return (
     <>
       <FormatSummary format={format} />
+      <ImportantInfoTab />
       <div className="card glass" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', borderLeft: '4px solid #16a37a', marginBottom: 16, padding: '16px 20px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <span style={{ width: 42, height: 42, borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(22,163,122,0.12)', color: '#16a37a' }}>
@@ -1635,8 +1673,24 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
           })}
         </div>
 
-        {/* AI 피드백 탭: 점수 영역 대신 오탈자·문자서식 검사 결과 */}
-        {committee === 'ai_feedback' && <AiFeedbackPanel findings={aiFindings} format={formatCheck} />}
+        {/* AI 피드백 탭: 점수 영역 대신 오탈자·맥락·분량밀도 — **선택한 버전의** 검사 기록을
+            보여준다(경이 요청 2026-07-26). 그 버전 회의에 저장된 스냅샷 우선, 최신 버전은
+            라이브 검사로 폴백, 스냅샷 없는 옛 버전은 최신 데이터를 대신 보여주지 않고(오귀속)
+            정직하게 기록 없음을 알린다. */}
+        {committee === 'ai_feedback' && (() => {
+          const snap = selected.ai_feedback
+          if (snap) {
+            const snapFindings = [
+              ...((snap.typo?.findings) || []).map((f) => ({ ...f, kind: 'typo' })),
+              ...((snap.context?.findings) || []).map((f) => ({ ...f, kind: 'context' })),
+            ]
+            return <AiFeedbackPanel findings={snapFindings} format={snap.format || null} />
+          }
+          if (selectedIndex === ALL.length - 1) {
+            return <AiFeedbackPanel findings={aiFindings} format={formatCheck} />
+          }
+          return <AiFeedbackPanel missingVersion={selected.version} />
+        })()}
 
         {committee !== 'ai_feedback' && (<>
         {/* 위원 소계 요약 */}

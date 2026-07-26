@@ -138,6 +138,9 @@ def build_version_history(documents: list[dict[str, Any]]) -> list[dict[str, Any
                 "total_score": sr.get("total_score", 0),
                 "max_score": sr.get("max_score", 100),
                 "criteria": criteria,
+                # 버전별 AI 피드백 스냅샷(오탈자·맥락·분량밀도) — workbench 검사가 회의에
+                # 저장한 것(경이 2026-07-26). 없으면 None(스냅샷 도입 전 회의).
+                "ai_feedback": doc.get("ai_feedback"),
             }
         )
         prev_issues = issues

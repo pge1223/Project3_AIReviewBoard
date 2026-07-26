@@ -38,13 +38,35 @@ from ai.rag.converters.exceptions import DocumentConversionError
 from ai.rag.converters.preview_pdf_converter import convert_to_preview_pdf
 from ai.rag.parsers import extract_document
 from ai.rag.parsers.schemas import BlockType
+from ai.meeting.graph.rubric import combine_criteria_documents
 from app.api.routes.documents import get_current_user, verify_project_owner, _get_indexing_service
 from app.config import settings
 from app.repositories.document_repository import DocumentRepository
+from app.repositories.meeting_repository import MeetingRepository
 
 router = APIRouter(prefix="/workbench", tags=["workbench"])
 document_repo = DocumentRepository()
+meeting_repo = MeetingRepository()
 logger = logging.getLogger(__name__)
+
+
+# 경이/Claude(2026-07-26): 버전별 AI 피드백 보존용 스냅샷.
+# 수정본 업로드가 이전 target 문서를 지우기 때문에, 검사 결과(오탈자·맥락·분량밀도)를
+# "그 문서를 분석한 회의(=버전)"에도 남겨야 이전 버전들의 AI 피드백을 버전별로 보여줄 수
+# 있다(종합 리포트 v1.0/v1.1… 탭). 최신 회의의 document_id와 지금 검사한 target이 일치할
+# 때만 저장한다 — 새 수정본 업로드 후 재분석 전이면 이 검사는 아직 어떤 버전의 것도 아니다.
+async def _snapshot_ai_feedback(project_id: str, target_document_id, key: str, payload: dict) -> None:
+    try:
+        meeting = await meeting_repo.find_latest_by_project_id(project_id)
+        if not meeting:
+            return
+        if str(meeting.get("document_id")) != str(target_document_id):
+            return
+        await meeting_repo.update_result_by_id(meeting["_id"], {f"ai_feedback.{key}": payload})
+    except Exception:
+        logger.exception(
+            "[ai-feedback-snapshot] 저장 실패(무시하고 진행) project_id=%s key=%s", project_id, key
+        )
 
 
 class ChunkLookup(BaseModel):
@@ -341,13 +363,16 @@ async def get_typo_check(
     cached = document.get("typo_check_cache")
     if cached:
         logger.info("[typo-check] document_id=%s 캐시된 결과 재사용", document["_id"])
+        await _snapshot_ai_feedback(project_id, document["_id"], "typo", cached)
         return TypoCheckResponse(**cached)
 
     document_id = document["_id"]
     file_path = document.get("file_path")
 
     async def _cache_and_return(response: TypoCheckResponse) -> TypoCheckResponse:
-        await document_repo.update_fields(document_id, {"typo_check_cache": response.model_dump()})
+        payload = response.model_dump()
+        await document_repo.update_fields(document_id, {"typo_check_cache": payload})
+        await _snapshot_ai_feedback(project_id, document_id, "typo", payload)
         return response
 
     if not file_path or not os.path.exists(file_path):
@@ -465,13 +490,16 @@ async def get_context_check(
     cached = document.get("context_check_cache")
     if cached:
         logger.info("[context-check] document_id=%s 캐시된 결과 재사용", document["_id"])
+        await _snapshot_ai_feedback(project_id, document["_id"], "context", cached)
         return ContextCheckResponse(**cached)
 
     document_id = document["_id"]
     file_path = document.get("file_path")
 
     async def _cache_and_return(response: ContextCheckResponse) -> ContextCheckResponse:
-        await document_repo.update_fields(document_id, {"context_check_cache": response.model_dump()})
+        payload = response.model_dump()
+        await document_repo.update_fields(document_id, {"context_check_cache": payload})
+        await _snapshot_ai_feedback(project_id, document_id, "context", payload)
         return response
 
     if not file_path or not os.path.exists(file_path):
@@ -601,10 +629,22 @@ class FormatCheckResponse(BaseModel):
     density_message: Optional[str] = None
 
 
-async def _find_criteria_document(project_id: str) -> Optional[dict]:
+async def _combined_criteria_text(project_id: str) -> tuple[str, str]:
+    """분량 기준 추출용 — 모든 공고 자료(criteria)의 본문을 합쳐 반환한다.
+
+    경이/Claude(2026-07-26): 이전엔 첫 criteria 문서(대개 공고문)만 봤는데, 실제 분량
+    기준이 붙임 서식("수행보고서는 최대 30p 이내" 등)에만 있는 공모전에서 기준을 놓쳐
+    "기준 없음"으로 나왔다(NIA 실증·PoC 실측). rubric 추출과 같은 combine_criteria_documents
+    (문서별 균등 예산)로 전 공고 자료를 합쳐 어느 파일에 있든 찾도록 한다."""
     documents = await document_repo.find_by_project_id(project_id)
     criteria = [d for d in documents if d.get("document_role") == "criteria" and d.get("parsed_text")]
-    return criteria[0] if criteria else None
+    if not criteria:
+        return "", ""
+    combined, _ids = combine_criteria_documents(criteria, max_chars=_PAGE_REQ_MAX_CHARS)
+    names = ", ".join(
+        (d.get("original_filename") or d.get("source_url") or str(d.get("_id"))) for d in criteria
+    )
+    return combined, names
 
 
 def _build_page_req_prompt(criteria_text: str) -> str:
@@ -612,8 +652,10 @@ def _build_page_req_prompt(criteria_text: str) -> str:
 (페이지 수)"만 정확히 찾아내는 도우미입니다.
 
 규칙:
-- 제출 본문(사업계획서/기획서/제안서/응모원고)의 페이지·쪽·매 기준만 찾으세요.
-- 별첨·첨부·참고자료·다른 서류(동의서, 서약서, 매뉴얼 등)의 분량은 무시하세요.
+- 제출 본문(사업계획서/기획서/제안서/응모원고/수행보고서 등 평가 대상 문서)의 페이지·쪽·매
+  기준만 찾으세요. 참가 신청 서식(붙임)에 적힌 본문 분량 규정("수행보고서는 최대 30p 이내" 등)도
+  제출 본문 기준이므로 포함하세요.
+- 그 외 서류(동의서, 서약서, 매뉴얼, 증빙자료 등) 자체의 분량은 무시하세요.
 - "A4 10~30매"처럼 범위면 min과 max를 모두, "15페이지 이내"처럼 단일이면 min·max를 같은
   값으로 채우세요.
 - 분량 기준이 명시돼 있지 않으면 min·max를 모두 null로 두세요. 절대 추측하지 마세요.
@@ -723,30 +765,33 @@ async def get_format_check(
     if target is None:
         return FormatCheckResponse()
 
-    cached = target.get("format_check_cache")
+    # 캐시 키를 v2로 올림(경이/Claude 2026-07-26): 분량 기준 추출을 "첫 공고 문서만"에서
+    # "모든 공고 자료 합본"으로 바꿔서, 기준 없음으로 굳은 옛 캐시를 무효화하고 재계산한다.
+    cached = target.get("format_check_cache_v2")
     if cached:
         logger.info("[format-check] document_id=%s 캐시된 결과 재사용", target["_id"])
+        await _snapshot_ai_feedback(project_id, target["_id"], "format", cached)
         return FormatCheckResponse(**cached)
 
     document_id = target["_id"]
 
     async def _cache_and_return(response: FormatCheckResponse) -> FormatCheckResponse:
-        await document_repo.update_fields(document_id, {"format_check_cache": response.model_dump()})
+        payload = response.model_dump()
+        await document_repo.update_fields(document_id, {"format_check_cache_v2": payload})
+        await _snapshot_ai_feedback(project_id, document_id, "format", payload)
         return response
 
-    # (1) 공고문에서 요구 페이지 수 (LLM 추출이라 스레드풀에서 호출)
-    criteria = await _find_criteria_document(project_id)
+    # (1) 공고 자료(공고문+붙임 전부)에서 요구 페이지 수 (LLM 추출이라 스레드풀에서 호출)
+    criteria_text, criteria_names = await _combined_criteria_text(project_id)
     logger.info(
-        "[format-check] document_id=%s 공고문(criteria) 문서=%s(%s) 참고해 요구 분량 LLM 추출 시작 "
-        "(원문 앞 %d자만 프롬프트에 사용)",
-        document_id, criteria.get("_id") if criteria else "없음",
-        (criteria.get("original_filename") or criteria.get("source_url") or "") if criteria else "요구 분량 판정 생략",
-        _PAGE_REQ_MAX_CHARS,
+        "[format-check] document_id=%s 공고 자료(%s) 합본을 참고해 요구 분량 LLM 추출 시작 "
+        "(합본 앞 %d자만 프롬프트에 사용)",
+        document_id, criteria_names or "없음 — 요구 분량 판정 생략", _PAGE_REQ_MAX_CHARS,
     )
     _page_req_start = time.monotonic()
     page_req = (
-        await run_in_threadpool(_extract_required_pages, criteria["parsed_text"])
-        if criteria else PageRequirement()
+        await run_in_threadpool(_extract_required_pages, criteria_text)
+        if criteria_text else PageRequirement()
     )
     logger.info(
         "[format-check] document_id=%s 요구 분량 추출 완료(%dms): min=%s max=%s 근거=\"%s\"",
