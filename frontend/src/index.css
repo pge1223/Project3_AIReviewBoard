@@ -2,13 +2,41 @@
   box-sizing: border-box;
 }
 
+html {
+  font-family: 'Pretendard Variable', Pretendard, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Malgun Gothic', sans-serif;
+  font-synthesis: none;
+}
+
 body {
   margin: 0;
-  font-family: -apple-system, 'Pretendard', 'Malgun Gothic', sans-serif;
+  font-family: inherit;
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 1.7;
+  letter-spacing: -0.01em;
   background: #eaf3fb;
   color: #17324a;
 }
 
-button {
+button,
+input,
+textarea,
+select {
   font-family: inherit;
+  font-weight: inherit;
+  letter-spacing: -0.005em;
+}
+
+button {
+  font-weight: 600;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  line-height: 1.3;
+  letter-spacing: -0.02em;
 }

@@ -22,12 +22,12 @@
     radial-gradient(800px 500px at 50% 110%, rgba(224, 96, 61, 0.06), transparent 55%),
     var(--bg-0);
   color: var(--text-0);
-  font-family: 'Pretendard', -apple-system, sans-serif;
+  font-family: 'Pretendard Variable', Pretendard, -apple-system, sans-serif;
 }
 
 .vt-root .glass { background: var(--glass); border: 1px solid var(--glass-border); backdrop-filter: blur(14px); box-shadow: 0 2px 14px rgba(28, 26, 46, 0.05); }
 .vt-root .mono { font-family: var(--mono); letter-spacing: 0.02em; }
-.vt-root .badge { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; padding: 3px 9px; border-radius: 99px; font-family: var(--mono); }
+.vt-root .badge { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; padding: 3px 9px; border-radius: 99px; font-family: inherit; letter-spacing: -0.005em; }
 .vt-root .badge.purple { background: var(--purple-dim); color: var(--purple); }
 .vt-root .badge.coral { background: var(--coral-dim); color: var(--coral); }
 .vt-root .badge.green { background: var(--green-dim); color: var(--green); }

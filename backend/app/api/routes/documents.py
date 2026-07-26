@@ -95,6 +95,7 @@ _indexing_service: RAGIndexingService | None = None
 # 로딩 비용 큼)가 여러 번 생성되는 TOCTOU 레이스가 생긴다. 방어적으로 락을 건다
 # (락 경합은 최초 1회 초기화 이후엔 없음 — 매 요청마다 비용 없음).
 _indexing_service_lock = threading.Lock()
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
 
 
 def _canonical_chroma_persist_dir() -> str:
@@ -106,7 +107,15 @@ def _canonical_chroma_persist_dir() -> str:
     중 발견 — Windows는 SQLite 파일 잠금이 POSIX와 달리 mandatory라, 서로 모르는 두
     엔진이 같은 물리 파일에 동시 접근하면 즉시 에러 대신 무기한 대기로 이어질 수 있다).
     이 함수로 절대경로로 정규화해 항상 같은 identifier를 쓰도록 강제한다."""
-    return str(Path(settings.CHROMA_PERSIST_DIR).resolve())
+    configured_path = Path(settings.CHROMA_PERSIST_DIR).expanduser()
+    if not configured_path.is_absolute():
+        # The backend is normally launched with ``backend/`` as its working
+        # directory, while scripts and tests commonly run from the repository
+        # root. Resolving a relative setting against CWD therefore creates two
+        # different Chroma databases (``backend/chroma_db`` and
+        # ``chroma_db``). Keep one stable location regardless of launch CWD.
+        configured_path = _REPOSITORY_ROOT / configured_path
+    return str(configured_path.resolve())
 
 
 def _get_indexing_service() -> RAGIndexingService:
