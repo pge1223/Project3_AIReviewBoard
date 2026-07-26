@@ -1860,7 +1860,7 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
         <div key={`body-${animKey}-${statusFilter}`} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           {visibleItems.length === 0 && (
             <div className="card glass" style={{ padding: 18, textAlign: 'center', color: '#918d9f', fontSize: 13 }}>
-              이 필터에 해당하는 지적이 없습니다.
+              이 필터에 해당하는 {statusFilter === 'resolved' ? '해결' : '지적'}이 없습니다.
             </div>
           )}
           {visibleItems.map((c, i) => {
