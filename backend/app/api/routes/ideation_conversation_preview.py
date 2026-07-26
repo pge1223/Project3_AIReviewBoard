@@ -820,6 +820,8 @@ def _serialize_state(state: IdeationConvState) -> dict:
         # 가은/Claude(2026-07-22, 요청: 신청양식 항목 약한 주입): 순수 추가 필드 — 세션
         # 시작 시 넘긴 항목을 그대로 노출한다(디버깅/향후 화면 표시용, 세션 중 바뀌지 않음).
         "application_form_items": state.get("application_form_items", []),
+        # 진행자 v02의 누적 신청서 초안. 구버전 세션은 빈 배열로 직렬화한다.
+        "application_form_draft": state.get("application_form_draft", []),
         "error": (
             {"code": "IDEATION_CONV_NODE_FAILED", "message": f"{state.get('failed_node')} 노드에서 실패했습니다."}
             if state["phase"] == "failed"

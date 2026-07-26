@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 from datetime import date
 import json
 import logging
@@ -9,6 +10,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import APIRouter, File, Form, Header, HTTPException, UploadFile, status
 from starlette.concurrency import run_in_threadpool
@@ -58,7 +60,9 @@ from app.repositories.project_repository import ProjectRepository
 from app.repositories.contest_work_repository import ContestWorkRepository
 from app.config import settings
 from app.models.document import DocumentModel
+from app.models.notice_cache import NoticeAnalysisCacheModel
 from app.repositories.document_repository import DocumentRepository
+from app.repositories.notice_cache_repository import NoticeAnalysisCacheRepository
 from app.schemas.document import (
     AnnouncementAnalysisResponse,
     AnnouncementEvidence,
@@ -81,6 +85,7 @@ router = APIRouter(prefix="/documents", tags=["documents"])
 document_repo = DocumentRepository()
 project_repo = ProjectRepository()
 contest_work_repo = ContestWorkRepository()
+notice_cache_repo = NoticeAnalysisCacheRepository()
 
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -248,6 +253,7 @@ async def _index_webpage_background(
     url: str,
     title: str,
     cleaned: CleanedWebContent,
+    parsed_text: str = "",
 ) -> None:
     """색인을 백그라운드로 돌리고 끝나면 documents 컬렉션의 status를 patch한다
     (meetings.py의 _synthesize_chair_background()와 동일 패턴). asyncio.wait_for로
@@ -256,12 +262,13 @@ async def _index_webpage_background(
     포기하고 실패로 기록"까지만 보장한다(요청/폴링 쪽을 무한 대기에서 풀어주는 게 목적)."""
     _index_started = time.time()
     logger.info("[fetch-url] 색인(백그라운드) 시작 document_id=%s url=%s", document_id, url)
+    patch: dict = {}
     try:
         stored_count = await asyncio.wait_for(
             run_in_threadpool(_chunk_and_index_webpage, document_id, project_id, url, title, cleaned),
             timeout=_WEBPAGE_INDEXING_TIMEOUT_SECONDS,
         )
-        status_value = "indexed" if stored_count > 0 else "indexed_empty"
+        patch["status"] = "indexed" if stored_count > 0 else "indexed_empty"
         logger.info(
             "[fetch-url] === 색인(백그라운드) 완료 === document_id=%s elapsed=%.1fs stored_count=%d",
             document_id,
@@ -275,23 +282,23 @@ async def _index_webpage_background(
             _WEBPAGE_INDEXING_TIMEOUT_SECONDS,
             time.time() - _index_started,
         )
-        status_value = "indexing_timeout"
+        patch["status"] = "indexing_timeout"
+        patch["indexing_error"] = None
     except Exception as exc:
         logger.exception(
             "[fetch-url] 색인(백그라운드) 실패: document_id=%s elapsed=%.1fs",
             document_id,
             time.time() - _index_started,
         )
-        status_value = "indexing_failed"
-        await document_repo.update_fields(
-            document_id,
-            {"status": status_value, "indexing_error": _safe_indexing_error(exc)},
-        )
-        return
-    await document_repo.update_fields(
-        document_id,
-        {"status": status_value, "indexing_error": None},
-    )
+        patch["status"] = "indexing_failed"
+        patch["indexing_error"] = _safe_indexing_error(exc)
+    else:
+        patch["indexing_error"] = None
+
+    # fetch-url 문서는 항상 criteria 문서이므로, 색인 성패와 무관하게 성격 분류를
+    # 시도한다. 분류 실패는 None으로 남을 뿐 색인 상태를 덮어쓰지 않는다.
+    patch["document_type"] = await run_in_threadpool(_classify_criteria_document, parsed_text)
+    await document_repo.update_fields(document_id, patch)
 
 
 async def _refetch_and_index_webpage_background(
@@ -390,15 +397,18 @@ async def _index_file_background(
             run_in_threadpool(_parse_chunk_and_index, document_id, project_id, file_path, filename, document_role),
             timeout=_FILE_INDEXING_TIMEOUT_SECONDS,
         )
-        await document_repo.update_fields(
-            document_id,
-            {
-                "status": "indexed" if stored_count > 0 else "indexed_empty",
-                "parsed_text": parsed_text,
-                "conversion_metadata": conversion_metadata,
-                "indexing_error": None,
-            },
-        )
+        patch = {
+            "status": "indexed" if stored_count > 0 else "indexed_empty",
+            "parsed_text": parsed_text,
+            "conversion_metadata": conversion_metadata,
+            "indexing_error": None,
+        }
+        # 가은/Claude(2026-07-23): document_role="criteria" 문서만 성격 분류(공고문/
+        # 평가기준/신청서양식/기타)를 매긴다 — target(기획서)은 분류 대상이 아니다.
+        # 실패해도 document_type=None으로 남을 뿐 색인 완료 자체는 막지 않는다.
+        if document_role == "criteria":
+            patch["document_type"] = await run_in_threadpool(_classify_criteria_document, parsed_text)
+        await document_repo.update_fields(document_id, patch)
         logger.info(
             "[upload] === 색인(백그라운드) 완료 === document_id=%s elapsed=%.1fs stored_count=%d",
             document_id,
@@ -570,6 +580,7 @@ async def fetch_url(
                     url=request.url,
                     title=title,
                     cleaned=cleaned,
+                    parsed_text=merged_page_content.text,
                 )
             )
 
@@ -990,6 +1001,11 @@ _ANNOUNCEMENT_TRUNCATE_CHARS = 16000
 # 버전을 올려 강제로 재계산한다.
 _ANNOUNCEMENT_ANALYSIS_CACHE_VERSION = 6
 
+# 가은/Claude(2026-07-23): application-form-analysis는 지금까지 버전 필드 없이
+# "cached가 있으면 무조건 재사용"이었다 — 프롬프트가 바뀌어도 기존 프로젝트 캐시가
+# 영원히 재계산 안 되는 버그였다. announcement와 동일한 패턴으로 맞춘다.
+_APPLICATION_FORM_ANALYSIS_CACHE_VERSION = 1
+
 # 가은/Claude(2026-07-21): scripts/classify_contest_works.py가 contest_works 문서에
 # 붙인 category와 같은 8개 taxonomy — 이 공고문을 같은 기준으로 분류해야 contest_works를
 # category로 매칭 조회할 수 있다. 두 목록은 반드시 동일하게 유지할 것(한쪽만 바꾸면
@@ -1000,12 +1016,22 @@ _CONTEST_CATEGORIES = [
 ]
 
 
-async def _load_criteria_documents_text(project_id: str) -> tuple[str, list[str]]:
+# 가은/Claude(2026-07-23, 요청: document_type으로 공고문/신청서양식 텍스트 분리) —
+# document_types를 주면 그 성격의 문서만 골라 텍스트를 조합한다. document_type이 아직
+# 없는(None, 미분류) 문서는 항상 포함한다 — 분류 이전에 올라온 기존 문서나 분류 자체가
+# 실패한 문서까지 어느 쪽에서도 안 읽히는 사고를 막기 위한 안전한 기본값이다(예전엔 모든
+# criteria 문서를 항상 다 같이 읽었으므로, 미분류를 양쪽 다 포함하는 게 기존 동작과
+# 가장 가까운 하위호환이다).
+async def _load_criteria_documents_text(
+    project_id: str, *, document_types: Optional[set[str]] = None
+) -> tuple[str, list[str], list[dict]]:
     documents = await document_repo.find_by_project_id(project_id)
     criteria_docs = [
         d
         for d in documents
-        if d.get("document_role", "target") == "criteria" and d.get("parsed_text")
+        if d.get("document_role", "target") == "criteria"
+        and d.get("parsed_text")
+        and (document_types is None or d.get("document_type") in document_types or d.get("document_type") is None)
     ]
     # URL 본문과 첨부 PDF를 함께 넣을 때 출처 경계가 없으면 LLM이 짧은 URL 요약만
     # 대표 공고로 오인해 PDF 표/부록을 건너뛸 수 있다. 각 원문에 이름을 붙여 서로
@@ -1016,7 +1042,44 @@ async def _load_criteria_documents_text(project_id: str) -> tuple[str, list[str]
     ]
     combined = "\n\n---\n\n".join(sections)
     names = [d.get("original_filename") or "이름 없음" for d in criteria_docs]
-    return combined, names
+    return combined, names, criteria_docs
+
+
+# 가은/Claude(2026-07-23, 요청: 공고문 분석 결과 프로젝트 간 재사용) — 같은 공고문을
+# 식별하는 키. URL 문서는 정규화한 URL, 업로드 파일은 파일 내용의 sha256 해시를 쓴다.
+# 계정·프로젝트와 무관하게 전역으로 같은 값이 나와야 캐시가 맞물린다.
+def _normalize_url(url: str) -> str:
+    """데이터 손실 없는 안전한 정규화만 한다 — 스킴/호스트 소문자화, fragment 제거,
+    쿼리 없을 때만 trailing slash 제거. 쿼리스트링은 같은 경로 안에서 서로 다른 게시물을
+    구분하는 실제 식별자인 경우가 많아(예: ?id=1234) 절대 건드리지 않는다 — 잘못 정규화해
+    쿼리를 지우면 완전히 다른 공고를 같은 캐시로 잘못 인식할 수 있다."""
+    parsed = urlsplit(url.strip())
+    path = parsed.path if parsed.query else (parsed.path.rstrip("/") or "/")
+    return urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), path, parsed.query, ""))
+
+
+def _cache_key_for_document(doc: dict) -> Optional[str]:
+    """문서 하나에서 전역 공고문 캐시 키를 뽑는다. URL 문서(fetch-url)는 stored_filename에
+    원본 URL이 그대로 저장돼 있고(documents.py의 fetch_url 참고), 업로드 파일은 file_path의
+    실제 파일 바이트를 해시한다. 키를 만들 수 없으면(파일이 이미 지워졌거나 등) None."""
+    if doc.get("source_type") == "url":
+        url = doc.get("stored_filename") or doc.get("file_path")
+        return f"url:{_normalize_url(url)}" if url else None
+    file_path = doc.get("file_path")
+    if not file_path or not os.path.exists(file_path):
+        return None
+    with open(file_path, "rb") as f:
+        digest = hashlib.sha256(f.read()).hexdigest()
+    return f"file:{digest}"
+
+
+def _cache_keys_for_documents(docs: list[dict]) -> list[str]:
+    keys = []
+    for doc in docs:
+        key = _cache_key_for_document(doc)
+        if key and key not in keys:
+            keys.append(key)
+    return keys
 
 
 # 가은/Claude(2026-07-22, 요청: "공모전 공고·평가기준·신청서 양식을 같은 업로드 영역으로
@@ -1090,6 +1153,10 @@ announcement_title은 이 공고의 정식 명칭(공모전/지원사업 이름)
 같습니다. 원문에 그 항목 옆에 숫자(점수)가 실제로 적혀 있을 때만 그 숫자를 그대로
 붙이세요.
 
+application_start_date에는 접수 시작일(공고 게시일이 아니라 신청서 접수를 시작하는
+날짜)을 담으세요 — 원문에 명시된 날짜가 없으면 "미공개"로 두세요(마감일로 대신 채우거나
+게시일로 추측하지 마세요).
+
 submission_requirements에는 제출 서류·제출 방법을, application_review_conditions에는
 신청 부문 선택·심사위원의 분야 변경·참여도에 따른 시상 수 변경 같은 신청/심사 운영
 조건을 담으세요. disqualification_rules에는 수상 취소·결격 조건을 하나씩 분리해 담으세요.
@@ -1117,6 +1184,7 @@ category는 아래 8개 중 이 공모전/지원사업과 가장 가까운 것 �
   "category": "...",
   "official_facts": {{
     "eligibility": ["..."],
+    "application_start_date": "...",
     "deadline": "...",
     "submission_requirements": ["..."],
     "evaluation_criteria": ["..."],
@@ -1166,6 +1234,46 @@ def _call_announcement_analysis_llm(prompt: str) -> str:
         temperature=0,
     )
     return resp.choices[0].message.content
+
+
+# 가은/Claude(2026-07-23, 요청: document_role="criteria" 안에서 공고문/평가기준/신청서양식을
+# 구분) — 문서 하나당 성격 하나만 고르는 가벼운 분류. announcement-analysis처럼 여러 필드를
+# 뽑는 게 아니라 필드 하나뿐이라 별도 함수로 분리한다. 실패해도 색인 자체를 막지 않는다
+# (document_type=None으로 남고, 텍스트 조합 시 미분류로 취급).
+_DOCUMENT_TYPES = {"공고문", "평가기준", "신청서양식", "기타"}
+_DOCUMENT_TYPE_TRUNCATE_CHARS = 6000
+
+
+def _build_document_type_prompt(text: str) -> str:
+    truncated = text[:_DOCUMENT_TYPE_TRUNCATE_CHARS]
+    return f"""당신은 공모전·지원사업 관련 문서 한 건을 분류하는 보조입니다. 아래 문서 원문을
+보고 다음 4가지 중 이 문서 성격에 가장 가까운 것 하나를 고르세요:
+- "공고문": 목적·일정·참가자격·평가기준·시상내역을 안내하는 모집요강/공고
+- "평가기준": 심사 기준·배점표가 공고문과 별도 문서로 정리된 경우
+- "신청서양식": 지원자가 실제로 작성해서 제출하는 빈 기입란이 있는 신청서/제안서 양식
+- "기타": 위 3가지에 해당하지 않음
+
+한 문서가 여러 성격을 섞어 담고 있으면(예: 공고문 뒤에 신청서 양식이 첨부됨) 문서의
+주된 목적 하나만 고르세요. 확신이 안 서면 "기타"를 고르세요(지어내지 마세요).
+
+[문서 원문]
+{truncated}
+
+다음 JSON 형식으로만 응답하세요:
+{{"document_type": "공고문 | 평가기준 | 신청서양식 | 기타"}}"""
+
+
+def _classify_criteria_document(text: str) -> Optional[str]:
+    if not text.strip():
+        return None
+    try:
+        raw = _call_announcement_analysis_llm(_build_document_type_prompt(text))
+        parsed = json.loads(raw)
+        value = parsed.get("document_type") if isinstance(parsed, dict) else None
+        return value if value in _DOCUMENT_TYPES else None
+    except Exception:
+        logger.exception("[document-type] 문서 분류 실패 — document_type=None(미분류)으로 둔다")
+        return None
 
 
 # 가은/Claude(2026-07-21): contest_works는 이 앱이 만드는 데이터가 아니라 kyh님이 별도로
@@ -1334,6 +1442,7 @@ def _build_official_facts(payload: object, source_text: str = "") -> OfficialFac
     facts = payload if isinstance(payload, dict) else {}
     return OfficialFacts(
         eligibility=_coerce_str_list(facts.get("eligibility")),
+        application_start_date=str(facts.get("application_start_date") or "미공개"),
         deadline=str(facts.get("deadline") or "미공개"),
         submission_requirements=_coerce_str_list(facts.get("submission_requirements")),
         evaluation_criteria=_coerce_str_list(facts.get("evaluation_criteria")) or ["배점 미공개"],
@@ -1343,6 +1452,35 @@ def _build_official_facts(payload: object, source_text: str = "") -> OfficialFac
         schedule_items=_build_schedule_items(facts, source_text),
         selection_benefits=_coerce_str_list(facts.get("selection_benefits")),
     )
+
+
+def _candidate_missing_details_from_text(text: str) -> list[str]:
+    """가은/Claude(2026-07-26, 요청: "재검증 호출을 병렬로") — _missing_announcement_details와
+    같은 원문 키워드 표지를 쓰되, 1차 LLM 응답(official_facts)이 비어있는지는 보지 않는다.
+    1차 호출이 끝나기 전(원문만으로) 감사 대상 후보를 미리 추려서, 감사 프롬프트를 1차
+    호출과 동시에 asyncio.gather로 실행할 수 있게 한다.
+
+    안전성: 실제 _missing_announcement_details는 "이 키워드 표지가 있다" AND
+    "official_facts에 해당 필드가 비어있다"를 함께 확인하므로, 항상 이 함수(키워드
+    표지만 확인)의 부분집합이다 — 즉 실제 누락 항목은 반드시 이 후보 목록에 이미 포함돼
+    있다. 그래서 후보가 비어 있으면 실제 누락도 항상 비어 있고(감사 자체를 건너뛰어도
+    안전), 후보가 있으면 감사 결과를 미리 확보해둔 채로 실제 누락 여부만 나중에 판단하면
+    된다 — 놓치는 경우가 없다."""
+    compact = re.sub(r"\s+", " ", text)
+    candidates: list[str] = []
+    if "혁신성" in text and "사회적 가치성" in text:
+        candidates.append("평가 기준과 배점")
+    if re.search(r"평가.{0,160}\b8[.]?\s*19", compact):
+        candidates.append("평가일")
+    if "결과발표" in compact and re.search(r"결과발표.{0,80}\b8[.]?\s*24", compact):
+        candidates.append("결과 발표일")
+    if "17:30~19:00" in text:
+        candidates.append("시상식 일시")
+    if "심사위원 판단" in text:
+        candidates.append("신청·심사 조건")
+    if "기업설명회" in text:
+        candidates.append("선정 혜택")
+    return candidates
 
 
 def _missing_announcement_details(text: str, facts: OfficialFacts) -> list[str]:
@@ -1464,7 +1602,9 @@ async def get_announcement_analysis(
         logger.info("[announcement-analysis] project_id=%s 캐시된 분석 결과 재사용", project_id)
         return AnnouncementAnalysisResponse(**cached)
 
-    text, names = await _load_criteria_documents_text(project_id)
+    text, names, criteria_docs = await _load_criteria_documents_text(
+        project_id, document_types={"공고문", "평가기준"}
+    )
     if not text.strip():
         # 가은/Claude(2026-07-21): 공고문을 하나도 안 넣었으면 LLM을 호출하지 않는다 —
         # "정보 없음"을 지어내는 것보다 화면에서 그 상태 자체를 명시적으로 보여준다.
@@ -1472,8 +1612,43 @@ async def get_announcement_analysis(
         # 추가하면 그때는 실제로 분석해야 하기 때문.
         return AnnouncementAnalysisResponse(has_announcement=False)
 
+    # 가은/Claude(2026-07-23, 요청: 공고문 분석 결과 프로젝트 간 재사용) — 프로젝트 캐시엔
+    # 없었지만, 다른 프로젝트가 완전히 같은 공고문(같은 URL 또는 같은 파일)을 이미 분석해둔
+    # 적이 있으면 그 결과를 그대로 재사용한다. 확인 절차(예: "비슷한 공고문을 찾았어요,
+    # 이걸 쓸까요?")는 일부러 넣지 않았다 — URL/파일 해시가 정확히 일치하는 경우에만
+    # 히트하므로 사용자 확인 없이 바로 적용한다(가은 확정, 2026-07-23). 나중에 오탐 사례가
+    # 실측되면 그때 확인 단계를 추가하는 걸 고려한다.
+    cache_keys = _cache_keys_for_documents(criteria_docs)
+    for key in cache_keys:
+        hit = await notice_cache_repo.find_by_cache_key(key, analysis_kind="announcement")
+        if hit and hit.get("analysis_version") == _ANNOUNCEMENT_ANALYSIS_CACHE_VERSION:
+            logger.info("[announcement-analysis] project_id=%s 전역 공고문 캐시 히트 key=%s", project_id, key)
+            result = AnnouncementAnalysisResponse(**hit["response"])
+            cache_payload = result.model_dump()
+            cache_payload["analysis_version"] = _ANNOUNCEMENT_ANALYSIS_CACHE_VERSION
+            await project_repo.update_project(project_id, {"announcement_analysis_cache": cache_payload})
+            return result
+
+    # 가은/Claude(2026-07-26, 요청: "재검증 호출을 병렬로" — dev merge 후 등록/분석이
+    # 느려졌다는 실측 보고) — 예전엔 1차 호출이 끝나야 무엇이 누락됐는지 알 수 있어
+    # 감사 호출을 순차로만 돌릴 수 있었다(누락 감지 시 최대 2배 지연). 원문 키워드
+    # 표지만으로 감사 후보를 미리 뽑을 수 있다는 걸 확인했으므로(_candidate_missing_details_from_text
+    # 주석 참고 — 실제 누락 목록은 항상 이 후보의 부분집합), 후보가 하나라도 있으면
+    # 1차 호출과 감사 호출을 asyncio.gather로 동시에 실행한다. 실제로 감사가
+    # 필요했는지(missing_details)는 두 응답이 모두 온 뒤에 그대로 판단하고, 필요
+    # 없었으면 이미 받아둔 감사 응답을 그냥 버린다 — 결과는 이전과 100% 동일하고
+    # 지연만 최대 2배에서 거의 1배로 줄어든다.
     prompt = _build_announcement_analysis_prompt(text)
-    raw = await run_in_threadpool(_call_announcement_analysis_llm, prompt)
+    audit_candidates = _candidate_missing_details_from_text(text)
+    if audit_candidates:
+        candidate_audit_prompt = _build_announcement_audit_prompt(text, audit_candidates)
+        raw, candidate_audited_raw = await asyncio.gather(
+            run_in_threadpool(_call_announcement_analysis_llm, prompt),
+            run_in_threadpool(_call_announcement_analysis_llm, candidate_audit_prompt),
+        )
+    else:
+        raw = await run_in_threadpool(_call_announcement_analysis_llm, prompt)
+        candidate_audited_raw = None
 
     try:
         parsed = json.loads(raw)
@@ -1489,8 +1664,9 @@ async def get_announcement_analysis(
             project_id,
             missing_details,
         )
-        audit_prompt = _build_announcement_audit_prompt(text, missing_details)
-        audited_raw = await run_in_threadpool(_call_announcement_analysis_llm, audit_prompt)
+        # audit_candidates가 missing_details의 상위집합이므로(위 주석 참고) missing_details가
+        # 비어있지 않으면 candidate_audited_raw는 항상 이미 채워져 있다.
+        audited_raw = candidate_audited_raw
         try:
             audited = json.loads(audited_raw)
         except (json.JSONDecodeError, TypeError):
@@ -1558,6 +1734,18 @@ async def get_announcement_analysis(
     cache_payload = result.model_dump()
     cache_payload["analysis_version"] = _ANNOUNCEMENT_ANALYSIS_CACHE_VERSION
     await project_repo.update_project(project_id, {"announcement_analysis_cache": cache_payload})
+
+    # 가은/Claude(2026-07-23): 방금 새로 분석한 결과를 전역 캐시에도 남겨서, 다음에 같은
+    # 공고문(같은 URL/같은 파일)을 다른 프로젝트가 올리면 위 캐시 조회에서 바로 히트한다.
+    for key in cache_keys:
+        await notice_cache_repo.upsert(
+            NoticeAnalysisCacheModel(
+                cache_key=key,
+                analysis_kind="announcement",
+                analysis_version=_ANNOUNCEMENT_ANALYSIS_CACHE_VERSION,
+                response=cache_payload,
+            )
+        )
     return result
 
 
@@ -1576,16 +1764,33 @@ async def get_application_form_analysis(
     project = await verify_project_owner(project_id, user_email)
 
     cached = project.get("application_form_analysis_cache")
-    if cached:
+    if isinstance(cached, dict) and cached.get("analysis_version") == _APPLICATION_FORM_ANALYSIS_CACHE_VERSION:
         logger.info("[application-form-analysis] project_id=%s 캐시된 분석 결과 재사용", project_id)
         return ApplicationFormAnalysisResponse(**cached)
 
-    text, names = await _load_criteria_documents_text(project_id)
+    text, names, criteria_docs = await _load_criteria_documents_text(
+        project_id, document_types={"신청서양식"}
+    )
     if not text.strip():
         # 문서를 하나도 등록하지 않았으면 LLM을 호출하지 않는다 — 회의 화면은 이 값을
         # 그대로 "선택 사항"으로 취급해 항목 없이 정상 진행한다(약한 주입은 없을 뿐 회의
         # 자체를 막지 않는다).
         return ApplicationFormAnalysisResponse(has_application_form=False)
+
+    # 가은/Claude(2026-07-23): announcement-analysis와 동일한 전역 캐시 재사용 — 다른
+    # 프로젝트가 완전히 같은 신청서양식 파일/URL을 이미 분석해뒀으면 그대로 재사용한다.
+    # analysis_kind="application_form"으로 announcement 캐시와 네임스페이스를 분리한다
+    # (미분류 문서는 양쪽 그룹에 다 포함되므로 같은 cache_key가 겹칠 수 있음).
+    cache_keys = _cache_keys_for_documents(criteria_docs)
+    for key in cache_keys:
+        hit = await notice_cache_repo.find_by_cache_key(key, analysis_kind="application_form")
+        if hit and hit.get("analysis_version") == _APPLICATION_FORM_ANALYSIS_CACHE_VERSION:
+            logger.info("[application-form-analysis] project_id=%s 전역 캐시 히트 key=%s", project_id, key)
+            result = ApplicationFormAnalysisResponse(**hit["response"])
+            cache_payload = result.model_dump()
+            cache_payload["analysis_version"] = _APPLICATION_FORM_ANALYSIS_CACHE_VERSION
+            await project_repo.update_project(project_id, {"application_form_analysis_cache": cache_payload})
+            return result
 
     prompt = _build_application_form_analysis_prompt(text)
     raw = await run_in_threadpool(_call_announcement_analysis_llm, prompt)
@@ -1614,5 +1819,17 @@ async def get_application_form_analysis(
         items=items,
         source_document_names=names,
     )
-    await project_repo.update_project(project_id, {"application_form_analysis_cache": result.model_dump()})
+    cache_payload = result.model_dump()
+    cache_payload["analysis_version"] = _APPLICATION_FORM_ANALYSIS_CACHE_VERSION
+    await project_repo.update_project(project_id, {"application_form_analysis_cache": cache_payload})
+
+    for key in cache_keys:
+        await notice_cache_repo.upsert(
+            NoticeAnalysisCacheModel(
+                cache_key=key,
+                analysis_kind="application_form",
+                analysis_version=_APPLICATION_FORM_ANALYSIS_CACHE_VERSION,
+                response=cache_payload,
+            )
+        )
     return result
