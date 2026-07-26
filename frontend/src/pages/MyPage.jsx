@@ -401,7 +401,7 @@ const styles = {
       'radial-gradient(900px 500px at 100% 10%, rgba(22,163,122,0.07), transparent 55%), ' +
       'radial-gradient(800px 500px at 50% 110%, rgba(224,96,61,0.06), transparent 55%), #faf8f4',
     color: '#1c1a2e',
-    fontFamily: "'Pretendard', -apple-system, sans-serif",
+    fontFamily: "'Pretendard Variable', Pretendard, -apple-system, sans-serif",
     padding: '32px 20px',
   },
   main: {
@@ -419,7 +419,7 @@ const styles = {
     background: 'rgba(255,255,255,0.72)',
     color: '#5b5770',
     cursor: 'pointer',
-    fontSize: 14,
+    fontSize: 15.5,
   },
   panel: {
     display: 'flex',
@@ -446,19 +446,19 @@ const styles = {
   },
   eyebrow: {
     margin: '0 0 4px',
-    fontSize: 11,
+    fontSize: 12.5,
     fontWeight: 700,
     color: '#7c5cea',
     letterSpacing: '0.08em',
   },
   title: {
     margin: 0,
-    fontSize: 24,
+    fontSize: 27,
     fontWeight: 700,
   },
   subtitle: {
     margin: '6px 0 0',
-    fontSize: 13,
+    fontSize: 14.5,
     color: '#918d9f',
   },
   formCard: {
@@ -472,7 +472,7 @@ const styles = {
   },
   sectionTitle: {
     margin: '0 0 14px',
-    fontSize: 15.5,
+    fontSize: 17.5,
     fontWeight: 700,
   },
   fieldGroup: {
@@ -480,7 +480,7 @@ const styles = {
   },
   groupLabel: {
     display: 'block',
-    fontSize: 11,
+    fontSize: 12.5,
     fontWeight: 700,
     color: '#7c5cea',
     letterSpacing: '0.04em',
@@ -498,7 +498,7 @@ const styles = {
     gap: 5,
   },
   label: {
-    fontSize: 12,
+    fontSize: 13.5,
     fontWeight: 600,
     color: '#5b5770',
   },
@@ -508,7 +508,7 @@ const styles = {
     border: '1px solid rgba(28,26,46,0.14)',
     background: '#fff',
     color: '#1c1a2e',
-    fontSize: 13.5,
+    fontSize: 15,
   },
   input: {
     padding: '9px 10px',
@@ -516,7 +516,7 @@ const styles = {
     border: '1px solid rgba(28,26,46,0.14)',
     background: '#fff',
     color: '#1c1a2e',
-    fontSize: 13.5,
+    fontSize: 15,
   },
   saveRow: {
     display: 'flex',
@@ -533,12 +533,12 @@ const styles = {
     border: 'none',
     background: '#7c5cea',
     color: '#fff',
-    fontSize: 13.5,
+    fontSize: 15,
     fontWeight: 700,
     cursor: 'pointer',
   },
   savedHint: {
-    fontSize: 12,
+    fontSize: 13.5,
     color: '#918d9f',
   },
   submissionCard: {
@@ -554,7 +554,7 @@ const styles = {
     marginBottom: 14,
   },
   submissionHint: {
-    fontSize: 12,
+    fontSize: 13.5,
     color: '#918d9f',
   },
   submissionRows: {
@@ -587,12 +587,12 @@ const styles = {
     minWidth: 0,
   },
   submissionRowLabel: {
-    fontSize: 13,
+    fontSize: 14.5,
     fontWeight: 700,
     color: '#3a3750',
   },
   submissionRowValue: {
-    fontSize: 11.5,
+    fontSize: 13,
     color: '#918d9f',
     marginTop: 2,
     overflowWrap: 'anywhere',
@@ -608,14 +608,14 @@ const styles = {
     display: 'inline-flex',
     alignItems: 'center',
     gap: 5,
-    fontSize: 11.5,
+    fontSize: 13,
     color: '#918d9f',
   },
   githubStatChip: {
     display: 'inline-flex',
     alignItems: 'center',
     gap: 4,
-    fontSize: 11,
+    fontSize: 12.5,
     fontWeight: 600,
     color: '#5b5770',
     background: 'rgba(28,26,46,0.06)',
@@ -624,7 +624,7 @@ const styles = {
   },
   tag: {
     flexShrink: 0,
-    fontSize: 11,
+    fontSize: 12.5,
     fontWeight: 700,
     padding: '3px 10px',
     borderRadius: 8,
@@ -656,7 +656,7 @@ const styles = {
     background: 'transparent',
     color: '#1c1a2e',
     cursor: 'pointer',
-    fontSize: 15,
+    fontSize: 16.5,
     fontWeight: 600,
   },
   rowLeft: {
@@ -665,7 +665,7 @@ const styles = {
     gap: 10,
   },
   rowArrow: {
-    fontSize: 22,
+    fontSize: 24,
     color: '#918d9f',
     lineHeight: 1,
   },

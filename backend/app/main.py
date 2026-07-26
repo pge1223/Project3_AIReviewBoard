@@ -21,6 +21,9 @@ from app.api.routes.comparison import router as comparison_router  # 윤한/Clau
 from app.api.routes.profile import router as profile_router  # 윤한/Claude(2026-07-21): 마이페이지 프로필 CRUD (app/api/routes/profile.py)
 from app.api.routes.media import router as media_router  # 재인/Claude (2026-07-16): 위원 발언 영상 스트리밍 중계 (app/api/routes/media.py)
 from app.api.routes.workbench import router as workbench_router  # 재인/Claude (2026-07-21): "AI 피드백" 워크벤치 인용 매칭 (app/api/routes/workbench.py)
+from app.repositories.ideation_conversation_session_repository import (
+    IdeationConversationSessionRepository,
+)
 from app.core.logger import logger
 from ai.rag.converters.diagnostics import HwpDiagnosticsResult, log_hwp_diagnostics, run_hwp_diagnostics
 
@@ -80,6 +83,8 @@ if settings.ENABLE_IDEATION_PREVIEW:
 @app.on_event("startup")
 async def startup():
     await connect_db()
+    if settings.ENABLE_IDEATION_PREVIEW:
+        await IdeationConversationSessionRepository().ensure_indexes()
 
     try:
         hwp_diagnostics = await run_in_threadpool(run_hwp_diagnostics)

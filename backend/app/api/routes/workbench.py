@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import re
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -361,6 +362,12 @@ async def get_typo_check(
     # PDF는 줄바꿈 지점의 띄어쓰기 정보를 잃으므로 띄어쓰기 판정을 끈다(위 주석 참고).
     skip_spacing = os.path.splitext(file_path)[1].lower() == ".pdf"
 
+    logger.info(
+        "[typo-check] document_id=%s 문서 파싱 완료 - 문단 %d개, %d개씩 묶어 배치 병렬 LLM 호출 시작",
+        document_id, len(all_paragraphs), _TYPO_BATCH_SIZE,
+    )
+    _typo_start = time.monotonic()
+
     # 재인/Claude(2026-07-22): 문단을 한꺼번에 다 주면 LLM 주의가 분산돼 한 문단의 두 번째
     # 오탈자를 놓치는 걸 실측으로 확인했다(전체 25문단 → "구지자" 놓침, 그 문단만 단독으로
     # 주면 잡음). 그래서 작은 배치(_TYPO_BATCH_SIZE)로 나눠 병렬 호출한다 - recall이 크게
@@ -387,6 +394,12 @@ async def get_typo_check(
         for offset in range(0, len(all_paragraphs), _TYPO_BATCH_SIZE)
     ]
     batch_results = await asyncio.gather(*(_run_batch(off, b) for off, b in batches))
+    raw_candidate_count = sum(len(batch) for batch in batch_results)
+    logger.info(
+        "[typo-check] document_id=%s LLM 응답 완료(%dms, %d개 배치 병렬 호출) - 오탈자 후보 %d건, "
+        "중복/공백만 다름/PUA 문자 필터링 시작",
+        document_id, int((time.monotonic() - _typo_start) * 1000), len(batches), raw_candidate_count,
+    )
 
     findings: list[TypoFinding] = []
     seen: set[tuple[int, str]] = set()
@@ -425,6 +438,15 @@ async def get_typo_check(
             message=reason or f"'{wrong}' → '{corrected}'",
         ))
 
+    logger.info(
+        "[typo-check] document_id=%s 필터링 완료 - 최종 오탈자 %d건 확정 (후보 %d건 중)",
+        document_id, len(findings), raw_candidate_count,
+    )
+    for f in findings:
+        logger.info(
+            "[typo-check]   -> '%s' → '%s' (%s)",
+            f.quote, f.corrected, f.message,
+        )
     return await _cache_and_return(TypoCheckResponse(findings=findings))
 
 
@@ -461,6 +483,14 @@ async def get_context_check(
 
     numbered_paragraphs = paragraphs[:_CONTEXT_CHECK_MAX_PARAGRAPHS_IN_PROMPT]
 
+    logger.info(
+        "[context-check] document_id=%s 문단 %d개 추출 완료 - GPT가 문서 전체를 한 번에 읽고 "
+        "temperature=%.1f로 %d회 독립 샘플링(다수결 투표, 임계값 %d표) 시작",
+        document_id, len(numbered_paragraphs), _CONTEXT_FIND_TEMPERATURE,
+        _CONTEXT_FIND_SAMPLES, _CONTEXT_VOTE_THRESHOLD,
+    )
+    _context_start = time.monotonic()
+
     # 찾기를 temperature를 올려 여러 번 샘플링하고, 문단별 득표수로 판단한다(투표).
     # 각 샘플에서 지목된 문단 번호를 세고, 대표 issue 문구는 처음 나온 것을 쓴다.
     find_prompt = _build_context_find_prompt(paragraphs)
@@ -487,6 +517,18 @@ async def get_context_check(
         for c in cand_list:
             issue_by_index.setdefault(c["index"], str(c.get("issue") or "").strip())
 
+    logger.info(
+        "[context-check] document_id=%s 샘플링 완료(%dms) - %d회 중 %d개 문단이 최소 1표 이상 득표 "
+        "(문단별 득표: %s)",
+        document_id, int((time.monotonic() - _context_start) * 1000), _CONTEXT_FIND_SAMPLES,
+        len(votes), {k: v for k, v in sorted(votes.items())},
+    )
+    for idx, issue in issue_by_index.items():
+        logger.info(
+            "[context-check]   -> %d번 문단(%d표) 후보 사유: %s | 원문: %s",
+            idx, votes.get(idx, 0), issue, numbered_paragraphs[idx - 1][:80],
+        )
+
     findings: list[ContextFinding] = []
     for index in sorted(votes):
         if votes[index] < _CONTEXT_VOTE_THRESHOLD:
@@ -499,16 +541,20 @@ async def get_context_check(
             message=message,
         ))
 
+    logger.info(
+        "[context-check] document_id=%s 다수결 판정 완료 - 임계값(%d표) 이상 득표한 맥락 이상 %d건 확정",
+        document_id, _CONTEXT_VOTE_THRESHOLD, len(findings),
+    )
     return await _cache_and_return(ContextCheckResponse(findings=findings))
 
 
 # 재인/Claude(2026-07-22): "분량·밀도 체크" — 팀 요구사항.
 # 심사에서 "공고문이 15페이지로 쓰라고 했는데 14페이지만 쓰면 성의 없어 보인다",
-# "페이지 수만 맞추고 줄바꿈·여백으로 스카스카하게 채우면 싫어한다"는 실무 감각을
+# "페이지 수만 맞추고 줄바꿈·여백을 많이 남겨서 채우면 싫어한다"는 실무 감각을
 # 자동으로 체크한다. 두 가지를 본다:
 #   (1) 분량: 공고문에서 요구 페이지 수를 뽑아 실제 문서 페이지 수와 비교.
 #   (2) 밀도: 페이지마다 텍스트가 세로로 얼마나 차 있는지(여백 비율)를 재서, 절반 넘게
-#       빈 페이지를 "스카스카"로 표시. 마지막 페이지는 원래 짧게 끝나는 게 정상이라 제외.
+#       빈 페이지를 "여백 많음"으로 표시. 마지막 페이지는 원래 짧게 끝나는 게 정상이라 제외.
 # 오탈자/맥락 이상과 같은 캐싱(target 문서에 format_check_cache) 방식이다.
 
 # 공고문에서 요구 분량(페이지)을 뽑을 때 LLM에 넣는 원문 최대 길이. 분량 기준은 보통
@@ -618,12 +664,12 @@ def _analyze_pdf_format(pdf_path: Path) -> tuple[int, list[PageDensity]]:
     커버리지 = "내용(텍스트+이미지+색깔박스·표 등 벡터 도형)이 세로로 차지한 구간"의
     길이 / 페이지 높이. 블록 높이를 단순 합산하지 않고 겹치는 세로 구간을 병합해서
     재는 이유: (1) 표·다단 레이아웃은 블록이 세로로 겹쳐 단순 합산 시 100%를 넘어버린다,
-    (2) 차트·다이어그램으로 꽉 찬 페이지는 텍스트만 세면 '스카스카'로 오판되므로 이미지
+    (2) 차트·다이어그램으로 꽉 찬 페이지는 텍스트만 세면 '여백 많음'으로 오판되므로 이미지
     블록도 내용으로 포함해야 한다(재인/Claude 2026-07-22 실측 대응).
 
     벡터 도형(색깔 박스·표 배경·테두리)도 포함하는 이유: 실측(2026-07-22)으로 확인한
     실제 대상 수상작(SchoolBridge)에서, 텍스트+이미지만 셌을 때 색깔 박스·표·다이어그램이
-    많은 페이지(도형 40~66개)가 오히려 '스카스카'로 잘못 판정됐다 - 디자인 요소가 많은
+    많은 페이지(도형 40~66개)가 오히려 '여백 많음'으로 잘못 판정됐다 - 디자인 요소가 많은
     페이지일수록 불리해지는 정반대 결과였다. get_drawings()로 사각형/선 등 채워진 도형의
     세로 범위도 같은 방식으로 병합해 넣는다."""
     doc = fitz.open(pdf_path)
@@ -690,9 +736,22 @@ async def get_format_check(
 
     # (1) 공고문에서 요구 페이지 수 (LLM 추출이라 스레드풀에서 호출)
     criteria = await _find_criteria_document(project_id)
+    logger.info(
+        "[format-check] document_id=%s 공고문(criteria) 문서=%s(%s) 참고해 요구 분량 LLM 추출 시작 "
+        "(원문 앞 %d자만 프롬프트에 사용)",
+        document_id, criteria.get("_id") if criteria else "없음",
+        (criteria.get("original_filename") or criteria.get("source_url") or "") if criteria else "요구 분량 판정 생략",
+        _PAGE_REQ_MAX_CHARS,
+    )
+    _page_req_start = time.monotonic()
     page_req = (
         await run_in_threadpool(_extract_required_pages, criteria["parsed_text"])
         if criteria else PageRequirement()
+    )
+    logger.info(
+        "[format-check] document_id=%s 요구 분량 추출 완료(%dms): min=%s max=%s 근거=\"%s\"",
+        document_id, int((time.monotonic() - _page_req_start) * 1000),
+        page_req.required_min, page_req.required_max, (page_req.source_text or "")[:80],
     )
 
     # (2) 실제 문서를 PDF로 (docx 등이면 변환) 열어 페이지 수 + 밀도
@@ -713,6 +772,10 @@ async def get_format_check(
         finally:
             pdf_path.unlink(missing_ok=True)
 
+    logger.info(
+        "[format-check] document_id=%s 원본(%s)을 PDF로 열어 페이지 수·페이지별 밀도 측정 시작",
+        document_id, Path(file_path).suffix,
+    )
     try:
         actual_pages, densities = await run_in_threadpool(_measure)
     except DocumentConversionError:
@@ -720,6 +783,10 @@ async def get_format_check(
         return await _cache_and_return(FormatCheckResponse(
             required_min=page_req.required_min, required_max=page_req.required_max,
             required_source=page_req.source_text))
+    logger.info(
+        "[format-check] document_id=%s 측정 완료 - 실제 %d페이지, 페이지별 커버리지=%s",
+        document_id, actual_pages, [d.coverage for d in densities],
+    )
 
     # 분량 판정 - 목표는 "상한(required_max)을 채우는 것". 범위(10~30)라도 상한에 못 미치면
     # 성의 부족으로 보므로, 상한을 기준으로 "부족/충족/초과"를 낸다(사용자 확인: 10~30이면
@@ -761,6 +828,11 @@ async def get_format_check(
             parts.append(f"그중 {', '.join(map(str, sparse_pages))}페이지는 특히 절반 넘게 비어 있습니다.")
         density_message = " ".join(parts)
 
+    logger.info(
+        "[format-check] document_id=%s 최종 판정 - 분량: %s, 밀도: 평균 %s%%(%s), 여백 많음 페이지=%s",
+        document_id, page_verdict,
+        round(overall * 100) if overall is not None else None, overall_verdict, sparse_pages,
+    )
     return await _cache_and_return(FormatCheckResponse(
         required_min=page_req.required_min,
         required_max=page_req.required_max,

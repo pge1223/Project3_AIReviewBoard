@@ -56,6 +56,12 @@ _ENTRY_NODES = {
 _FORCED_SPEAKER_TO_NODE = {
     "planning_expert": "planning_expert_discussion",
     "dev_expert": "dev_expert_discussion",
+    # 재인/Claude(2026-07-23, 아바타 페이싱 연동): ideation_conv_run.py::continue_ideation_expert_turn이
+    # 라운드를 한 턴씩 끊어 진행할 때, 다음 차례가 진행자면 여기로 강제 진입한다. 이 매핑을
+    # 추가한 것 자체는 "누가 다음에 말할지" 판단(_route_next_expert_turn)과 무관하다 — 그
+    # 함수가 이미 "facilitator"를 반환할 수 있었고(_expert_turn_targets 참고), 여기서는 그
+    # 결과를 재진입 지점으로도 쓸 수 있게 진입 테이블만 넓힌 것뿐이다.
+    "facilitator": "discussion_facilitator",
 }
 
 
@@ -68,8 +74,13 @@ def _route_entry(state: IdeationConvState) -> str:
     용준/Claude(2026-07-22, 요청: "잠시만" 재개 — 지정 위원 우선 응답): phase가
     "expert_discussion"이고 forced_next_speaker가 설정돼 있으면(reply_to_interjection이
     사용자가 지정한 위원을 강제 지정한 경우) 기본값(planning_expert_discussion) 대신 그
-    위원의 노드로 바로 진입한다. forced_next_speaker는 그 노드가 실행되자마자 리셋되므로
-    (make_conv_discussion_node 참고) 다음 라운드에는 잔류하지 않는다."""
+    위원의 노드로 바로 진입한다. forced_next_speaker=planning_expert/dev_expert는 그 노드가
+    실행되자마자 리셋되므로(make_conv_discussion_node 참고) 다음 라운드에는 잔류하지 않는다.
+
+    재인/Claude(2026-07-23, 아바타 페이싱 연동): forced_next_speaker="facilitator"(위와 같은
+    이유로 discussion_facilitator로 강제 진입)는 discussion_facilitator_node 자체에는 리셋
+    로직이 없다 — 그 노드가 원래 forced 진입 대상이 아니었기 때문이다. 대신 이 값을 쓰는
+    쪽(ideation_conv_run.py::continue_ideation_expert_turn)이 호출 뒤 직접 지운다."""
     phase = state.get("phase")
     if phase not in _ENTRY_NODES:
         raise ValueError(
@@ -211,6 +222,11 @@ def assemble_ideation_conversation_graph(
             "developer_question": "developer_question",
             "planning_expert_discussion": "planning_expert_discussion",
             "dev_expert_discussion": "dev_expert_discussion",
+            # 재인/Claude(2026-07-23, 아바타 페이싱 연동): _FORCED_SPEAKER_TO_NODE에 "facilitator"를
+            # 추가한 것과 짝을 이루는 목적지 등록 — LangGraph의 conditional entry point는 라우터
+            # 함수(_route_entry)가 반환할 수 있는 값마다 여기 등록된 목적지가 있어야 한다(없으면
+            # KeyError). _route_entry 자체의 판단 로직은 그대로다.
+            "discussion_facilitator": "discussion_facilitator",
             "synthesis": "synthesis",
         },
     )

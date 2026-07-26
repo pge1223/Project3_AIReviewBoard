@@ -95,6 +95,11 @@ def convert_to_preview_pdf(
         command.append(f"-env:UserInstallation={profile_dir.resolve().as_uri()}")
     command += ["--convert-to", "pdf", "--outdir", str(output_dir), str(staged_source)]
 
+    logger.info(
+        "[PREVIEW_PDF_CONVERSION_START] original_ext=%s 라이브레오피스 headless 서브프로세스로 "
+        "PDF 변환 요청: %s",
+        source_path.suffix.lstrip("."), " ".join(command),
+    )
     start = time.monotonic()
     try:
         if is_hwp_family:
@@ -118,6 +123,11 @@ def convert_to_preview_pdf(
     duration_ms = int((time.monotonic() - start) * 1000)
     converted_path = output_dir / f"{safe_stem}.pdf"
 
+    logger.info(
+        "[PREVIEW_PDF_CONVERSION_RESPONSE] 라이브레오피스 응답(종료 코드=%d, %dms) stdout=%s",
+        completed.returncode, duration_ms, (completed.stdout or "").strip()[:300],
+    )
+
     if completed.returncode != 0:
         _cleanup(staged_source, converted_path)
         _cleanup_dir(profile_dir)
@@ -136,8 +146,10 @@ def convert_to_preview_pdf(
         raise InvalidConvertedPdfError("변환된 미리보기 파일이 유효한 PDF가 아닙니다.")
 
     logger.info(
-        "[PREVIEW_PDF_CONVERSION_COMPLETE] original_ext=%s duration_ms=%d",
-        source_path.suffix.lstrip("."), duration_ms,
+        "[PREVIEW_PDF_CONVERSION_COMPLETE] original_ext=%s duration_ms=%d 결과 PDF=%s (%dKB) - "
+        "프론트가 이 파일을 pdf.js로 그대로 그림",
+        source_path.suffix.lstrip("."), duration_ms, converted_path.name,
+        converted_path.stat().st_size // 1024,
     )
     return converted_path
 

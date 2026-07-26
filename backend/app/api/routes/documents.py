@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+from datetime import date
 import json
 import logging
 import os
@@ -72,6 +73,7 @@ from app.schemas.document import (
     FetchUrlRequest,
     FetchUrlResponse,
     OfficialFacts,
+    ScheduleItem,
     SimilarWork,
     StrategicAnalysis,
 )
@@ -98,6 +100,7 @@ _indexing_service: RAGIndexingService | None = None
 # 로딩 비용 큼)가 여러 번 생성되는 TOCTOU 레이스가 생긴다. 방어적으로 락을 건다
 # (락 경합은 최초 1회 초기화 이후엔 없음 — 매 요청마다 비용 없음).
 _indexing_service_lock = threading.Lock()
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
 
 
 def _canonical_chroma_persist_dir() -> str:
@@ -109,7 +112,15 @@ def _canonical_chroma_persist_dir() -> str:
     중 발견 — Windows는 SQLite 파일 잠금이 POSIX와 달리 mandatory라, 서로 모르는 두
     엔진이 같은 물리 파일에 동시 접근하면 즉시 에러 대신 무기한 대기로 이어질 수 있다).
     이 함수로 절대경로로 정규화해 항상 같은 identifier를 쓰도록 강제한다."""
-    return str(Path(settings.CHROMA_PERSIST_DIR).resolve())
+    configured_path = Path(settings.CHROMA_PERSIST_DIR).expanduser()
+    if not configured_path.is_absolute():
+        # The backend is normally launched with ``backend/`` as its working
+        # directory, while scripts and tests commonly run from the repository
+        # root. Resolving a relative setting against CWD therefore creates two
+        # different Chroma databases (``backend/chroma_db`` and
+        # ``chroma_db``). Keep one stable location regardless of launch CWD.
+        configured_path = _REPOSITORY_ROOT / configured_path
+    return str(configured_path.resolve())
 
 
 def _get_indexing_service() -> RAGIndexingService:
@@ -835,7 +846,7 @@ _ANNOUNCEMENT_TRUNCATE_CHARS = 16000
 # 가은/Claude(2026-07-23): 재검증 로직을 바꿀 때마다(v3: temperature=0 안정화, v4: "20점"
 # 재발 프롬프트 패치, v5: 재검증을 인용-대조 방식으로 재설계) 기존 캐시엔 반영이 안 되므로
 # 버전을 올려 강제로 재계산한다.
-_ANNOUNCEMENT_ANALYSIS_CACHE_VERSION = 5
+_ANNOUNCEMENT_ANALYSIS_CACHE_VERSION = 6
 
 # 가은/Claude(2026-07-23): application-form-analysis는 지금까지 버전 필드 없이
 # "cached가 있으면 무조건 재사용"이었다 — 프롬프트가 바뀌어도 기존 프로젝트 캐시가
@@ -996,8 +1007,11 @@ application_start_date에는 접수 시작일(공고 게시일이 아니라 신�
 submission_requirements에는 제출 서류·제출 방법을, application_review_conditions에는
 신청 부문 선택·심사위원의 분야 변경·참여도에 따른 시상 수 변경 같은 신청/심사 운영
 조건을 담으세요. disqualification_rules에는 수상 취소·결격 조건을 하나씩 분리해 담으세요.
-key_dates에는 접수 마감뿐 아니라 평가일, 결과 발표일, 시상식 일시 등 모든 주요 일정을
-"항목: 날짜/시간" 형태로 담고, selection_benefits에는 선정·수상 혜택을 빠짐없이 담으세요.
+key_dates에는 신청 기간뿐 아니라 평가일, 결과 발표일, 시상식 일시 등 모든 주요 일정을
+"항목: 날짜/시간" 형태로 담으세요. schedule_items에는 같은 일정을 행사명과 날짜로
+구조화하세요. 날짜는 YYYY-MM-DD 형식으로 쓰고, 기간이면 start_date와 end_date를 모두
+채우세요. 결과 발표 방법(예: 공식 홈페이지)이 원문에 있으면 method에 넣으세요. 원문에
+없는 날짜나 방법은 만들지 마세요. selection_benefits에는 선정·수상 혜택을 빠짐없이 담으세요.
 각 배열 항목에는 서로 독립된 사실 하나만 담고, 별개의 조건을 "또는/및"으로 합치지 마세요.
 URL과 첨부 문서가 함께 있으면 두 출처를 모두 읽고 서로 보완하세요. URL의 짧은 요약에
 없는 세부 표·일정·혜택이 첨부 PDF에 있으면 반드시 첨부 PDF 내용을 결과에 포함하세요.
@@ -1024,6 +1038,9 @@ category는 아래 8개 중 이 공모전/지원사업과 가장 가까운 것 �
     "disqualification_rules": ["..."],
     "application_review_conditions": ["..."],
     "key_dates": ["..."],
+    "schedule_items": [
+      {{"event_label": "신청 기간", "start_date": "YYYY-MM-DD", "end_date": "YYYY-MM-DD 또는 빈 문자열", "method": "공식 홈페이지 또는 빈 문자열", "source_text": "원문 일정 표현"}}
+    ],
     "selection_benefits": ["..."]
   }},
   "strategic_analysis": {{
@@ -1132,7 +1149,143 @@ def _coerce_str_list(value: object) -> list[str]:
     return [str(v) for v in value if isinstance(v, (str, int, float)) and str(v).strip()]
 
 
-def _build_official_facts(payload: object) -> OfficialFacts:
+_KOREAN_WEEKDAYS = ("월", "화", "수", "목", "금", "토", "일")
+_SCHEDULE_DATE_PATTERN = re.compile(
+    r"(?:(20\d{2})\s*(?:년|[./-])\s*)?(\d{1,2})\s*(?:월|[./-])\s*(\d{1,2})\s*일?"
+)
+
+
+def _infer_schedule_year(*values: str) -> int | None:
+    for value in values:
+        # "2026년"에서 숫자와 한글은 모두 정규식의 word 문자라 \b가 생기지 않는다.
+        match = re.search(r"(?<!\d)(20\d{2})(?!\d)", value or "")
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def _normalize_schedule_date(value: object, default_year: int | None) -> str:
+    text = str(value or "").strip()
+    match = _SCHEDULE_DATE_PATTERN.search(text)
+    if not match:
+        return ""
+    year = int(match.group(1)) if match.group(1) else default_year
+    if year is None:
+        return ""
+    try:
+        return date(year, int(match.group(2)), int(match.group(3))).isoformat()
+    except ValueError:
+        return ""
+
+
+def _schedule_weekday(value: str) -> str:
+    try:
+        return _KOREAN_WEEKDAYS[date.fromisoformat(value).weekday()]
+    except (ValueError, TypeError):
+        return ""
+
+
+def _canonical_schedule_label(value: str) -> str:
+    compact = re.sub(r"\s+", "", value)
+    if any(token in compact for token in ("신청기간", "접수기간", "공모신청", "접수마감", "신청마감")):
+        return "신청 기간"
+    if any(token in compact for token in ("결과발표", "심사결과", "선정발표", "수상자발표")):
+        return "결과 발표"
+    if "시상식" in compact:
+        return "시상식"
+    if any(token in compact for token in ("서류평가", "서면평가", "서류심사", "평가", "심사")):
+        return "서류 평가"
+    return value.strip().rstrip(":：·") or "주요 일정"
+
+
+def _schedule_item_from_mapping(item: dict, default_year: int | None) -> ScheduleItem | None:
+    label = _canonical_schedule_label(str(item.get("event_label") or item.get("label") or ""))
+    source_text = str(item.get("source_text") or "").strip()
+    start_date = _normalize_schedule_date(item.get("start_date"), default_year)
+    end_date = _normalize_schedule_date(item.get("end_date"), default_year)
+    if not start_date and source_text:
+        matches = list(_SCHEDULE_DATE_PATTERN.finditer(source_text))
+        if matches:
+            start_date = _normalize_schedule_date(matches[0].group(0), default_year)
+            if len(matches) > 1:
+                inherited_year = int(start_date[:4]) if start_date else default_year
+                end_date = _normalize_schedule_date(matches[1].group(0), inherited_year)
+    if not start_date:
+        return None
+    return ScheduleItem(
+        event_label=label,
+        start_date=start_date,
+        end_date=end_date,
+        start_weekday=_schedule_weekday(start_date),
+        end_weekday=_schedule_weekday(end_date) if end_date else "",
+        method=str(item.get("method") or "").strip(),
+        source_text=source_text,
+    )
+
+
+def _schedule_item_from_text(value: str, default_year: int | None) -> ScheduleItem | None:
+    matches = list(_SCHEDULE_DATE_PATTERN.finditer(value))
+    if not matches:
+        return None
+    label_text = value[: matches[0].start()].strip(" \t:：·-")
+    start_date = _normalize_schedule_date(matches[0].group(0), default_year)
+    inherited_year = int(start_date[:4]) if start_date else default_year
+    end_date = _normalize_schedule_date(matches[1].group(0), inherited_year) if len(matches) > 1 else ""
+    if not start_date:
+        return None
+    method = "공식 홈페이지" if "홈페이지" in value else ""
+    return ScheduleItem(
+        event_label=_canonical_schedule_label(label_text),
+        start_date=start_date,
+        end_date=end_date,
+        start_weekday=_schedule_weekday(start_date),
+        end_weekday=_schedule_weekday(end_date) if end_date else "",
+        method=method,
+        source_text=value,
+    )
+
+
+def _build_schedule_items(facts: dict, source_text: str = "") -> list[ScheduleItem]:
+    key_dates = _coerce_str_list(facts.get("key_dates"))
+    explicit_items = facts.get("schedule_items")
+    explicit_items = explicit_items if isinstance(explicit_items, list) else []
+    default_year = _infer_schedule_year(
+        *(str(item.get("start_date") or "") for item in explicit_items if isinstance(item, dict)),
+        *key_dates,
+        source_text,
+    )
+
+    items: list[ScheduleItem] = []
+    for raw_item in explicit_items:
+        if isinstance(raw_item, dict):
+            normalized = _schedule_item_from_mapping(raw_item, default_year)
+            if normalized:
+                items.append(normalized)
+    if not items:
+        for raw_date in key_dates:
+            normalized = _schedule_item_from_text(raw_date, default_year)
+            if normalized:
+                items.append(normalized)
+
+    # 구형 LLM 응답이 신청 기간을 key_dates에서 빠뜨린 경우 deadline을 최소 호환값으로
+    # 사용한다. 기간 전체가 명시된 schedule_items가 있으면 이 분기는 실행되지 않는다.
+    if not any(item.event_label == "신청 기간" for item in items):
+        deadline = str(facts.get("deadline") or "")
+        normalized = _schedule_item_from_text(f"신청 기간: {deadline}", default_year)
+        if normalized:
+            items.insert(0, normalized)
+
+    deduplicated: list[ScheduleItem] = []
+    seen: set[tuple[str, str, str]] = set()
+    for item in items:
+        key = (item.event_label, item.start_date, item.end_date)
+        if key not in seen:
+            seen.add(key)
+            deduplicated.append(item)
+    return deduplicated
+
+
+def _build_official_facts(payload: object, source_text: str = "") -> OfficialFacts:
     facts = payload if isinstance(payload, dict) else {}
     return OfficialFacts(
         eligibility=_coerce_str_list(facts.get("eligibility")),
@@ -1143,6 +1296,7 @@ def _build_official_facts(payload: object) -> OfficialFacts:
         disqualification_rules=_coerce_str_list(facts.get("disqualification_rules")),
         application_review_conditions=_coerce_str_list(facts.get("application_review_conditions")),
         key_dates=_coerce_str_list(facts.get("key_dates")),
+        schedule_items=_build_schedule_items(facts, source_text),
         selection_benefits=_coerce_str_list(facts.get("selection_benefits")),
     )
 
@@ -1302,7 +1456,7 @@ async def get_announcement_analysis(
         parsed = {}
 
     facts_raw = parsed.get("official_facts") if isinstance(parsed, dict) else None
-    official_facts = _build_official_facts(facts_raw)
+    official_facts = _build_official_facts(facts_raw, text)
     missing_details = _missing_announcement_details(text, official_facts)
     if missing_details:
         logger.warning(
@@ -1334,7 +1488,7 @@ async def get_announcement_analysis(
                     if field in audited_facts_raw:
                         merged_facts_raw[field] = audited_facts_raw[field]
                 facts_raw = merged_facts_raw
-                official_facts = _build_official_facts(facts_raw)
+                official_facts = _build_official_facts(facts_raw, text)
 
     strategy_raw = parsed.get("strategic_analysis") if isinstance(parsed, dict) else None
     strategy_raw = strategy_raw if isinstance(strategy_raw, dict) else {}

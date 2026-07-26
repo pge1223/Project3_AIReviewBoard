@@ -14,6 +14,7 @@ def test_announcement_prompt_requests_all_detailed_fact_groups():
         "disqualification_rules",
         "application_review_conditions",
         "key_dates",
+        "schedule_items",
         "selection_benefits",
     ):
         assert field in prompt
@@ -45,6 +46,30 @@ def test_detailed_official_facts_are_not_dropped():
     assert facts.application_review_conditions == ["심사위원 판단으로 신청 분야가 변경될 수 있음"]
     assert facts.key_dates[-1] == "시상식: 9월 10일 17:30~19:00"
     assert facts.selection_benefits == ["기업설명회 기회", "해외 바이어 대상 수상기업 안내"]
+
+
+def test_schedule_items_are_structured_and_weekdays_are_recomputed():
+    facts = _build_official_facts(
+        {
+            "deadline": "2026년 7월 24일",
+            "key_dates": [
+                "신청 기간: 2026년 6월 29일(화) ~ 7월 24일(목)",
+                "서류 평가: 2026년 8월 19일(월)",
+                "결과 발표: 2026년 8월 24일(수) · 공식 홈페이지",
+                "시상식: 2026년 9월 10일(월)",
+            ],
+        }
+    )
+
+    assert [
+        (item.event_label, item.start_date, item.end_date, item.start_weekday, item.method)
+        for item in facts.schedule_items
+    ] == [
+        ("신청 기간", "2026-06-29", "2026-07-24", "월", ""),
+        ("서류 평가", "2026-08-19", "", "수", ""),
+        ("결과 발표", "2026-08-24", "", "월", "공식 홈페이지"),
+        ("시상식", "2026-09-10", "", "목", ""),
+    ]
 
 
 def test_missing_schedule_and_pdf_details_trigger_audit():

@@ -33,7 +33,7 @@ from typing import Any, Optional
 from ai.rag.evidence_linking.config import EvidenceLinkingConfig
 from ai.rag.evidence_linking.relevance import calculate_relevance_score, extract_keywords, is_relevant_candidate
 
-POLICY_VERSION = "ideation-planner-v9"
+POLICY_VERSION = "ideation-planner-v10"
 
 # 이 값 미만이면 "이번 쟁점의 실제 질의문과 무관하다"고 보고 제외한다 — calculate_relevance_score는
 # 0~1 근사치이고, claim_grounding의 EvidenceLinkingConfig.min_relevance_score(0.1, 사후 검증용
@@ -177,6 +177,39 @@ _SCORE_ONLY_HEADING_RE = re.compile(
     r"\(\s*\d+(?:\.\d+)?\s*(?:점)?\s*\)\s*$"
 )
 
+# 공고문의 행정 안내는 일정·접수 방법을 설명할 뿐 아이디어의 문제·가치·차별성·실현
+# 가능성을 증명하지 않는다. 한 청크에 평가표와 일정이 함께 들어갈 수 있으므로 청크 전체를
+# 단순 키워드로 버리지 않고, 실제로 주입할 quote 후보 단위에서 판정한다.
+_ADMINISTRATIVE_CRITERIA_PATTERNS = (
+    re.compile(r"(?:심사\s*)?결과.{0,20}(?:발표|안내)"),
+    re.compile(r"(?:공식\s*)?홈페이지.{0,20}(?:발표|공지|게시|확인)"),
+    re.compile(r"(?:접수|신청|제출).{0,20}(?:기간|기한|마감|방법|이메일|메일)"),
+    re.compile(r"(?:시상식|수상자).{0,20}(?:일정|발표|안내|참석)"),
+    re.compile(r"(?:문의|담당자|연락처|이메일)\s*[:：]"),
+    re.compile(r"(?:증빙\s*자료|인적\s*사항).{0,20}(?:제출|요청)"),
+    re.compile(r"(?:수상|선정).{0,20}(?:취소|무효)"),
+)
+
+
+def _is_administrative_criteria_quote(quote: str) -> bool:
+    """평가 근거로 사용할 수 없는 접수·발표·시상·문의 안내 문장인지 판정한다."""
+    normalized = re.sub(r"\s+", " ", str(quote or "")).strip()
+    return bool(normalized) and any(pattern.search(normalized) for pattern in _ADMINISTRATIVE_CRITERIA_PATTERNS)
+
+
+def _criteria_document_section_policy_pass(text: str) -> bool:
+    """criteria 청크가 행정 안내만으로 구성됐는지 판정한다.
+
+    혼합 청크는 통과시킨 뒤 quote 선택 단계에서 행정 문장만 제거한다. 그래야 같은 페이지의
+    실제 평가 기준 문장을 함께 잃지 않는다.
+    """
+    candidates = [
+        text[start:end]
+        for start, end, _ in _candidate_spans(text)
+        if not _is_low_information_quote(text[start:end])
+    ]
+    return not candidates or any(not _is_administrative_criteria_quote(candidate) for candidate in candidates)
+
 
 def _is_low_information_quote(quote: str) -> bool:
     """배점이 붙은 평가항목 제목만으로는 주장 근거가 될 수 없으므로 quote 후보에서 제외한다."""
@@ -256,6 +289,12 @@ def evaluate_evidence_eligibility(
         role_policy_pass = False
         exclusion_reasons.append("criteria_not_relevant_to_issue")
 
+    document_section_policy_pass = True
+    if document_role == "criteria":
+        document_section_policy_pass = _criteria_document_section_policy_pass(text)
+        if not document_section_policy_pass:
+            exclusion_reasons.append("administrative_criteria_content")
+
     scope_valid = True
     ideation_source_type = item.get("ideation_source_type")
     if ideation_source_type == "ideation_candidate":
@@ -325,6 +364,7 @@ def evaluate_evidence_eligibility(
         and scope_valid
         and retrieval_score_pass
         and role_policy_pass
+        and document_section_policy_pass
         and issue_relevance_pass
     )
 
@@ -340,6 +380,7 @@ def evaluate_evidence_eligibility(
         "direct_issue_focus_pass": direct_issue_focus_pass,
         "legacy_relevance_pass": legacy_relevance_pass,
         "role_policy_pass": role_policy_pass,
+        "document_section_policy_pass": document_section_policy_pass,
         "eligible": eligible,
         "exclusion_reasons": exclusion_reasons,
     }
@@ -671,6 +712,8 @@ def validate_evidence_plan(
         ):
             errors.append(f"quote_offset_invariant_failed:{ref}")
         elif plan.get("issue"):
+            if source.get("document_role") == "criteria" and _is_administrative_criteria_quote(quote):
+                errors.append(f"administrative_criteria_quote:{ref}")
             focus_pass, _, focus_reason = _quote_issue_focus(
                 quote,
                 plan["issue"],
@@ -751,6 +794,8 @@ def build_evidence_plan(
             continue
         quote, _, _ = extraction
         if _is_meta_instruction_quote(item, quote):
+            continue
+        if item.get("document_role") == "criteria" and _is_administrative_criteria_quote(quote):
             continue
         quote_start, quote_end = extraction[1], extraction[2]
         field_label = _field_label_for_span(content, quote_start, quote_end)

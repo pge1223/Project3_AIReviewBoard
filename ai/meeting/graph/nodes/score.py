@@ -17,5 +17,5 @@ def score_node(state: MeetingState) -> dict:
         {"review_id": result.get("review_id", persona_id), "rubric_scores": result["rubric_scores"]}
         for persona_id, result in state["reviewer_results"].items()
     ]
-    score_result = calculate_score(state["rubric"], reviewers)
+    score_result = calculate_score(state["rubric"], reviewers, submission=state.get("submission"))
     return {"score_result": score_result, "stage": "평가"}

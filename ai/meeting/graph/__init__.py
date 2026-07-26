@@ -7,7 +7,12 @@ from .build import assemble_meeting_graph
 from .llm import make_openai_llm_call
 from .reevaluate import assemble_reevaluation_graph, reevaluation_state
 from .rerun import rerun_reviewer
-from .rubric import build_dynamic_rubric_mapping, build_rubric, build_routing
+from .rubric import (
+    build_dynamic_rubric_mapping,
+    build_routing,
+    build_rubric,
+    combine_criteria_documents,
+)
 from .run import run_chair_phase, run_meeting
 from .state import MeetingState, MeetingStage, initial_state
 
@@ -37,6 +42,7 @@ from .ideation_conv_nodes import (
     make_canvas_update_node,
 )
 from .ideation_conv_run import (
+    continue_ideation_expert_turn,
     finalize_ideation_conversation,
     reply_ideation_conversation,
     reply_to_interjection,
@@ -76,6 +82,7 @@ __all__ = [
     "build_dynamic_rubric_mapping",
     "build_routing",
     "build_rubric",
+    "combine_criteria_documents",
     "initial_state",
     "make_openai_llm_call",
     "rerun_reviewer",
@@ -99,6 +106,7 @@ __all__ = [
     "start_ideation_conversation",
     "reply_ideation_conversation",
     "reply_to_interjection",
+    "continue_ideation_expert_turn",
     "finalize_ideation_conversation",
     "IdeationCancelled",
     "IssueRecord",

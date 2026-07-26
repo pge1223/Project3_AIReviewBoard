@@ -18,6 +18,7 @@ from .ideation_conv_discovery import MAX_CANDIDATE_REGENERATIONS, is_regenerate_
 from .ideation_conv_nodes import (
     PHASE_TO_PENDING_PERSONA,
     REVISION_TRIGGER_STANCES,
+    _route_next_expert_turn,
     _runtime_scope_for,
     conversation_context_for,
     generate_expert_delegation_facilitator_recommendation,
@@ -213,12 +214,24 @@ def _progress(snapshot: IdeationConvState) -> dict:
 # 위해 이름은 남겨 둔다.
 IdeationConvSnapshotCallback = Callable[[IdeationConvState], None]
 
+# 재인/Claude(2026-07-23, 아바타 페이싱 연동): stop_after_expert_turn=True일 때, 이 화자의
+# 발언이 하나 추가되는 즉시 _drive_graph를 멈춘다. _route_next_expert_turn 등 "누가 다음에
+# 말할지" 판단 로직 자체는 전혀 건드리지 않았다(아래 continue_ideation_expert_turn이 그
+# 함수를 그대로 재사용한다).
+_SINGLE_TURN_STOP_SPEAKERS = frozenset({"planning_expert", "dev_expert"})
+
+# 재인/Claude(2026-07-23, 아바타 페이싱 연동): _route_next_expert_turn이 반환할 수 있는 값
+# 중, 강제 진입(forced_next_speaker)으로 이어가도 되는 것들 — "failed"는 제외(그래프를 다시
+# 부를 이유가 없다). continue_ideation_expert_turn에서만 쓴다.
+_FORCED_ENTRY_TARGETS = frozenset({"planning_expert", "dev_expert", "facilitator"})
+
 
 def _drive_graph(
     graph: Any,
     state: IdeationConvState,
     on_progress: IdeationConvProgressCallback | None = None,
     on_snapshot: IdeationConvSnapshotCallback | None = None,
+    stop_after_expert_turn: bool = False,
 ) -> IdeationConvState:
     """용준/Claude(2026-07-22, 요청: "잠시만" 실제 취소): IdeationCancelled가 이 for 루프
     도중 올라오면, 그 시점까지 완료된 마지막 스냅샷을 예외 객체(exc.partial_state)에 실어
@@ -227,13 +240,62 @@ def _drive_graph(
     빠진다(완료된 전문가 주장은 유지, 미완성만 취소 — 요청 14번). 일반 오류(취소가 아닌
     예외)는 그대로 전파하고 partial_state를 붙이지 않는다 — 호출부가 세션 store에 아무것도
     쓰지 않아야 이전 canonical state가 손상되지 않는다(회귀 테스트: 스트리밍 중 일반 LLM
-    오류가 나도 세션 state가 손상되지 않아야 한다)."""
+    오류가 나도 세션 state가 손상되지 않아야 한다).
+
+    재인/Claude(2026-07-23, 아바타 페이싱 연동): stop_after_expert_turn=True면
+    _SINGLE_TURN_STOP_SPEAKERS 화자의 발언이 새로 추가되는 스냅샷에서 멈춘다(기본값
+    False면 기존과 완전히 동일하게 끝까지 돈다 — 기존 호출부는 전혀 영향받지 않는다).
+
+    재인/Claude(2026-07-23, 실측: "선택 직후 진행자 안건 소개랑 기획위원 첫 발언이 한
+    응답에 같이 옴"): 위 조건 하나만으로는 부족한 경우가 있다 — ideation_conv_discovery.py
+    ::_resolve_selection이 후보 확정 시 [선택 확정, 안건 소개] 메시지 2개를 한 노드
+    실행에서 한꺼번에 반환하는데, 마지막 메시지(안건 소개)의 화자가 ideation_facilitator라
+    _SINGLE_TURN_STOP_SPEAKERS에 안 걸려서 멈추지 않고 그대로 planning_expert_discussion까지
+    같은 호출 안에서 이어져버린다. 그래서 "한 스냅샷에서 새 메시지가 2개 이상 추가됐고
+    전부 ideation_facilitator"인 경우도 정지 지점으로 취급한다 — 코드 전체에서
+    _resolve_selection이 메시지를 2개 이상 묶어 반환하는 유일한 곳이라(grep으로 확인),
+    이 조건이 다른 정상 흐름을 잘못 멈추게 할 위험은 없다.
+
+    재인/Claude(2026-07-24, 실측: "진행자 라운드 정리 발언 + 다음 라운드 기획위원 첫
+    발언이 완전히 동시에 나옴"): 진행자가 "정리" 발언을 혼자 하나만 만드는 경우(위 2개
+    묶음 케이스와 다름)는 이 시점에 바로 멈추면 안 된다 — discussion_facilitator 바로
+    다음 노드인 canvas_update(화면에 안 보이는 캔버스 갱신)가 아직 안 끝난 상태라, 여기서
+    끊으면 캔버스 갱신이 통째로 스킵돼버린다. 그렇다고 원래처럼 끝까지 흘려보내면
+    continue_round인 경우 다음 라운드 기획위원 발언까지 같은 호출에 묶여버려 원래 문제가
+    재현된다. 그래서 "진행자 단독 발언을 봤다"는 사실만 기억해뒀다가, 그 다음 스냅샷
+    (canvas_update의 결과 — 새 메시지 유무와 무관하게)에서 멈춘다. continue_round가 아니면
+    canvas_update 다음에 그래프가 자연스럽게 끝나므로(END) 이 예약이 발동하기 전에 루프가
+    이미 끝나 있는 경우도 있는데, 그때도 결과는 동일하게 올바르다(캔버스까지 반영된 최종
+    상태). continue_round인 경우, 다음 라운드 기획위원 발언은 이 호출에 안 끼고, 아바타가
+    진행자 발언을 다 재생한 뒤 별도의 continue_ideation_expert_turn 호출로 자연스럽게
+    이어받는다(그 함수의 "직전 발언자가 planning/dev가 아니면 라운드 첫 턴이므로
+    planning_expert부터"라는 기존 부트스트랩 분기가 그대로 처리해준다 — 아래
+    continue_ideation_expert_turn 참고)."""
     final_state: IdeationConvState = state
+    previous_message_count = len(state.get("messages") or [])
+    stop_after_next_snapshot = False
     try:
         for snapshot in graph.stream(state, stream_mode="values"):
             final_state = snapshot
             if on_progress is not None:
                 on_progress(_progress(snapshot))
+            if stop_after_expert_turn:
+                if stop_after_next_snapshot:
+                    break
+                messages = snapshot.get("messages") or []
+                new_count = len(messages) - previous_message_count
+                if new_count > 0:
+                    new_messages = messages[len(messages) - new_count :]
+                    previous_message_count = len(messages)
+                    last_speaker = new_messages[-1].get("speaker_id")
+                    if last_speaker in _SINGLE_TURN_STOP_SPEAKERS:
+                        break
+                    if new_count > 1 and all(
+                        m.get("speaker_id") == "ideation_facilitator" for m in new_messages
+                    ):
+                        break
+                    if new_count == 1 and last_speaker == "ideation_facilitator":
+                        stop_after_next_snapshot = True
     except IdeationCancelled as exc:
         exc.partial_state = final_state if final_state is not state else None
         raise
@@ -625,6 +687,7 @@ def reply_ideation_conversation(
     evidence_planner=None,
     on_progress: IdeationConvProgressCallback | None = None,
     on_snapshot: IdeationConvSnapshotCallback | None = None,
+    stop_after_expert_turn: bool = False,
 ) -> IdeationConvState:
     """사용자 답변을 반영해 다음 정지 지점까지 그래프를 이어간다.
 
@@ -636,7 +699,16 @@ def reply_ideation_conversation(
         더 물어볼 게 있으면 같은 호출 안에서 다음 질문까지 자동으로 만든 뒤 멈춘다.
       - awaiting_user_decision 중 호출: 사용자가 확정 대신 자유롭게 한 마디 더 남긴
         경우로, 두 전문가가 다시 보완 의견을 말한다.
-    """
+
+    재인/Claude(2026-07-23, 아바타 페이싱 연동 — 실측: "진행자 2번·기획 1번·개발 1번이
+    2초 간격으로 그냥 다 나왔다"): stop_after_expert_turn=False(기본값)면 위 설명대로 한
+    라운드를 끝까지(또는 다음 질문까지) 다 만들고 나서야 반환한다 — 이 함수가 원래 그렇게
+    설계됐고 기존 호출부(비-아바타 테스트 등)는 전부 그 동작을 기대하므로 기본값은 절대
+    안 바꾼다. True면 continue_ideation_expert_turn과 똑같이 _drive_graph의
+    stop_after_expert_turn을 그대로 전달한다 — 즉 "사용자가 방금 답해서 라운드가 새로
+    시작되는 바로 그 첫 순간"에도 기획/개발 위원 발언 1건에서 멈춘다. 이래야 라운드의
+    첫 발언부터 마지막(진행자 정리)까지 전부 아바타 재생 페이싱(끝나기 3초 전 다음 요청)을
+    거치게 된다 — 첫 턴만 통째로 오고 그 다음부터만 끊기는 반쪽짜리 페이싱이 되지 않는다."""
     if previous_state["phase"] not in REPLYABLE_PHASES:
         raise ValueError(
             f"사용자 답변을 받을 수 없는 phase입니다: {previous_state['phase']!r}. "
@@ -702,7 +774,7 @@ def reply_ideation_conversation(
             index_target_evidence=index_target_evidence,
             evidence_planner=evidence_planner,
         )
-        return _drive_graph(graph, restart_state, on_progress, on_snapshot)
+        return _drive_graph(graph, restart_state, on_progress, on_snapshot, stop_after_expert_turn=stop_after_expert_turn)
 
     pending_persona = PHASE_TO_PENDING_PERSONA.get(previous_state["phase"])
     extra_message: ConvMessage | None = None
@@ -758,7 +830,89 @@ def reply_ideation_conversation(
         index_target_evidence=index_target_evidence,
         evidence_planner=evidence_planner,
     )
-    return _drive_graph(graph, state, on_progress, on_snapshot)
+    return _drive_graph(graph, state, on_progress, on_snapshot, stop_after_expert_turn=stop_after_expert_turn)
+
+
+def continue_ideation_expert_turn(
+    *,
+    previous_state: IdeationConvState,
+    llm_call: LLMCall,
+    evidence_lookup=None,
+    ground_claims=None,
+    index_target_evidence: IndexTargetEvidenceFn | None = None,
+    evidence_planner=None,
+    on_progress: IdeationConvProgressCallback | None = None,
+    on_snapshot: IdeationConvSnapshotCallback | None = None,
+) -> IdeationConvState:
+    """재인/Claude(2026-07-23, 아바타 페이싱 연동): 새 사용자 입력 없이, 지금 진행 중인
+    라운드에서 다음 발언 하나만 더 만들어서 반환한다. 아바타가 방금 발언을 재생하는
+    도중(재생 끝나기 3초 전) 다음 위원 영상을 미리 준비시키려고 호출하는 함수 — "누가
+    다음에 말할지"는 새로 판단하지 않고 기존 _route_next_expert_turn(그래프 조건부 엣지가
+    실제로 쓰는 그 함수)을 그대로 재사용한다. 회의 로직은 바뀌지 않고, 언제 멈추고 언제
+    다시 부르는지만 다르다.
+
+    다음 화자가 기획/개발 위원이면 그 발언 1건에서 정확히 멈춘다(_drive_graph의
+    stop_after_expert_turn). 다음 화자가 진행자(facilitator)면 forced_next_speaker="facilitator"로
+    강제 진입시켜 진행자 발언 + 캔버스 갱신까지만 진행하고 멈춘다(캔버스 갱신은 화면에
+    보이는 발언이 없으므로 조용히 같이 반영되지만, 다음 라운드 첫 위원 발언까지 이어서
+    만들지는 않는다 — 재인/Claude(2026-07-24, 실측: "진행자 정리 발언과 다음 라운드
+    기획위원 발언이 동시에 나옴") _drive_graph 쪽 stop_after_next_snapshot 참고). 다음
+    라운드가 자동으로 이어지는 경우(continue_round)에도 그 첫 위원 발언은 이 호출에 안
+    끼고, 아바타가 방금 반환된 진행자 발언을 다 재생한 뒤 이 함수가 다시 호출될 때
+    아래 "라운드 첫 턴" 부트스트랩 분기가 처리한다 — 결과적으로 어느 경우든 "화면에 보일
+    발언 하나"씩 딱딱 끊어서 멈추게 된다.
+
+    previous_state["phase"]가 "expert_discussion"이 아니면 호출할 수 없다(라운드가 이미
+    끝났거나 사용자 입력을 기다리는 중이라는 뜻 — 호출부가 먼저 걸러야 한다).
+
+    재인/Claude(2026-07-23, 실측: "선택 직후 진행자 안건 소개 끝나면 기획위원이 먼저
+    말해야 하는데 요청이 이상하게 감"): _route_next_expert_turn은 "방금 기획/개발위원이
+    말한 직후"에만 불리도록 설계된 함수라(그 함수 자체 주석: "정상 흐름에서는 항상 방금
+    전문가 발언 직후에만 이 라우터가 불린다"), 아직 이번 라운드에서 위원이 한 번도 안
+    말한 시점(방금 진행자 안건 소개만 끝난 직후)에 그대로 부르면 자기 방어 코드
+    (missing_expert_message)가 "facilitator"를 반환해버려 진행자가 또 진행자를 부르는
+    잘못된 결과가 나온다. 이 경우는 _route_next_expert_turn을 아예 부르지 않고, 그래프의
+    기본 진입 규칙(_route_entry의 기본값 = planning_expert_discussion, ideation_conv_build.py
+    ::_ENTRY_NODES)과 동일하게 "라운드 첫 턴은 항상 기획위원"으로 직접 정한다 — 이것도
+    새 판단 로직이 아니라 이미 있는 그래프 관례를 그대로 따르는 것뿐이다."""
+    if previous_state.get("phase") != "expert_discussion":
+        raise ValueError(
+            "continue_ideation_expert_turn은 phase가 'expert_discussion'일 때만 호출할 수 "
+            f"있습니다(현재: {previous_state.get('phase')!r})."
+        )
+
+    messages = previous_state.get("messages") or []
+    last_message = messages[-1] if messages else None
+    if last_message is None or last_message.get("speaker_id") not in ("planning_expert", "dev_expert"):
+        # 이번 라운드에서 위원이 아직 한 번도 안 말함 — _route_next_expert_turn을 쓸 수
+        # 없는 케이스(위 설명 참고). 그래프 기본 진입 규칙과 동일하게 기획위원이 먼저 말한다.
+        next_target = "planning_expert"
+    else:
+        next_target = _route_next_expert_turn(previous_state)
+    if next_target not in _FORCED_ENTRY_TARGETS:
+        # "failed" — 더 진행할 턴이 없다. 그대로 반환(호출부가 phase 등을 보고 처리).
+        return previous_state
+
+    state = IdeationConvState(**{**previous_state, "forced_next_speaker": next_target})
+    graph = assemble_ideation_conversation_graph(
+        llm_call,
+        evidence_lookup=evidence_lookup,
+        ground_claims=ground_claims,
+        index_target_evidence=index_target_evidence,
+        evidence_planner=evidence_planner,
+    )
+    result_state = _drive_graph(graph, state, on_progress, on_snapshot, stop_after_expert_turn=True)
+
+    if result_state.get("forced_next_speaker") is not None:
+        # 재인/Claude(2026-07-23): forced_next_speaker="facilitator"로 강제 진입한 뒤 라운드가
+        # 그대로 끝나면(await_user_decision) discussion_facilitator_node는 이 값을 리셋하지
+        # 않는다 — planning/dev 노드(make_conv_discussion_node)는 매번 스스로 None으로
+        # 리셋하지만, facilitator는 원래 forced 진입 대상이 아니었던 노드라 그 리셋 로직이
+        # 없다(회의 로직 자체를 건드리지 않으려고 그 노드 코드는 그대로 뒀다). 다음 라운드가
+        # 시작될 때 이 값이 그대로 남아있으면 _route_entry가 엉뚱하게 facilitator로 바로
+        # 진입해버리므로, 여기서 확실히 지운다.
+        result_state = IdeationConvState(**{**result_state, "forced_next_speaker": None})
+    return result_state
 
 
 def finalize_ideation_conversation(
