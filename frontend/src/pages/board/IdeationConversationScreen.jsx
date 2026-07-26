@@ -2022,8 +2022,6 @@ export function IdeationResultScreen({ ideationConv, setIdeationConv, onBack, on
   }
 
   const proposal = ideationConv.idea_proposal
-  const originalCandidates = ideationConv.original_idea_candidates || []
-  const hasDiscoveryHistory = ideationConv.ideation_mode === 'discovery' && originalCandidates.length > 0
 
   return (
     <div style={{ maxWidth: 780 }}>
@@ -2043,44 +2041,6 @@ export function IdeationResultScreen({ ideationConv, setIdeationConv, onBack, on
           </div>
         ))}
       </div>
-
-      {hasDiscoveryHistory && (
-        <div className="card glass" style={{ marginTop: 16 }}>
-          <div style={{ fontSize: 14.5, fontWeight: 700, marginBottom: 12 }}>아이디어 발굴 이력</div>
-
-          <div style={{ marginBottom: 12 }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-2)', marginBottom: 6 }}>최초 후보</div>
-            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 14, lineHeight: 1.7 }}>
-              {originalCandidates.map((c) => <li key={c.candidate_id}>{c.title}</li>)}
-            </ul>
-          </div>
-
-          {ideationConv.selected_idea && (
-            <div style={{ marginBottom: 12 }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-2)', marginBottom: 6 }}>선택하거나 결합한 후보</div>
-              <div style={{ fontSize: 14, lineHeight: 1.6 }}>{ideationConv.selected_idea.title}</div>
-            </div>
-          )}
-
-          {ideationConv.selection_reason && (
-            <div style={{ marginBottom: 12 }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-2)', marginBottom: 6 }}>선택 이유</div>
-              <div style={{ fontSize: 14, lineHeight: 1.6 }}>{ideationConv.selection_reason}</div>
-            </div>
-          )}
-
-          {ideationConv.user_selection_message && (
-            <div style={{ marginBottom: 12 }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-2)', marginBottom: 6 }}>사용자 원문 선택 요청</div>
-              <div style={{ fontSize: 14, lineHeight: 1.6 }}>“{ideationConv.user_selection_message}”</div>
-            </div>
-          )}
-
-          {ideationConv.merge_analysis && (
-            <MergeAnalysisPanel mergeAnalysis={ideationConv.merge_analysis} sourceCandidates={ideationConv.source_candidates} />
-          )}
-        </div>
-      )}
 
       {(ideationConv.application_form_items || []).length > 0 && (
         <div style={{ marginTop: 20 }}>
@@ -2164,6 +2124,23 @@ export function ApplicationFormDraftScreen({ ideationConv, onBack }) {
               <li key={i}>{note}</li>
             ))}
           </ul>
+        </div>
+      )}
+
+      {(ideationConv.application_form_items || []).length > 0 && (
+        <div style={{ marginTop: 20 }}>
+          {formDraftError && (
+            <p style={{ color: 'var(--coral)', fontSize: 14.5, marginBottom: 10 }}>{formDraftError.message}</p>
+          )}
+          <button
+            type="button"
+            className="btn-primary"
+            style={{ display: 'flex', alignItems: 'center', gap: 8 }}
+            onClick={handleGenerateFormDraft}
+            disabled={generatingFormDraft}
+          >
+            {generatingFormDraft ? '신청서 초안 작성 중...' : '신청서 초안 만들기'}
+          </button>
         </div>
       )}
     </div>
