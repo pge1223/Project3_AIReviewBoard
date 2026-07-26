@@ -101,6 +101,24 @@ export function resolveUseRag(projectId, criteriaDocuments) {
   return (criteriaDocuments || []).some((doc) => doc.status === 'done')
 }
 
+// 가은/Claude(2026-07-24, 요청: "신청기관/도시명/홈페이지 같은 건 회의로 할 이야기가
+// 아니다 — 개인정보 입력란도 있다") — 신청서 양식에서 담당자 연락처·기관 식별 정보처럼
+// AI 위원과 "상의해서 내용을 정할" 필요가 없는 행정/개인정보 항목을 걸러내는 기본
+// 휴리스틱. LLM 호출 없이 필드명 키워드로만 판단한다 — 완벽한 분류가 목적이 아니라
+// "회의 시작 전 확인 팝업"의 기본 선택값을 정하는 용도이므로, 오분류는 사용자가 팝업에서
+// 직접 토글해 바로잡을 수 있다(그래서 이 목록은 넓게 잡지 않고 확실한 것만 넣는다).
+const ADMINISTRATIVE_FIELD_KEYWORDS = [
+  '담당자', '성명', '전화', '이메일', '메일', '팩스', '홈페이지',
+  '사업자등록번호', '법인등록번호', '부서', '직위', '대표자',
+  '신청 기관', '신청기관', '도시명', '주소', '기업(법인)명',
+]
+
+export function isAdministrativeFormField(fieldName) {
+  const name = (fieldName || '').trim()
+  if (!name) return false
+  return ADMINISTRATIVE_FIELD_KEYWORDS.some((keyword) => name.includes(keyword))
+}
+
 // 화면에 노출되는 전문가/진행자/사용자 표시 메타 — 실제 speaker_id는
 // ai/meeting/graph/ideation_conv_nodes.py(_speaker_fields는 persona_cards.json에서
 // display_name/role을 가져오지만, speaker_id 자체는 호출부가 "planning_expert"/

@@ -33,6 +33,7 @@ from prompts import (
     get_persona_card,
 )
 
+from .application_form_draft import apply_application_form_draft_patch
 from .ideation_conv_state import (
     DISCUSSION_TOPIC_PRIORITY,
     TOPIC_PRIORITY,
@@ -220,7 +221,60 @@ _MAX_INTERIM_CONCLUSION_CHARS = 200
 # 보이는 spoken_text의 분량 상한. 위원 발언/질문/위임 제안·검토는 1~3문장을 기준으로 300자,
 # 진행자(라운드 정리·위임 최종 권고)는 1~2문장을 기준으로 더 짧은 200자를 둔다.
 _MAX_SPOKEN_TEXT_CHARS = 300
-_MAX_FACILITATOR_SPOKEN_TEXT_CHARS = 200
+_MAX_FACILITATOR_SPOKEN_TEXT_CHARS = 300
+_FACILITATOR_PHASE_ORDER = (
+    "problem_definition",
+    "target_user",
+    "solution_context",
+    "core_value",
+    "mvp_scope",
+    "required_data",
+    "ai_role",
+    "implementation_risk",
+    "success_metrics",
+)
+_EARLY_FACILITATOR_PHASES = frozenset(_FACILITATOR_PHASE_ORDER[:3])
+_DOWNSTREAM_FACILITATOR_TEXT_PATTERN = re.compile(
+    r"\b(?:MVP|API|DB|RAG)\b|데이터베이스|필요\s*데이터|데이터\s*수집\s*인프라|"
+    r"수집\s*인프라|AI\s*역할|모델\s*개발|기술\s*스택|서버\s*구성",
+    re.IGNORECASE,
+)
+_DOWNSTREAM_FORM_FIELD_PATTERN = re.compile(
+    r"MVP|필요\s*데이터|데이터|AI.*(?:기술|모델)|적용\s*기술|실현\s*가능|API|인프라|"
+    r"성과|KPI|결과|효과|혁신성|확장성|적용성",
+    re.IGNORECASE,
+)
+_ADMIN_FORM_FIELD_PATTERN = re.compile(
+    r"신청\s*기관|도시명|홈페이지|담당자|성명|부서|전화|직위|이메일|대표자|"
+    r"사업자\s*등록|법인\s*등록|주소|이미지|로고",
+    re.IGNORECASE,
+)
+_VAGUE_FACILITATOR_QUESTION_PATTERN = re.compile(
+    r"자세히\s*(?:작성|설명)|구체적인\s*(?:정보|내용).{0,12}(?:제공|알려)|"
+    r"목적.{0,12}무엇|어떻게\s*정의하시겠",
+    re.IGNORECASE,
+)
+_FACILITATOR_ANCHOR_STOPWORDS = frozenset(
+    {
+        "기반",
+        "서비스",
+        "프로젝트",
+        "솔루션",
+        "아이디어",
+        "사용자",
+        "도시",
+        "문제",
+        "목적",
+        "기술",
+        "활용",
+        "제공",
+        "개발",
+        "적용",
+        "위한",
+        "통해",
+        "대한",
+    }
+)
 
 _STANCE_TO_MESSAGE_TYPE = {
     "동의": "agreement",
@@ -1310,7 +1364,307 @@ def _validate_facilitator_response(raw: dict) -> str | None:
         return "missing_or_empty_field:spoken_text"
     if len(raw.get("spoken_text", "")) > _MAX_FACILITATOR_SPOKEN_TEXT_CHARS:
         return "spoken_text_too_long"
+    if "draft_patch" in raw and not isinstance(raw.get("draft_patch"), list):
+        return "draft_patch_not_a_list"
+    if "choices" in raw and not isinstance(raw.get("choices"), list):
+        return "choices_not_a_list"
     return None
+
+
+def _next_facilitator_phase(phase: str) -> str:
+    if phase not in _FACILITATOR_PHASE_ORDER:
+        return _FACILITATOR_PHASE_ORDER[0]
+    index = _FACILITATOR_PHASE_ORDER.index(phase)
+    return _FACILITATOR_PHASE_ORDER[min(index + 1, len(_FACILITATOR_PHASE_ORDER) - 1)]
+
+
+def _facilitator_context_anchors(
+    selected_idea: Any,
+    idea_canvas: Any,
+    limit: int = 12,
+) -> list[str]:
+    """선택 아이디어에 실제로 연결된 질문인지 검증할 짧은 핵심어 목록을 만든다."""
+    values: list[str] = []
+    for source in (idea_canvas, selected_idea):
+        if not isinstance(source, dict):
+            continue
+        for key in ("problem", "target_user", "title", "idea_name", "core_value", "solution"):
+            value = source.get(key)
+            if isinstance(value, str) and value.strip():
+                values.append(value)
+
+    anchors: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        for token in re.findall(r"[가-힣A-Za-z0-9]{2,}", value):
+            normalized = token.lower()
+            if normalized in _FACILITATOR_ANCHOR_STOPWORDS or normalized.isdigit():
+                continue
+            if normalized not in seen:
+                seen.add(normalized)
+                anchors.append(token)
+                if len(anchors) >= limit:
+                    return anchors
+    return anchors
+
+
+def _choice_labels(raw_choices: Any) -> list[str]:
+    if not isinstance(raw_choices, list):
+        return []
+    labels: list[str] = []
+    for choice in raw_choices:
+        if isinstance(choice, dict):
+            label = str(choice.get("label") or "").strip()
+        else:
+            label = str(choice or "").strip()
+        if label:
+            labels.append(label)
+    return labels
+
+
+def _compose_form_facilitator_text(
+    field_name: str,
+    confirmed_content: str,
+    decision_reason: str,
+    user_question: str,
+    choices: Any,
+) -> str:
+    """진행자 v02의 사용자 노출 발화를 네 필수 요소가 빠지지 않도록 3줄로 조립한다."""
+    choice_labels = _choice_labels(choices)
+    choice_text = f" 선택지: {' / '.join(choice_labels)}" if choice_labels else ""
+    return (
+        f"지금 작성 중인 신청 양식 항목은 '{field_name}'입니다. "
+        f"지금까지 확정된 내용: {confirmed_content}\n"
+        f"{decision_reason}\n"
+        f"{user_question}{choice_text}"
+    )
+
+
+def _make_validate_form_facilitator_response(
+    application_form_draft: list[dict],
+    focus_phase: str,
+    next_phase: str,
+    prior_field_id: str | None,
+    context_anchors: list[str] | None = None,
+) -> Callable[[dict], str | None]:
+    """신청 양식 모드의 단계 순서와 네 요소 출력 계약을 구조적으로 검증한다."""
+    rows_by_id = {
+        str(row.get("field_id")): row
+        for row in application_form_draft
+        if isinstance(row, dict) and row.get("field_id")
+    }
+    normalized_anchors = [anchor.lower() for anchor in (context_anchors or []) if anchor.strip()]
+
+    def validate(raw: dict) -> str | None:
+        base_error = _validate_facilitator_response(raw)
+        if base_error:
+            return base_error
+
+        # 구버전 테스트 스텁/저장 세션 응답은 신규 필드가 전혀 없으면 기존 검증을 유지한다.
+        # 실제 v02 응답은 스키마에 아래 키들이 있으므로 하나라도 반환한 순간 전체 계약을 강제한다.
+        v02_keys = {"phase", "current_field_id", "confirmed_content", "decision_reason", "draft_patch"}
+        if not rows_by_id or not any(key in raw for key in v02_keys):
+            return None
+
+        current_field_id = str(raw.get("current_field_id") or "").strip()
+        if current_field_id not in rows_by_id:
+            return "invalid_current_field_id"
+        if _blank(raw.get("confirmed_content")):
+            return "missing_or_empty_field:confirmed_content"
+        if _blank(raw.get("decision_reason")):
+            return "missing_or_empty_field:decision_reason"
+        if not bool(raw.get("needs_user_decision")):
+            return "form_facilitator_must_await_user_decision"
+        if _blank(raw.get("user_question")):
+            return "missing_or_empty_field:user_question"
+        if focus_phase == "problem_definition" and not prior_field_id:
+            choice_labels = _choice_labels(raw.get("choices"))
+            if not 2 <= len(choice_labels) <= 4:
+                return "initial_problem_turn_requires_two_to_four_choices"
+
+        confirms_prior_field = any(
+            isinstance(patch, dict)
+            and str(patch.get("field_id") or "").strip() == prior_field_id
+            and str(patch.get("status") or "").strip().lower() == "confirmed"
+            for patch in (raw.get("draft_patch") or [])
+        )
+        expected_phase = next_phase if prior_field_id and confirms_prior_field else focus_phase
+        if raw.get("phase") != expected_phase:
+            return f"invalid_facilitator_phase:expected_{expected_phase}"
+
+        row = rows_by_id[current_field_id]
+        field_name = str(row.get("field_name") or "").strip()
+        current_field_will_be_confirmed = row.get("status") == "confirmed" or any(
+            isinstance(patch, dict)
+            and str(patch.get("field_id") or "").strip() == current_field_id
+            and str(patch.get("status") or "").strip().lower() == "confirmed"
+            for patch in (raw.get("draft_patch") or [])
+        )
+        confirmed_content = str(raw.get("confirmed_content") or "").strip()
+        if not current_field_will_be_confirmed and confirmed_content != "아직 없음":
+            return "unconfirmed_field_must_say_no_confirmed_content"
+        if current_field_will_be_confirmed and confirmed_content == "아직 없음":
+            return "confirmed_field_must_summarize_confirmed_content"
+        if _ADMIN_FORM_FIELD_PATTERN.search(field_name):
+            return "administrative_field_not_allowed_in_ideation_flow"
+        if expected_phase in _EARLY_FACILITATOR_PHASES:
+            if _DOWNSTREAM_FORM_FIELD_PATTERN.search(field_name):
+                return "downstream_form_field_before_problem_target_context"
+            visible_parts = " ".join(
+                [
+                    str(raw.get("spoken_text") or ""),
+                    str(raw.get("decision_reason") or ""),
+                    str(raw.get("user_question") or ""),
+                    " ".join(_choice_labels(raw.get("choices"))),
+                ]
+            )
+            if _DOWNSTREAM_FACILITATOR_TEXT_PATTERN.search(visible_parts):
+                return "downstream_technical_topic_before_problem_target_context"
+        question = str(raw.get("user_question") or "").strip()
+        if _VAGUE_FACILITATOR_QUESTION_PATTERN.search(question):
+            return "vague_facilitator_question"
+        if normalized_anchors and not any(anchor in question.lower() for anchor in normalized_anchors):
+            return "question_not_grounded_in_selected_idea"
+        contextual_explanation = str(raw.get("decision_reason") or "").lower()
+        if normalized_anchors and not any(
+            anchor in contextual_explanation for anchor in normalized_anchors
+        ):
+            return "decision_not_grounded_in_selected_idea"
+
+        composed = _compose_form_facilitator_text(
+            field_name,
+            str(raw.get("confirmed_content")).strip(),
+            str(raw.get("decision_reason")).strip(),
+            str(raw.get("user_question")).strip(),
+            raw.get("choices"),
+        )
+        if len(composed) > _MAX_FACILITATOR_SPOKEN_TEXT_CHARS:
+            return "composed_spoken_text_too_long"
+        return None
+
+    return validate
+
+
+def _form_facilitator_fallback_payload(
+    application_form_draft: list[dict],
+    focus_phase: str,
+    prior_field_id: str | None,
+    context_anchors: list[str] | None,
+    selected_idea: Any = None,
+) -> dict:
+    """v02 응답 검증이 두 번 실패해도 회의를 중단하지 않는 보수적 질문을 만든다."""
+    rows = [row for row in application_form_draft if isinstance(row, dict)]
+
+    def allowed(row: dict) -> bool:
+        field_name = str(row.get("field_name") or "").strip()
+        if not field_name or _ADMIN_FORM_FIELD_PATTERN.search(field_name):
+            return False
+        if focus_phase in _EARLY_FACILITATOR_PHASES:
+            return not _DOWNSTREAM_FORM_FIELD_PATTERN.search(field_name)
+        return True
+
+    current_row = next(
+        (
+            row
+            for row in rows
+            if str(row.get("field_id") or "") == str(prior_field_id or "") and allowed(row)
+        ),
+        None,
+    )
+    if current_row is None:
+        current_row = next((row for row in rows if allowed(row)), None)
+    if current_row is None:
+        current_row = rows[0] if rows else {
+            "field_id": "",
+            "field_name": "현재 신청 양식 항목",
+            "value": "",
+            "status": "empty",
+        }
+
+    anchor = next((str(item).strip() for item in (context_anchors or []) if str(item).strip()), "")
+    subject = anchor or "선택한 아이디어"
+    phase_copy = {
+        "problem_definition": (
+            f"{subject}와 관련된 문제 상황을 구체화해야 공고의 문제 설정 기준과 연결할 수 있습니다.",
+            f"{subject} 때문에 가장 큰 불편이 생기는 구체적인 순간은 언제인가요?",
+        ),
+        "target_user": (
+            f"{subject} 문제를 실제로 겪는 대상을 확정해야 제안의 필요성을 설명할 수 있습니다.",
+            f"{subject} 문제를 가장 자주 겪는 사람이나 조직은 누구인가요?",
+        ),
+        "solution_context": (
+            f"{subject} 문제를 해결할 사용 상황을 정해야 제안 범위를 구체화할 수 있습니다.",
+            f"{subject} 문제를 해결하기 위해 가장 먼저 바꾸고 싶은 사용 상황은 무엇인가요?",
+        ),
+        "core_value": (
+            f"{subject}에서 만들 핵심 변화를 정해야 제안 방향을 한 문장으로 설명할 수 있습니다.",
+            f"{subject}를 통해 사용자가 가장 먼저 체감해야 할 변화 한 가지는 무엇인가요?",
+        ),
+        "mvp_scope": (
+            f"{subject}의 핵심 가치가 정리되어 첫 구현 범위를 결정할 차례입니다.",
+            f"{subject}의 첫 버전에서 반드시 작동해야 할 기능 한 가지는 무엇인가요?",
+        ),
+        "required_data": (
+            f"{subject}의 첫 구현 범위가 정리되어 필요한 입력 정보를 확인할 차례입니다.",
+            f"{subject}의 핵심 기능이 작동하려면 반드시 확보해야 할 정보는 무엇인가요?",
+        ),
+        "ai_role": (
+            f"{subject}에 필요한 정보가 정리되어 AI가 맡을 역할을 구분할 차례입니다.",
+            f"{subject}에서 규칙 기반 처리보다 AI가 맡아야 하는 판단은 무엇인가요?",
+        ),
+        "implementation_risk": (
+            f"{subject}의 구현 방향이 정리되어 운영 전에 확인할 위험을 결정할 차례입니다.",
+            f"{subject}를 실제 운영할 때 가장 먼저 막힐 가능성이 큰 조건은 무엇인가요?",
+        ),
+        "success_metrics": (
+            f"{subject}의 운영 범위가 정리되어 결과를 판단할 기준을 정할 차례입니다.",
+            f"{subject}가 효과가 있었다고 판단할 수 있는 변화 한 가지는 무엇인가요?",
+        ),
+    }
+    decision_reason, user_question = phase_copy.get(
+        focus_phase,
+        phase_copy["problem_definition"],
+    )
+    choices: list[dict] = []
+    if focus_phase == "problem_definition" and not prior_field_id:
+        problem = (
+            str((selected_idea or {}).get("problem") or "").strip()
+            if isinstance(selected_idea, dict)
+            else ""
+        )
+        if problem:
+            choices.append({"id": "problem_hypothesis", "label": problem[:80]})
+        choices.append({"id": "direct_input", "label": "다른 문제를 직접 입력"})
+    confirmed_content = (
+        str(current_row.get("value") or "").strip()
+        if current_row.get("status") == "confirmed"
+        else "아직 없음"
+    )
+    field_name = str(current_row.get("field_name") or "현재 신청 양식 항목").strip()
+    return {
+        "phase": focus_phase,
+        "current_field_id": str(current_row.get("field_id") or ""),
+        "confirmed_content": confirmed_content,
+        "decision_reason": decision_reason,
+        "spoken_text": _compose_form_facilitator_text(
+            field_name,
+            confirmed_content,
+            decision_reason,
+            user_question,
+            choices,
+        ),
+        "user_question": user_question,
+        "choices": choices,
+        "expert_insight_summary": {"planning": "", "development": ""},
+        "draft_patch": [],
+        "next_action": "ask_user",
+        "agreements": [],
+        "disagreements": [],
+        "facilitator_summary": decision_reason,
+        "needs_user_decision": True,
+        "safe_fallback": True,
+        "safe_fallback_reason": "facilitator_v02_validation_failed_twice",
+    }
 
 
 def _now_iso() -> str:
@@ -2773,6 +3127,19 @@ def _route_next_expert_turn(state: IdeationConvState) -> str:
         if hit_round_cap or hit_issue_cap:
             return routed("facilitator", "hard_turn_cap")
         return routed(required_counterpart, "required_counterpart_review")
+
+    # 신청 양식 작성 코치 흐름: 문제 정의와 대상 결정은 기획 검토 한 번이면 진행자에게
+    # 돌려준다. 개발 검토는 해결 상황/방식 단계부터 참여한다.
+    if (
+        state.get("application_form_items")
+        and last.get("speaker_id") == "planning_expert"
+    ):
+        latest_facilitator = _most_recent_message_by(messages, "ideation_facilitator")
+        facilitator_phase = str(
+            ((latest_facilitator or {}).get("structured") or {}).get("phase") or ""
+        ).strip()
+        if facilitator_phase in {"problem_definition", "target_user"}:
+            return routed("facilitator", "planning_only_for_early_form_phase")
 
     if hit_round_cap:
         return routed("facilitator", "max_turns_reached")
@@ -4734,6 +5101,10 @@ def make_discussion_facilitator_node(llm_call: LLMCall) -> Callable[[IdeationCon
 
         if stop_reason == "user_input_required":
             decided_next_action = "await_user_decision"
+        elif state.get("application_form_items"):
+            # 진행자 v02: 신청 양식이 있는 세션은 진행자 발화마다 사용자가 한 항목을
+            # 결정하도록 멈춘다. 자동 다음 라운드는 "질문 하나" 출력 계약과 충돌한다.
+            decided_next_action = "await_user_decision"
         elif round_number >= max_rounds:
             decided_next_action = "await_user_decision"
         elif stop_reason == "max_turns_reached" and open_issues:
@@ -4751,6 +5122,8 @@ def make_discussion_facilitator_node(llm_call: LLMCall) -> Callable[[IdeationCon
 
         planning_msg = _most_recent_message_by(state["messages"], "planning_expert")
         dev_msg = _most_recent_message_by(state["messages"], "dev_expert")
+        user_msg = _most_recent_message_by(state["messages"], "user")
+        prior_facilitator_msg = _most_recent_message_by(state["messages"], "ideation_facilitator")
         planning_position = planning_msg.get("structured") if planning_msg else None
         development_review = dev_msg.get("structured") if dev_msg else None
         # 용준/Claude(2026-07-23, 요청: 결정론적 사용자 질문 게이트) — resolve_user_input_gate가
@@ -4761,6 +5134,22 @@ def make_discussion_facilitator_node(llm_call: LLMCall) -> Callable[[IdeationCon
         last_structured = (last_message.get("structured") or {}) if last_message else {}
         gated_decision_required = bool(last_structured.get("user_decision_required"))
         gated_decision_question = last_structured.get("user_question") if gated_decision_required else None
+
+        # 가은/Claude(2026-07-24, dev 병합) — 진행자 v02(신청 양식 작성 코치) 컨텍스트 계산.
+        # 위 게이트 로직(dev, 쟁점 로테이션 축)과는 독립적인 축이라 함께 둔다.
+        facilitator_context = _isolate_discussion_evidence_context(conversation_context_for(state))
+        prior_facilitator_structured = (prior_facilitator_msg or {}).get("structured") or {}
+        prior_field_id = str(prior_facilitator_structured.get("current_field_id") or "").strip() or None
+        prior_phase = str(prior_facilitator_structured.get("phase") or "").strip()
+        focus_phase = (
+            prior_phase if prior_phase in _FACILITATOR_PHASE_ORDER else _FACILITATOR_PHASE_ORDER[0]
+        )
+        next_phase = _next_facilitator_phase(focus_phase)
+        current_form_draft = state.get("application_form_draft") or []
+        context_anchors = _facilitator_context_anchors(
+            state.get("selected_idea"),
+            state.get("idea_canvas"),
+        )
         message_id = _new_message_id()
         trace_event(
             "IDEATION_TURN_START",
@@ -4788,13 +5177,46 @@ def make_discussion_facilitator_node(llm_call: LLMCall) -> Callable[[IdeationCon
             resolved_issues=resolved_issues,
             stop_reason=stop_reason,
             next_issue_hint=next_active_issue_title,
+            application_form_items=state.get("application_form_items") or [],
+            application_form_draft=state.get("application_form_draft") or [],
+            selected_idea=state.get("selected_idea"),
+            idea_canvas=state.get("idea_canvas"),
+            latest_user_answer=user_msg.get("content", "") if user_msg else None,
+            recent_messages=facilitator_context.get("recent_messages") or [],
+            required_phase=focus_phase,
+            next_phase_if_confirmed=next_phase,
+            context_anchors=context_anchors,
+        )
+        validate_facilitator = (
+            _make_validate_form_facilitator_response(
+                current_form_draft,
+                focus_phase,
+                next_phase,
+                prior_field_id,
+                context_anchors,
+            )
+            if current_form_draft
+            else _validate_facilitator_response
         )
         raw, ok, attempts = _safe_call_structured_json(
-            llm_call, prompt, _validate_facilitator_response, "discussion_facilitator"
+            llm_call, prompt, validate_facilitator, "discussion_facilitator"
         )
         used = state.get("llm_calls_used", 0) + attempts
         if not ok:
-            return {"phase": "failed", "failed_node": "discussion_facilitator", "llm_calls_used": used}
+            if current_form_draft:
+                raw = _form_facilitator_fallback_payload(
+                    current_form_draft,
+                    focus_phase,
+                    prior_field_id,
+                    context_anchors,
+                    state.get("selected_idea"),
+                )
+            else:
+                return {
+                    "phase": "failed",
+                    "failed_node": "discussion_facilitator",
+                    "llm_calls_used": used,
+                }
 
         summary_text = raw.get("facilitator_summary", "")
         agreements = _as_string_list(raw.get("agreements"))
@@ -4873,6 +5295,59 @@ def make_discussion_facilitator_node(llm_call: LLMCall) -> Callable[[IdeationCon
         elif needs_user_decision and user_question and user_question not in content:
             content = f"{content}\n\n{user_question}" if content else user_question
 
+        # 가은/Claude(2026-07-24, dev 병합) — 진행자 v02(신청 양식 작성 코치)가 있는 세션은
+        # 아래에서 content를 다시 구조화된 문장(_compose_form_facilitator_text)으로 덮어쓴다.
+        # 위 dev 로직(게이트 질문 보정 등)은 v02가 아닌 세션의 기본 동작으로 그대로 남겨둔다.
+        confirmable_field_ids = {prior_field_id} if user_msg and prior_field_id else set()
+        application_form_draft, applied_draft_patch = apply_application_form_draft_patch(
+            state.get("application_form_draft"),
+            raw.get("draft_patch"),
+            confirmable_field_ids=confirmable_field_ids,
+        )
+        allowed_field_ids = {
+            str(row.get("field_id"))
+            for row in application_form_draft
+            if isinstance(row, dict) and row.get("field_id")
+        }
+        current_field_id = str(raw.get("current_field_id") or "").strip() or None
+        if current_field_id not in allowed_field_ids:
+            current_field_id = None
+        confirmed_content = raw.get("confirmed_content")
+        decision_reason = raw.get("decision_reason")
+        is_v02_form_response = bool(
+            current_form_draft
+            and current_field_id
+            and any(
+                key in raw
+                for key in (
+                    "phase",
+                    "current_field_id",
+                    "confirmed_content",
+                    "decision_reason",
+                    "draft_patch",
+                )
+            )
+        )
+        if is_v02_form_response:
+            current_row = next(
+                row
+                for row in application_form_draft
+                if str(row.get("field_id")) == current_field_id
+            )
+            confirmed_content = (
+                str(raw.get("confirmed_content") or "").strip()
+                if current_row.get("status") == "confirmed"
+                else "아직 없음"
+            )
+            decision_reason = str(raw.get("decision_reason") or "").strip()
+            content = _compose_form_facilitator_text(
+                str(current_row.get("field_name") or "").strip(),
+                confirmed_content,
+                decision_reason,
+                str(user_question or "").strip(),
+                raw.get("choices"),
+            )
+
         message = _build_message(
             persona_id="ideation_facilitator",
             round_number=round_number,
@@ -4887,6 +5362,20 @@ def make_discussion_facilitator_node(llm_call: LLMCall) -> Callable[[IdeationCon
                 "needs_user_decision": needs_user_decision,
                 "user_question": user_question,
                 "stop_reason": stop_reason,
+                "phase": raw.get("phase"),
+                "current_field_id": current_field_id,
+                "confirmed_content": confirmed_content,
+                "decision_reason": decision_reason,
+                "choices": raw.get("choices") if isinstance(raw.get("choices"), list) else [],
+                "expert_insight_summary": (
+                    raw.get("expert_insight_summary")
+                    if isinstance(raw.get("expert_insight_summary"), dict)
+                    else {}
+                ),
+                "draft_patch": applied_draft_patch,
+                "next_action": raw.get("next_action"),
+                "safe_fallback": bool(raw.get("safe_fallback")),
+                "safe_fallback_reason": raw.get("safe_fallback_reason"),
             },
             message_id=message_id,
         )
@@ -4941,6 +5430,7 @@ def make_discussion_facilitator_node(llm_call: LLMCall) -> Callable[[IdeationCon
             "discussion_rounds": [record],
             "llm_calls_used": used,
             "stop_reason": stop_reason,
+            "application_form_draft": application_form_draft,
         }
         if parked_issue_id:
             # 발언 상한으로 강제 종료한 쟁점은 다음 라운드에 다시 등장하지 않는다 —
