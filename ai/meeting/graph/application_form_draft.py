@@ -20,19 +20,25 @@ _FIELD_ID_SAFE = re.compile(r"[^a-z0-9_]+")
 # 어긋난다). 진행자가 고정 9단계 체크리스트 대신 이 신청서에 실제로 있는 "남은 내용 항목"을
 # 대상으로 다음 질문을 고르도록 바꾸면서, 그 후보군에서 행정/개인정보 항목을 코드로 먼저
 # 제외하기 위해 추가했다(예전에는 이 필터링을 LLM 프롬프트 지시문에만 맡겼다).
+# 가은/Claude(2026-07-27, 요청: "과제번호, email 이런 게 다 체크되어 있다" 버그 확인) —
+# frontend/src/pages/board/ideationConversationHelpers.js의 ADMINISTRATIVE_FIELD_KEYWORDS와
+# 반드시 동일하게 유지한다(위 모듈 docstring 참고). 실사용 신청서에서 이 목록에 없어
+# 걸러지지 않았던 개인정보/행정 항목을 추가했다: 핸드폰, 영문 e-mail, 주민등록번호·생년월일,
+# 개인정보, 소속(기관), 책임자, 참여기관/주관기관/기관명.
 _ADMINISTRATIVE_FIELD_KEYWORDS = (
-    "담당자", "성명", "전화", "이메일", "메일", "팩스", "홈페이지",
-    "사업자등록번호", "법인등록번호", "부서", "직위", "대표자",
+    "담당자", "성명", "전화", "핸드폰", "휴대폰", "휴대전화", "이메일", "메일", "e-mail", "팩스", "홈페이지",
+    "사업자등록번호", "법인등록번호", "부서", "직위", "대표자", "책임자",
     "설립연도", "매출액", "매출", "경영실적", "자본금", "종업원", "고용 인원",
-    "신청 기관", "신청기관", "도시명", "주소", "기업(법인)명",
+    "신청 기관", "신청기관", "참여기관", "주관기관", "기관명", "소속", "도시명", "주소", "기업(법인)명",
+    "주민등록번호", "생년월일", "개인정보",
 )
 
 
 def is_administrative_form_field(field_name: str) -> bool:
-    name = (field_name or "").strip()
+    name = (field_name or "").strip().lower()
     if not name:
         return False
-    return any(keyword in name for keyword in _ADMINISTRATIVE_FIELD_KEYWORDS)
+    return any(keyword.lower() in name for keyword in _ADMINISTRATIVE_FIELD_KEYWORDS)
 
 
 def remaining_content_fields(draft: list[dict] | None) -> list[dict]:
