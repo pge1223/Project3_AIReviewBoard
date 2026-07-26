@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { AlertTriangle } from 'lucide-react'
 import { getAvailableSpeakers, openMediaStreamSocket } from '../../api/mediaApi'
 import { SPEAKER_META } from './ideationConversationHelpers'
 import { schedulePacingTimer } from './avatarPacingTimer'
@@ -31,66 +32,156 @@ const RESUME_THRESHOLD = 1.5
 const PAUSE_THRESHOLD = 0.15
 
 const TILE_ORDER = ['ideation_facilitator', 'planning_expert', 'dev_expert']
-const AVATAR_TILE_WIDTH = 230
 
-function AvatarTileFrame({ speakerId, videoRefs, speaking, statusText }) {
+// 상태 문구가 에러 계열인지 판별 — 요청: "사진 위에 에러 메시지를 겹쳐서 띄우는 방식은
+// 제거하고, 에러가 있을 경우 카드 밖 상단의 작은 경고 배너로 표시". 정상 진행 상태
+// (요청 중.../영상 생성 중... 등)는 그대로 카드 안에 작게 남기고, 에러만 밖으로 뺀다.
+function isErrorStatus(statusText) {
+  return /에러|오류|실패/.test(statusText || '')
+}
+
+// 용준/Claude(2026-07-26, 요청: "세 카드 모두 동일한 크기·비율의 피라미드 배치, 진행자만
+// 커지지 않게") — 이전엔 "지금 말하는 위원"을 다른 두 명보다 큰 카드(다른 padding/
+// border-radius/높이/폰트 크기, gridColumn:'1/-1'로 2칸 전체 폭)로 보여줬는데, 그래서
+// 진행자가 우연히 기본 발언자였을 때 항상 카드 자체가 더 크고 이미지 비율도 달라 보였다.
+// 이제 세 카드는 이 컴포넌트 하나로 완전히 동일한 크기·padding·border-radius·이미지
+// 비율을 쓴다 — "누가 지금 말하는지"는 style prop(부모가 넘기는 border/그림자)로만
+// 표현하고, 크기는 절대 건드리지 않는다. 위치(진행자=상단 중앙, 기획/개발=하단 좌우)도
+// 더 이상 "누가 말하는지"에 따라 동적으로 바뀌지 않고 역할별로 고정된다(아래
+// ROLE_GRID_STYLE 참고) — 스트리밍 재생 대상(videoRefs 키)은 항상 speakerId로 고정이라
+// 이 변경과 무관하게 안전하다.
+function AvatarTileFrame({ speakerId, videoRefs, speaking, statusText, style }) {
+  const [thumbnailFailed, setThumbnailFailed] = useState(false)
   const meta = SPEAKER_META[speakerId]
   if (!videoRefs.current[speakerId]) videoRefs.current[speakerId] = {}
+  const hasError = isErrorStatus(statusText)
+
   return (
     <div
       style={{
-        position: 'relative',
-        width: AVATAR_TILE_WIDTH,
-        aspectRatio: '9 / 16',
         background: 'var(--bg-1)',
-        border: '1px solid var(--glass-border)',
-        borderRadius: 12,
-        overflow: 'hidden',
+        // 요청: "허용 - border-color 변경, box-shadow 추가"만으로 발언 중 강조 표현.
+        // 카드 크기(padding/border-radius)는 speaking 여부와 무관하게 항상 동일하다.
+        border: speaking ? '2px solid var(--purple)' : '1px solid var(--glass-border)',
+        borderRadius: 14,
+        padding: 10,
+        boxShadow: speaking ? '0 4px 16px rgba(124,92,234,0.18)' : '0 1px 3px rgba(28,26,46,0.04)',
+        transition: 'border-color .2s ease, box-shadow .2s ease',
+        ...style,
       }}
     >
-      {/* muted는 JSX 속성으로 고정하지 않는다 - CommitteeVideoStage와 같은 이유로,
-          switchToStream()이 명령형으로 video.muted를 바꾸는데 React가 리렌더 때마다
-          되돌려버리면 오디오 초기화 도중 음소거가 깜빡인다. */}
-      <video
-        ref={(el) => { videoRefs.current[speakerId].idle = el }}
-        playsInline
-        loop
-        style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }}
-      />
-      {/* 재인/Claude(2026-07-23): CommitteeVideoStage.jsx의 videoStreamVisible과 같은 이유 —
-          평소엔 투명해서 안 보이고, 실제로 재생이 걸린(speaking===true) 순간에만 드러난다.
-          이 토글을 빠뜨리면 스트림 video는 계속 재생되니 오디오는 들리는데(재생 자체는
-          되고 있으므로) 화면은 대기 루프만 계속 보이는 상태가 된다 — 처음 이 파일을 쓸 때
-          이 부분을 빠뜨려서 실제로 그 증상이 재현됐었다. */}
-      <video
-        ref={(el) => { videoRefs.current[speakerId].stream = el }}
-        playsInline
+      <div
         style={{
-          position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover',
-          opacity: speaking ? 1 : 0, pointerEvents: 'none',
-        }}
-      />
-      <span
-        className={`badge ${meta.badgeClass} mono`}
-        style={{
-          position: 'absolute', left: 6, bottom: 6, fontSize: 10,
-          boxShadow: speaking ? '0 0 0 2px var(--purple, #7c5cff)' : 'none',
+          position: 'relative',
+          width: '100%',
+          // 용준/Claude(2026-07-26, 요청: "실제 원본 비율 확인 후 그 비율을 그대로 적용") —
+          // 아바타 원본 mp4(frontend/public/mock-videos/persona_{a,b,c})를 MP4 박스
+          // 구조(moov>trak>mdia>minf>stbl>stsd>avc1)까지 직접 파싱해 실측한 해상도가
+          // 세 파일 모두 720x1280(9:16)으로 동일했다 — 임의로 3:4나 4:3을 강제하지 않고
+          // 이 실측값을 그대로 쓴다. 세 역할 모두 항상 같은 비율이라 카드 크기도
+          // 자연히 항상 동일해진다.
+          aspectRatio: '9 / 16',
+          background: '#e4f1fb',
+          borderRadius: 10,
+          overflow: 'hidden',
         }}
       >
-        {meta.label}
-      </span>
-      {statusText && (
+        {thumbnailFailed ? (
+          // 요청: 이미지(영상) 로드 실패 시에도 사진 자리 위에 문구를 겹치지 않고, 그
+          // 자리를 대체하는 대체 UI로 보여준다.
+          <div
+            style={{
+              position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column',
+              alignItems: 'center', justifyContent: 'center', gap: 6, padding: 6,
+              color: 'var(--text-2)', textAlign: 'center',
+            }}
+          >
+            <AlertTriangle size={18} />
+            <span style={{ fontSize: 12, lineHeight: 1.4 }}>영상을 불러오지 못했어요</span>
+          </div>
+        ) : (
+          <>
+            {/* muted는 JSX 속성으로 고정하지 않는다 - CommitteeVideoStage와 같은 이유로,
+                switchToStream()이 명령형으로 video.muted를 바꾸는데 React가 리렌더 때마다
+                되돌려버리면 오디오 초기화 도중 음소거가 깜빡인다. 이미지·영상 모두 같은
+                박스(위 aspectRatio 9/16)를 쓰고 object-fit:contain으로 잘리지 않게
+                맞춘다 - 요청 7번("이미지와 영상에 같은 비율 적용")과 동일한 이유. */}
+            <video
+              ref={(el) => { videoRefs.current[speakerId].idle = el }}
+              playsInline
+              loop
+              onError={() => setThumbnailFailed(true)}
+              style={{
+                position: 'absolute', inset: 0, width: '100%', height: '100%',
+                objectFit: 'contain', objectPosition: 'center bottom',
+              }}
+            />
+            {/* 재인/Claude(2026-07-23): CommitteeVideoStage.jsx의 videoStreamVisible과 같은
+                이유 — 평소엔 투명해서 안 보이고, 실제로 재생이 걸린(speaking===true) 순간에만
+                드러난다. 이 토글을 빠뜨리면 스트림 video는 계속 재생되니 오디오는 들리는데
+                (재생 자체는 되고 있으므로) 화면은 대기 루프만 계속 보이는 상태가 된다. */}
+            <video
+              ref={(el) => { videoRefs.current[speakerId].stream = el }}
+              playsInline
+              style={{
+                position: 'absolute', inset: 0, width: '100%', height: '100%',
+                objectFit: 'contain', objectPosition: 'center bottom',
+                opacity: speaking ? 1 : 0, pointerEvents: 'none',
+              }}
+            />
+          </>
+        )}
+      </div>
+
+      <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
         <span
-          style={{
-            position: 'absolute', right: 6, top: 6, fontSize: 9.5, padding: '3px 7px',
-            borderRadius: 999, background: 'rgba(0,0,0,0.55)', color: '#ffd479',
-          }}
+          className={`badge ${meta.badgeClass} mono`}
+          style={{ fontSize: 13, fontWeight: 600, padding: '4px 9px' }}
         >
-          {statusText}
+          {meta.label}
         </span>
-      )}
+        {/* 요청: "'발언 중' 배지"로 강조하는 방법 중 하나 — speaking일 때만 role 배지
+            옆에 작은 pill을 하나 더 붙인다(카드/이미지 크기에는 영향 없음). */}
+        {speaking && !hasError && (
+          <span
+            style={{
+              fontSize: 13, fontWeight: 600, color: 'var(--purple)',
+              background: 'var(--purple-dim)', borderRadius: 999, padding: '2px 7px',
+            }}
+          >
+            발언 중
+          </span>
+        )}
+      </div>
+      <div style={{ marginTop: 6, minHeight: 18 }}>
+        {statusText && !hasError ? (
+          <span style={{ fontSize: 14, fontWeight: 500, color: '#625d72' }}>{statusText}</span>
+        ) : (
+          <span style={{ fontSize: 14, fontWeight: 500, color: '#625d72' }}>
+            {speaking ? '실시간 발언 중' : '대기 중'}
+          </span>
+        )}
+      </div>
     </div>
   )
+}
+
+// 용준/Claude(2026-07-26, 요청: "진행자는 위쪽 중앙, 기획 위원은 아래쪽 왼쪽, 개발
+// 위원은 아래쪽 오른쪽 — 누가 말하는지와 무관하게 항상 이 배치") — 예전엔 지금 말하는
+// 사람이 큰 카드(gridColumn:'1/-1', 다른 크기)로 옮겨 다녔지만, 이제 위치는 역할별로
+// 고정이고 크기도 세 카드가 항상 같다. 진행자만 grid-column을 2칸 다 차지하게 두되
+// width는 한 칸만큼만(요청 예시의 calc((100% - gap)/2))으로 제한하고 justifySelf로
+// 가운데 정렬해, "두 칸을 차지하되 실제 카드 크기는 한 칸과 동일"을 만족시킨다.
+const AVATAR_GRID_GAP = 8
+const ROLE_GRID_STYLE = {
+  ideation_facilitator: {
+    gridColumn: '1 / -1',
+    gridRow: 1,
+    justifySelf: 'center',
+    width: `calc((100% - ${AVATAR_GRID_GAP}px) / 2)`,
+  },
+  planning_expert: { gridColumn: 1, gridRow: 2 },
+  dev_expert: { gridColumn: 2, gridRow: 2 },
 }
 
 // speakerId를 하나 지정해서 그 화자의 말풍선(text)을 실제로 스트리밍 재생한다.
@@ -426,41 +517,43 @@ export default function IdeationAvatarStage({ playQueue, onConsumed, onNeedNextS
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [playQueue])
 
-  // 재인/Claude(2026-07-24, 요청: "아바타 C(진행자)가 위야" - 스크린샷에 표시된 배치):
-  // 기존엔 세로로 3개를 쭉 쌓았는데, 진행자는 위에 가운데로, 기획·개발 위원은 그 아래
-  // 나란히 두 칸으로 바꿨다.
-  // 재인/Claude(2026-07-24, 실측: "캔버스와의 간격/정렬이 이상함"): 컨테이너 너비를 콘텐츠에
-  // 맡겨두면(기획+개발 두 칸=230*2+gap) 이 자리에 맞춰둔 그리드 트랙(468px)보다 살짝
-  // 넓어져서 오른쪽 캔버스 위치가 같이 밀렸다. 아래 gap을 8로 줄여 두 칸 폭을 정확히
-  // 468(=230*2+8)로 맞추고, 바깥 컨테이너도 그 폭으로 고정해서 진행자가 그 안에서
-  // 정확히 가운데 오도록 했다(IdeationConversationScreen.jsx의 gridTemplateColumns
-  // '1fr 468px 160px 320px'와 맞물림).
+  // 에러 상태가 하나라도 있으면 카드 행 위에 작은 경고 배너 하나로 모아 보여준다(특정
+  // 사진 위에 겹치지 않음). 위치/크기는 더 이상 누가 말하는지에 따라 바뀌지 않으므로
+  // (위 ROLE_GRID_STYLE 참고) 여기서는 이 배너 표시 여부만 계산한다.
+  const errorEntries = TILE_ORDER
+    .map((id) => ({ id, statusText: statusMap[id] }))
+    .filter((entry) => isErrorStatus(entry.statusText))
+
   return (
-    <div style={{ width: 468, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
-      <AvatarTileFrame
-        speakerId="ideation_facilitator"
-        videoRefs={videoRefs}
-        speaking={speakingId === 'ideation_facilitator'}
-        statusText={statusMap.ideation_facilitator}
-      />
-      {/* 재인/Claude(2026-07-24, 요청: "A/B 사이 간격 균일하게, 그 위에 진행자 딱 가운데"):
-          픽셀 단위로 하나씩 밀던 marginLeft/absolute 실험은 다 걷어내고, 원래대로
-          단순한 flex 두 칸 + 진행자 중앙 정렬로 되돌렸다 - justifyContent: 'center'로
-          두 칸 자체를 468px 칼럼 안에서 가운데 두면 A/B 사이 간격(gap)도 균일하고
-          진행자도 그 칼럼 중앙(alignItems: 'center')에 자연스럽게 맞는다. */}
-      <div style={{ display: 'flex', justifyContent: 'center', gap: 8 }}>
-        <AvatarTileFrame
-          speakerId="planning_expert"
-          videoRefs={videoRefs}
-          speaking={speakingId === 'planning_expert'}
-          statusText={statusMap.planning_expert}
-        />
-        <AvatarTileFrame
-          speakerId="dev_expert"
-          videoRefs={videoRefs}
-          speaking={speakingId === 'dev_expert'}
-          statusText={statusMap.dev_expert}
-        />
+    <div>
+      {errorEntries.length > 0 && (
+        <div
+          role="alert"
+          style={{
+            display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10,
+            padding: '6px 10px', borderRadius: 8, fontSize: 13.5, lineHeight: 1.4,
+            background: 'var(--coral-dim)', color: 'var(--coral)',
+          }}
+        >
+          <AlertTriangle size={12} style={{ flexShrink: 0 }} />
+          <span>
+            {errorEntries
+              .map((entry) => `${SPEAKER_META[entry.id]?.label || entry.id} 영상 연결 오류`)
+              .join(' · ')}
+          </span>
+        </div>
+      )}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: AVATAR_GRID_GAP }}>
+        {TILE_ORDER.map((speakerId) => (
+          <AvatarTileFrame
+            key={speakerId}
+            speakerId={speakerId}
+            videoRefs={videoRefs}
+            speaking={speakingId === speakerId}
+            statusText={statusMap[speakerId]}
+            style={ROLE_GRID_STYLE[speakerId]}
+          />
+        ))}
       </div>
     </div>
   )

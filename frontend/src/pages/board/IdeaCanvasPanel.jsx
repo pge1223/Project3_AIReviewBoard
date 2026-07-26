@@ -16,23 +16,36 @@ import { FEASIBILITY_LABEL } from './ideationConversationHelpers'
 //       (getAnnouncementAnalysis → official_facts.evaluation_criteria)에서 회의 시작
 //       전부터 시드된다.
 
-const EMPTY_HINT = '회의에서 채워질 예정'
+const EMPTY_HINT = '회의에서 정리될 예정입니다.'
 
 function CanvasRow({ label, source, filled, first = false, children }) {
   return (
-    <div style={{ padding: '9px 0', borderTop: first ? 'none' : '1px solid var(--glass-border)' }}>
-      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8, marginBottom: 3 }}>
-        <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--text-2)' }}>{label}</div>
+    <div
+      style={{
+        padding: '13px 12px',
+        marginTop: first ? 0 : 6,
+        border: filled ? '1px solid rgba(28,26,46,0.10)' : '1px dashed rgba(98,93,114,0.42)',
+        borderRadius: 10,
+        background: filled ? 'rgba(255,255,255,0.72)' : 'rgba(241,238,229,0.48)',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8, marginBottom: 7 }}>
+        <div style={{ fontSize: 14.5, fontWeight: 600, color: '#4f466f' }}>{label}</div>
         {filled && source && (
-          <span style={{ fontSize: 10, fontFamily: 'var(--mono)', letterSpacing: '0.04em', color: 'var(--text-2)', flexShrink: 0 }}>
+          <span
+            style={{
+              fontSize: 13, fontWeight: 600, color: '#625d72', flexShrink: 0,
+              background: 'var(--bg-2)', borderRadius: 999, padding: '2px 7px',
+            }}
+          >
             {source}
           </span>
         )}
       </div>
       {filled ? (
-        <div style={{ fontSize: 12.5, color: 'var(--text-1)', lineHeight: 1.6 }}>{children}</div>
+        <div style={{ fontSize: 15.5, fontWeight: 500, color: 'var(--text-0)', lineHeight: 1.7 }}>{children}</div>
       ) : (
-        <div style={{ fontSize: 12, color: 'var(--text-2)', opacity: 0.7 }}>{EMPTY_HINT}</div>
+        <div style={{ fontSize: 14.5, fontWeight: 500, color: '#6f697d', lineHeight: 1.65 }}>{EMPTY_HINT}</div>
       )}
     </div>
   )
@@ -92,12 +105,12 @@ export default function IdeaCanvasPanel({ ideationConv, analysis }) {
   const criteriaGroups = groupByCategory(analysis?.official_facts?.evaluation_criteria)
 
   return (
-    <div className="card glass" style={{ marginBottom: 12, padding: 14 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
-        <ClipboardList size={14} color="var(--purple)" />
-        <div style={{ fontSize: 12.5, fontWeight: 700 }}>아이디어 기획 캔버스</div>
+    <div className="card glass" style={{ marginBottom: 12, padding: 18 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 4 }}>
+        <ClipboardList size={17} color="var(--purple)" />
+        <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text-0)' }}>아이디어 기획 캔버스</div>
       </div>
-      <div style={{ fontSize: 11, color: 'var(--text-2)', marginBottom: 8 }}>
+      <div style={{ fontSize: 14.5, fontWeight: 500, color: '#625d72', lineHeight: 1.65, marginBottom: 12 }}>
         위원 발언과 공모전 분석을 바탕으로 자동으로 정리돼요.
       </div>
 
@@ -112,7 +125,9 @@ export default function IdeaCanvasPanel({ ideationConv, analysis }) {
       <CanvasRow label="핵심 해결 방식" source="회의" filled={!!(solution || coreValue)}>
         {solution}
         {coreValue && (
-          <div style={{ marginTop: solution ? 4 : 0, color: 'var(--text-2)', fontSize: 12 }}>핵심 가치 · {coreValue}</div>
+          <div style={{ marginTop: solution ? 6 : 0, color: '#514a61', fontSize: 15, fontWeight: 600 }}>
+            핵심 가치 · {coreValue}
+          </div>
         )}
       </CanvasRow>
 
@@ -139,7 +154,7 @@ export default function IdeaCanvasPanel({ ideationConv, analysis }) {
             {criteriaGroups.map((group, gi) => (
               <div key={gi}>
                 {group.category && (
-                  <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-2)', marginBottom: 2 }}>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: '#514a61', marginBottom: 3 }}>
                     {group.category}
                   </div>
                 )}
@@ -152,7 +167,7 @@ export default function IdeaCanvasPanel({ ideationConv, analysis }) {
         )}
         {contestFit && (
           <div style={{ marginTop: criteriaGroups.length > 0 ? 6 : 0 }}>
-            <strong style={{ color: 'var(--text-2)', fontWeight: 600 }}>대응 · </strong>
+            <strong style={{ color: '#514a61', fontWeight: 700 }}>대응 · </strong>
             {contestFit}
           </div>
         )}

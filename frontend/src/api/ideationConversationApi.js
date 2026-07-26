@@ -13,7 +13,9 @@ function authHeaders() {
 async function handleResponse(res) {
   const data = await res.json()
   if (!res.ok) {
-    throw new Error(data.detail || '아이디어 회의 프리뷰 요청에 실패했습니다.')
+    const error = new Error(data.detail || '아이디어 회의 프리뷰 요청에 실패했습니다.')
+    error.status = res.status
+    throw error
   }
   return data
 }
@@ -40,7 +42,8 @@ export async function startIdeationConversation({
       user_idea: userIdea,
       max_rounds: maxRounds,
       use_rag: useRag,
-      project_id: useRag ? projectId : undefined,
+      // MongoDB 회의 복원은 RAG 사용 여부와 무관하게 프로젝트 범위가 필요하다.
+      project_id: projectId || undefined,
       model: model || undefined,
       application_form_items: applicationFormItems || undefined,
     }),
@@ -143,7 +146,7 @@ export async function startIdeationConversationStream(
       user_idea: userIdea,
       max_rounds: maxRounds,
       use_rag: useRag,
-      project_id: useRag ? projectId : undefined,
+      project_id: projectId || undefined,
       model: model || undefined,
       application_form_items: applicationFormItems || undefined,
     }),
@@ -240,5 +243,13 @@ export async function getIdeationConversation(sessionId) {
   const res = await fetch(`${API_BASE_URL}/ideation-conversation/${sessionId}`, {
     headers: { ...authHeaders() },
   })
+  return handleResponse(res)
+}
+
+export async function getLatestIdeationConversation(projectId) {
+  const res = await fetch(`${API_BASE_URL}/ideation-conversation/project/${projectId}/latest`, {
+    headers: { ...authHeaders() },
+  })
+  if (res.status === 404) return null
   return handleResponse(res)
 }
