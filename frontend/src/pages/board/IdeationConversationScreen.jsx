@@ -1498,7 +1498,7 @@ export function IdeationScreen({
           )}
         </div>
         <div style={{ fontSize: 16, fontWeight: 500, color: '#625d72', marginBottom: 14, lineHeight: 1.5 }}>
-          공모전 분석 결과를 바탕으로 진행자, 기획 위원, 개발 위원이 함께 아이디어를 논의하고 있습니다.
+          공모전 분석 결과를 바탕으로 진행위원, 기획 위원, 개발 위원이 함께 아이디어를 논의하고 있습니다.
         </div>
         {ideationConv?.competition_name && (
           <div
@@ -1764,7 +1764,7 @@ export function IdeationScreen({
         <div className="card glass">
           <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text-0)', marginBottom: 3 }}>참여 위원</div>
           <div style={{ fontSize: 14.5, fontWeight: 500, color: '#625d72', lineHeight: 1.65, marginBottom: 12 }}>
-            진행자 · 기획 위원 · 개발 위원이 실시간으로 함께 회의해요.
+            진행위원 · 기획 위원 · 개발 위원이 실시간으로 함께 회의해요.
           </div>
           {/* 재인/Claude(2026-07-26, dev #166 병합): 용준님이 만든 이 레이아웃(참여 위원
               카드 안에 아바타 배치)은 그대로 두되, prop만 새 구조로 교체했다. 예전

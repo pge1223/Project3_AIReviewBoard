@@ -27,7 +27,7 @@ from ai.rag.converters import (
     convert_if_needed,
 )
 from ai.rag.loaders.url_loader import load_from_url
-from ai.rag.loaders.schemas import UrlExtractionResult, WebPageContent
+from ai.rag.loaders.schemas import UrlExtractionResult, WebBlockType, WebContentBlock, WebPageContent
 from ai.rag.loaders.exceptions import (
     InvalidUrlError,
     BlockedUrlError,
@@ -151,7 +151,9 @@ def _get_chroma_client() -> chromadb.ClientAPI:
     CHROMA_PERSIST_DIR을 가리키는 별도의 chromadb.PersistentClient를 프로세스 안에
     또 만들지 않기 위함 — 다른 컬렉션(예: similar_cases)을 쓰더라도 client(=엔진 연결)
     자체는 공유해야 한다(2026-07-18, meetings.py 중복 PersistentClient 조사 참고).
-    DEFAULT_COLLECTION_NAME 변경은 프로세스 재시작 후 반영된다."""
+    DEFAULT_COLLECTION_NAME 변경은 프로세스 재시작 후 반영된다. 개발 서버의 reload 감시
+    범위가 backend/로 제한될 수 있으므로 ai/rag/domain/config.py만 변경한 경우에도
+    반드시 백엔드를 다시 시작해야 한다."""
     return _get_indexing_service().vector_store.client
 
 
@@ -308,7 +310,14 @@ async def _refetch_and_index_webpage_background(
     url: str,
     title: str,
 ) -> None:
-    """실패한 URL 문서를 재시도할 때 원문을 다시 수집·정제한 뒤 동일 색인 경로로 보낸다."""
+    """실패한 URL 문서를 재시도할 때 원문을 다시 수집·정제한 뒤 동일 색인 경로로 보낸다.
+
+    외부 사이트가 일시적으로 막혀도 최초 수집 때 MongoDB에 저장한 parsed_text가 있으면
+    그 본문으로 재색인한다. 벡터 저장 단계만 실패한 문서까지 네트워크 재수집 실패 때문에
+    영구적으로 복구하지 못하는 상황을 피하기 위한 fallback이다.
+    """
+    document = await document_repo.find_by_id(document_id)
+    saved_parsed_text = str((document or {}).get("parsed_text") or "").strip()
     try:
         result = await run_in_threadpool(load_from_url, url)
         if result.page_content is None:
@@ -327,8 +336,44 @@ async def _refetch_and_index_webpage_background(
             url=url,
             title=title,
             cleaned=cleaned,
+            parsed_text=merged_page_content.text,
         )
     except Exception as exc:
+        if saved_parsed_text:
+            logger.warning(
+                "[fetch-url] 재수집 실패, 저장된 parsed_text로 재색인: document_id=%s "
+                "saved_text_length=%d cause_type=%s",
+                document_id,
+                len(saved_parsed_text),
+                type(exc).__name__,
+            )
+            saved_block = WebContentBlock(
+                content=saved_parsed_text,
+                block_type=WebBlockType.PARAGRAPH,
+                order=0,
+                metadata={"reindex_source": "saved_parsed_text"},
+            )
+            cleaned = CleanedWebContent(
+                source_url=url,
+                original_block_count=1,
+                cleaned_block_count=1,
+                cleaned_blocks=[saved_block],
+                removed_blocks=[],
+                original_text_length=len(saved_parsed_text),
+                cleaned_text_length=len(saved_parsed_text),
+                retention_ratio=1.0,
+                fallback_used=True,
+                warnings=["외부 URL 재수집 실패로 최초 수집 시 저장한 본문을 재사용했습니다."],
+            )
+            await _index_webpage_background(
+                document_id=document_id,
+                project_id=project_id,
+                url=url,
+                title=title,
+                cleaned=cleaned,
+                parsed_text=saved_parsed_text,
+            )
+            return
         logger.exception("[fetch-url] 재색인 실패: document_id=%s", document_id)
         await document_repo.update_fields(
             document_id,

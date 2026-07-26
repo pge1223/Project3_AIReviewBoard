@@ -313,6 +313,7 @@ def start_ideation_conversation(
     ground_claims=None,
     index_target_evidence: IndexTargetEvidenceFn | None = None,
     evidence_planner=None,
+    external_evidence_lookup=None,
     on_progress: IdeationConvProgressCallback | None = None,
     on_snapshot: IdeationConvSnapshotCallback | None = None,
     application_form_items: list[dict] | None = None,
@@ -320,13 +321,17 @@ def start_ideation_conversation(
     """세션을 시작해 기획 전문가의 첫 질문 하나만 만들고 멈춘다(요청 목표 흐름 1~3번).
 
     가은/Claude(2026-07-22, 요청: 신청양식 항목 약한 주입): application_form_items는 순수
-    추가 파라미터다(기본값 None) — 넘기지 않으면 기존 호출부와 완전히 동일하게 동작한다."""
+    추가 파라미터다(기본값 None) — 넘기지 않으면 기존 호출부와 완전히 동일하게 동작한다.
+
+    용준/Claude(2026-07-27, RAG-007 연결): external_evidence_lookup도 순수 추가 파라미터다
+    (기본값 None) — candidate_planning/candidate_feasibility 노드에만 전달된다."""
     graph = assemble_ideation_conversation_graph(
         llm_call,
         evidence_lookup=evidence_lookup,
         ground_claims=ground_claims,
         index_target_evidence=index_target_evidence,
         evidence_planner=evidence_planner,
+        external_evidence_lookup=external_evidence_lookup,
     )
     state = initial_conv_state(
         session_id, notice_and_criteria, user_idea, max_rounds=max_rounds,
@@ -685,6 +690,7 @@ def reply_ideation_conversation(
     ground_claims=None,
     index_target_evidence: IndexTargetEvidenceFn | None = None,
     evidence_planner=None,
+    external_evidence_lookup=None,
     on_progress: IdeationConvProgressCallback | None = None,
     on_snapshot: IdeationConvSnapshotCallback | None = None,
     stop_after_expert_turn: bool = False,
@@ -773,6 +779,7 @@ def reply_ideation_conversation(
             ground_claims=ground_claims,
             index_target_evidence=index_target_evidence,
             evidence_planner=evidence_planner,
+            external_evidence_lookup=external_evidence_lookup,
         )
         return _drive_graph(graph, restart_state, on_progress, on_snapshot, stop_after_expert_turn=stop_after_expert_turn)
 
@@ -829,6 +836,7 @@ def reply_ideation_conversation(
         ground_claims=ground_claims,
         index_target_evidence=index_target_evidence,
         evidence_planner=evidence_planner,
+        external_evidence_lookup=external_evidence_lookup,
     )
     return _drive_graph(graph, state, on_progress, on_snapshot, stop_after_expert_turn=stop_after_expert_turn)
 
@@ -841,6 +849,7 @@ def continue_ideation_expert_turn(
     ground_claims=None,
     index_target_evidence: IndexTargetEvidenceFn | None = None,
     evidence_planner=None,
+    external_evidence_lookup=None,
     on_progress: IdeationConvProgressCallback | None = None,
     on_snapshot: IdeationConvSnapshotCallback | None = None,
 ) -> IdeationConvState:
@@ -900,6 +909,7 @@ def continue_ideation_expert_turn(
         ground_claims=ground_claims,
         index_target_evidence=index_target_evidence,
         evidence_planner=evidence_planner,
+        external_evidence_lookup=external_evidence_lookup,
     )
     result_state = _drive_graph(graph, state, on_progress, on_snapshot, stop_after_expert_turn=True)
 
@@ -950,6 +960,7 @@ def reply_to_interjection(
     ground_claims=None,
     index_target_evidence: IndexTargetEvidenceFn | None = None,
     evidence_planner=None,
+    external_evidence_lookup=None,
     on_progress: IdeationConvProgressCallback | None = None,
     on_snapshot: IdeationConvSnapshotCallback | None = None,
 ) -> IdeationConvState:
@@ -1066,5 +1077,6 @@ def reply_to_interjection(
         ground_claims=ground_claims,
         index_target_evidence=index_target_evidence,
         evidence_planner=evidence_planner,
+        external_evidence_lookup=external_evidence_lookup,
     )
     return _drive_graph(graph, state, on_progress, on_snapshot)

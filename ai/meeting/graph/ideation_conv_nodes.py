@@ -1429,12 +1429,20 @@ def _compose_form_facilitator_text(
     user_question: str,
     choices: Any,
 ) -> str:
-    """진행자 v02의 사용자 노출 발화를 네 필수 요소가 빠지지 않도록 3줄로 조립한다."""
+    """진행자 v02의 사용자 노출 발화를 조립한다.
+
+    confirmed_content="아직 없음"은 내부 상태값으로만 유지하고 화면·TTS 본문에서는
+    생략한다. 실제로 확정된 내용이 생긴 뒤에는 기존처럼 발화에 포함한다.
+    """
     choice_labels = _choice_labels(choices)
     choice_text = f" 선택지: {' / '.join(choice_labels)}" if choice_labels else ""
+    confirmed_text = (
+        f" 지금까지 확정된 내용: {confirmed_content}"
+        if confirmed_content and confirmed_content != "아직 없음"
+        else ""
+    )
     return (
-        f"지금 작성 중인 신청 양식 항목은 '{field_name}'입니다. "
-        f"지금까지 확정된 내용: {confirmed_content}\n"
+        f"지금 작성 중인 신청 양식 항목은 '{field_name}'입니다.{confirmed_text}\n"
         f"{decision_reason}\n"
         f"{user_question}{choice_text}"
     )

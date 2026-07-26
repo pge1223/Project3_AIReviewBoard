@@ -478,6 +478,21 @@ class IdeationConvState(TypedDict):
     # 없을 수 있으므로 읽는 쪽은 항상 `.get("asked_decision_fingerprints", [])`로 접근한다.
     asked_decision_fingerprints: list[str]
 
+    # 용준/Claude(2026-07-27, RAG-007 연결) — candidate_planning/candidate_feasibility가
+    # 검색한 외부 통계·시장·정책 참고자료(ai/rag/orchestration/ideation_external_evidence_service.py
+    # 참고). RAG-006 evidence_lookup 결과(ConvMessage.evidence, 프로젝트 문서 근거)와는 완전히
+    # 분리된 필드다 — 두 후보 노드가 각자 검색한 결과를 (source_id, document_id, chunk_id)
+    # 기준으로 중복 없이 누적한다(discussion_rounds처럼 operator.add 리듀서를 쓰지 않고 노드가
+    # 직접 병합해 반환한다 — 두 노드가 같은 요청 안에서 연속 실행되므로 하나의 정확한 값만
+    # 필요하다). use_rag=False거나 검색 결과가 없으면 빈 리스트다. 구버전 저장 state에는 이
+    # 키가 없을 수 있으므로 읽는 쪽은 항상 `.get("external_evidence", [])`로 접근한다.
+    external_evidence: list[dict]
+    # external_evidence 검색의 응답 단위 메타데이터 — used_dataset_search/used_public_api_search
+    # (bool)와 warnings(list[str], 예: 출처 미확인으로 제외된 건수, 도메인 폴백 여부). 구버전
+    # 저장 state에는 이 키가 없을 수 있으므로 읽는 쪽은 항상 `.get("external_evidence_meta", {})`
+    # 로 접근한다.
+    external_evidence_meta: dict
+
 
 def _extract_initial_idea_text(user_idea: dict | str | None) -> str:
     """user_idea에서 trim된 초기 아이디어 텍스트를 뽑아낸다. dict({"description": ...})와
@@ -593,6 +608,8 @@ def initial_conv_state(
         evidence_plan_shadow_history={},
         supplemental_retrieval_issue_ids=[],
         asked_decision_fingerprints=[],
+        external_evidence=[],
+        external_evidence_meta={},
     )
 
 

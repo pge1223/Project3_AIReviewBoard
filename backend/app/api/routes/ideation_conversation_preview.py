@@ -75,7 +75,12 @@ configure_ideation_trace(
     stream_deltas=settings.IDEATION_TRACE_STREAM_DELTAS,
 )
 
-from app.api.routes.meetings import GUEST_USER_EMAIL, _role_retrieval_service, get_current_user  # noqa: E402
+from app.api.routes.meetings import (  # noqa: E402
+    GUEST_USER_EMAIL,
+    _external_research_service,
+    _role_retrieval_service,
+    get_current_user,
+)
 # 용준/Claude(2026-07-21, 요청: 실시간 스트리밍) — 스트리밍 llm_call 생성 로직은 별도
 # 모듈(ideation_conversation_streaming.py)로 분리했다(FastAPI/OpenAI 클라이언트 배선은
 # 이 파일이, "프롬프트를 보고 어떻게 스트리밍할지 결정"하는 순수 로직은 그 모듈이 맡는다
@@ -621,6 +626,23 @@ def _evidence_lookup_for(
     return lookup
 
 
+def _external_evidence_lookup_for(use_rag: bool):
+    """RAG-007(외부 통계·시장·정책 참고자료) 콜백. RAG-006 evidence_lookup(_evidence_lookup_for,
+    프로젝트 문서 근거)과 완전히 별도로 관리한다 — 같은 use_rag 토글을 재사용하지만(별도 플래그를
+    새로 만들지 않음), project_id에 의존하지 않는다(RAG-007은 external_market_policy_evidence라는
+    별도 컬렉션을 쓰고 project_id로 스코프하지 않는다 — 검색어(query_text)는 노드가
+    notice_and_criteria/후보 내용을 조합해 만든다, ai/meeting/graph/ideation_conv_discovery.py::
+    _external_evidence_query 참고).
+
+    use_rag=False면 콜백 자체를 주입하지 않는다 — candidate_planning/candidate_feasibility
+    노드는 external_evidence_lookup=None이면 기존과 완전히 동일하게(외부자료 없이) 진행한다."""
+    if not use_rag:
+        return None
+    from ai.rag.orchestration.ideation_external_evidence_service import make_ideation_external_evidence_lookup
+
+    return make_ideation_external_evidence_lookup(_external_research_service, top_k=3)
+
+
 def _index_target_evidence_for(use_rag: bool, project_id: Optional[str]):
     """용준/Claude(2026-07-22, 요청: 선택된 아이디어/사용자 답변을 target evidence로 색인) —
     evidence_lookup/ground_claims와 동일한 정책: use_rag=False거나 project_id가 없으면(요청
@@ -822,6 +844,14 @@ def _serialize_state(state: IdeationConvState) -> dict:
         "application_form_items": state.get("application_form_items", []),
         # 진행자 v02의 누적 신청서 초안. 구버전 세션은 빈 배열로 직렬화한다.
         "application_form_draft": state.get("application_form_draft", []),
+        # 용준/Claude(2026-07-27, RAG-007 연결): candidate_planning/candidate_feasibility가
+        # 검색한 외부 통계·시장·정책 참고자료 — 각 항목에 publisher/source_url/reference_date/
+        # retrieval_source가 포함된다(출처가 확인된 자료만, ai/rag/orchestration/
+        # ideation_external_evidence_service.py::_has_confirmed_source 참고). 순수 추가 필드 —
+        # use_rag=False거나 검색 결과가 없으면 빈 배열이다.
+        "external_evidence": state.get("external_evidence", []),
+        # used_dataset_search/used_public_api_search/warnings(응답 단위 메타데이터).
+        "external_evidence_meta": state.get("external_evidence_meta", {}),
         "error": (
             {"code": "IDEATION_CONV_NODE_FAILED", "message": f"{state.get('failed_node')} 노드에서 실패했습니다."}
             if state["phase"] == "failed"
@@ -921,6 +951,7 @@ async def start_conversation(
     ground_claims = _ground_claims_for(request.use_rag)
     index_target_evidence = _index_target_evidence_for(request.use_rag, request.project_id)
     evidence_planner = _evidence_planner_for(request.use_rag)
+    external_evidence_lookup = _external_evidence_lookup_for(request.use_rag)
 
     logger.info("[ideation-conversation] 시작 session_id=%s max_rounds=%d", session_id, effective_max_rounds)
     try:
@@ -935,6 +966,7 @@ async def start_conversation(
             ground_claims=ground_claims,
             index_target_evidence=index_target_evidence,
             evidence_planner=evidence_planner,
+            external_evidence_lookup=external_evidence_lookup,
             application_form_items=request.application_form_items,
         )
     except Exception:
@@ -1005,6 +1037,7 @@ async def reply_conversation(
         ground_claims = _ground_claims_for(record.use_rag)
         index_target_evidence = _index_target_evidence_for(record.use_rag, record.project_id)
         evidence_planner = _evidence_planner_for(record.use_rag)
+        external_evidence_lookup = _external_evidence_lookup_for(record.use_rag)
 
         try:
             state = await run_in_threadpool(
@@ -1016,6 +1049,7 @@ async def reply_conversation(
                 ground_claims=ground_claims,
                 index_target_evidence=index_target_evidence,
                 evidence_planner=evidence_planner,
+                external_evidence_lookup=external_evidence_lookup,
                 stop_after_expert_turn=request.single_turn,
             )
         except ValueError as exc:
@@ -1126,6 +1160,7 @@ async def reply_conversation_stream(
     ground_claims = _ground_claims_for(record.use_rag)
     index_target_evidence = _index_target_evidence_for(record.use_rag, record.project_id)
     evidence_planner = _evidence_planner_for(record.use_rag)
+    external_evidence_lookup = _external_evidence_lookup_for(record.use_rag)
 
     def worker() -> None:
         trace_tokens = bind_trace_context(session_id, request_id)
@@ -1183,6 +1218,7 @@ async def reply_conversation_stream(
                     ground_claims=ground_claims,
                     index_target_evidence=index_target_evidence,
                     evidence_planner=evidence_planner,
+                    external_evidence_lookup=external_evidence_lookup,
                 )
             else:
                 state = reply_ideation_conversation(
@@ -1193,6 +1229,7 @@ async def reply_conversation_stream(
                     ground_claims=ground_claims,
                     index_target_evidence=index_target_evidence,
                     evidence_planner=evidence_planner,
+                    external_evidence_lookup=external_evidence_lookup,
                     stop_after_expert_turn=request.single_turn,
                 )
             _store.update(session_id, state)
@@ -1330,6 +1367,7 @@ async def continue_expert_turn_stream(
     ground_claims = _ground_claims_for(record.use_rag)
     index_target_evidence = _index_target_evidence_for(record.use_rag, record.project_id)
     evidence_planner = _evidence_planner_for(record.use_rag)
+    external_evidence_lookup = _external_evidence_lookup_for(record.use_rag)
 
     def worker() -> None:
         trace_tokens = bind_trace_context(session_id, request_id)
@@ -1353,6 +1391,7 @@ async def continue_expert_turn_stream(
                 ground_claims=ground_claims,
                 index_target_evidence=index_target_evidence,
                 evidence_planner=evidence_planner,
+                external_evidence_lookup=external_evidence_lookup,
             )
             _store.update(session_id, state)
             _persist_from_worker(record, persistence_loop)
@@ -1462,6 +1501,7 @@ async def start_conversation_stream(
     ground_claims = _ground_claims_for(request.use_rag)
     index_target_evidence = _index_target_evidence_for(request.use_rag, request.project_id)
     evidence_planner = _evidence_planner_for(request.use_rag)
+    external_evidence_lookup = _external_evidence_lookup_for(request.use_rag)
 
     logger.info("[ideation-conversation] 스트리밍 시작 session_id=%s max_rounds=%d", session_id, effective_max_rounds)
 
@@ -1491,6 +1531,7 @@ async def start_conversation_stream(
                 ground_claims=ground_claims,
                 index_target_evidence=index_target_evidence,
                 evidence_planner=evidence_planner,
+                external_evidence_lookup=external_evidence_lookup,
                 application_form_items=request.application_form_items,
             )
             # 용준/Claude(2026-07-22, RAG 근거 유실 수정 2탄) 패턴과 동일 — 이후

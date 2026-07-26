@@ -14,7 +14,7 @@ import {
 const SPEAKER_META = {
   planning_expert: { label: '기획 전문가', color: '#7c4dff', align: 'left' },
   dev_expert: { label: '개발 전문가', color: '#00897b', align: 'left' },
-  ideation_facilitator: { label: '진행자', color: '#e08e45', align: 'left' },
+  ideation_facilitator: { label: '진행위원', color: '#e08e45', align: 'left' },
   user: { label: '나', color: '#2f6fed', align: 'right' },
 }
 

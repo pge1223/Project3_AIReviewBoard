@@ -12,7 +12,7 @@ const PERSONA_META = {
   planning_expert: { label: '기획 전문가', color: '#7c4dff' },
   planning_expert_revise: { label: '기획 전문가 (수정안)', color: '#ab47bc' },
   dev_expert: { label: '개발 전문가', color: '#00897b' },
-  ideation_facilitator: { label: '회의 진행자', color: '#546e7a' },
+  ideation_facilitator: { label: '진행위원', color: '#546e7a' },
 }
 
 // turns[]는 백엔드가 speaker_id를 항상 "planning_expert"/"dev_expert"로만 정규화한다
@@ -201,7 +201,7 @@ export default function IdeationPreviewPage() {
           {result.error && <p style={styles.error}>{result.error.message}</p>}
           {result.pending_question && (
             <div style={styles.pendingBox}>
-              <strong>진행자가 사용자에게 질문했습니다:</strong> {result.pending_question}
+              <strong>진행위원이 사용자에게 질문했습니다:</strong> {result.pending_question}
             </div>
           )}
 
@@ -212,7 +212,7 @@ export default function IdeationPreviewPage() {
 
           {result.facilitator_summary && (
             <>
-              <div style={styles.sectionLabel}>진행자 합의 내용</div>
+              <div style={styles.sectionLabel}>진행위원 합의 내용</div>
               <div style={{ ...styles.turnCard, borderLeftColor: PERSONA_META.ideation_facilitator.color }}>
                 <span
                   style={{ ...styles.personaBadge, background: PERSONA_META.ideation_facilitator.color }}

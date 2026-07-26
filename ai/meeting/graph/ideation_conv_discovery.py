@@ -57,6 +57,84 @@ IndexTargetEvidenceFn = Callable[[str, dict], dict]
 # 코드가 즉시 안내 메시지로 막는다(무한 루프뿐 아니라 LLM 호출 자체를 원천 차단).
 MAX_CANDIDATE_REGENERATIONS = 2
 
+# 용준/Claude(2026-07-27, RAG-007 연결) — ai/meeting/graph는 ai.rag를 직접 import하지 않는다
+# (evidence_lookup/index_target_evidence와 동일한 경계). 실제 구현
+# (ai.rag.orchestration.ideation_external_evidence_service)은 backend가 만들어 주입한다.
+# RAG-006 evidence_lookup(EvidenceLookup, list[dict] 반환)과 반환 타입이 다르다 — RAG-007은
+# used_dataset_search/warnings 같은 응답 단위 메타데이터도 함께 돌려줘야 하므로(요청 11번)
+# {"external_evidence": list[dict], "used_dataset_search": bool, "used_public_api_search": bool,
+# "warnings": list[str]} 형태의 dict를 반환한다 — call_evidence_lookup을 재사용하지 않는다.
+ExternalEvidenceLookupFn = Callable[[str, str], dict]
+
+_EMPTY_EXTERNAL_EVIDENCE_RESULT: dict[str, Any] = {
+    "external_evidence": [],
+    "used_dataset_search": False,
+    "used_public_api_search": False,
+    "warnings": [],
+}
+
+
+def _call_external_evidence_lookup(
+    external_evidence_lookup: ExternalEvidenceLookupFn | None, persona_id: str, query: str
+) -> dict[str, Any]:
+    """external_evidence_lookup(persona_id, query) -> dict를 안전하게 호출한다. 콜러블이
+    없거나(use_rag=False 등) 예외를 던지면 빈 결과로 진행한다(요청 10번 — 외부자료 검색
+    실패/부재가 후보 생성 자체를 막지 않는다)."""
+    if external_evidence_lookup is None:
+        return dict(_EMPTY_EXTERNAL_EVIDENCE_RESULT)
+    try:
+        result = external_evidence_lookup(persona_id, query)
+    except Exception:
+        return dict(_EMPTY_EXTERNAL_EVIDENCE_RESULT)
+    if not isinstance(result, dict):
+        return dict(_EMPTY_EXTERNAL_EVIDENCE_RESULT)
+    return result
+
+
+def _external_evidence_query(state: IdeationConvState, candidates: list[dict] | None = None) -> str:
+    """RAG-007(외부 통계·시장·정책) 검색어 — 공모전명, 평가 기준(공고문 원문), 문제 상황,
+    후보 아이디어 내용을 포함한다(요청 6번). RAG-006 project evidence_lookup이 쓰는
+    _contest_query(공모전명+공고문만)와는 별도로 관리한다 — 두 RAG은 책임이 다르므로
+    검색어 조합 로직도 독립적으로 둔다."""
+    parts = [_contest_query(state)]
+    for candidate in candidates or []:
+        if not isinstance(candidate, dict):
+            continue
+        fragment = " ".join(str(candidate.get(field) or "") for field in ("title", "problem", "solution")).strip()
+        if fragment:
+            parts.append(fragment)
+    return "\n".join(p for p in parts if p)
+
+
+def _merge_external_evidence_results(previous: dict[str, Any] | None, new: dict[str, Any]) -> dict[str, Any]:
+    """candidate_planning과 candidate_feasibility가 같은 요청 안에서 각각 검색한
+    external_evidence를 하나의 state 필드로 합친다(둘 다 있어야 요청 11번 응답 노출 요건을
+    만족한다 — 뒤에 실행되는 feasibility가 planning의 검색 결과를 덮어쓰지 않는다).
+    (source_id, document_id, chunk_id) 기준으로 중복 항목만 제거한다."""
+    previous = previous or {}
+    existing_items = previous.get("external_evidence") or []
+    seen = {(item.get("source_id"), item.get("document_id"), item.get("chunk_id")) for item in existing_items}
+    merged_items = list(existing_items)
+    for item in new.get("external_evidence") or []:
+        key = (item.get("source_id"), item.get("document_id"), item.get("chunk_id"))
+        if key in seen:
+            continue
+        seen.add(key)
+        merged_items.append(item)
+
+    existing_warnings = previous.get("warnings") or []
+    merged_warnings = list(existing_warnings)
+    for warning in new.get("warnings") or []:
+        if warning not in merged_warnings:
+            merged_warnings.append(warning)
+
+    return {
+        "external_evidence": merged_items,
+        "used_dataset_search": bool(previous.get("used_dataset_search")) or bool(new.get("used_dataset_search")),
+        "used_public_api_search": bool(previous.get("used_public_api_search")) or bool(new.get("used_public_api_search")),
+        "warnings": merged_warnings,
+    }
+
 _VALID_FEASIBILITY = {"high", "medium", "low"}
 _VALID_RESOLUTIONS = {"select", "combine", "recommend", "unclear"}
 # 결합(combine) 해석 시 merge_analysis.fit이 가질 수 있는 값 — feasibility와 값 집합은
@@ -410,10 +488,16 @@ def _resolve_selection(
 def make_candidate_planning_node(
     llm_call: LLMCall,
     evidence_lookup: EvidenceLookup | None = None,
+    external_evidence_lookup: ExternalEvidenceLookupFn | None = None,
 ) -> Callable[[IdeationConvState], dict]:
     """기획 전문가가 공모전 분석 + 서로 다른 아이디어 후보 2~3개를 만드는 노드. 개발
     전문가의 실현 가능성 검토(candidate_feasibility)로 정지 없이 바로 이어진다(요청
-    3-2/3-3 — 후보 제시 전까지는 사용자에게 정지 지점을 보이지 않는다)."""
+    3-2/3-3 — 후보 제시 전까지는 사용자에게 정지 지점을 보이지 않는다).
+
+    용준/Claude(2026-07-27, RAG-007 연결) — external_evidence_lookup(RAG-007, 외부 통계·
+    시장·정책 참고자료)은 evidence_lookup(RAG-006, 프로젝트 문서 근거)과 별도 콜백이다.
+    None이면(use_rag=False 등) 기존과 완전히 동일하게 동작한다(_call_external_evidence_lookup이
+    빈 결과를 반환)."""
 
     def node(state: IdeationConvState) -> dict:
         retrieved = call_evidence_lookup(
@@ -425,8 +509,16 @@ def make_candidate_planning_node(
             last_answer = _last_user_answer(state["messages"])
             regeneration_reason = (last_answer or {}).get("content")
 
+        external_result = _call_external_evidence_lookup(
+            external_evidence_lookup, "planning_expert", _external_evidence_query(state, previous_candidates)
+        )
+
         prompt = build_ideation_conv_candidate_planning_prompt(
-            state["notice_and_criteria"], retrieved, previous_candidates, regeneration_reason
+            state["notice_and_criteria"],
+            retrieved,
+            previous_candidates,
+            regeneration_reason,
+            external_research=external_result.get("external_evidence"),
         )
         raw, ok, attempts = _safe_call_structured_json(
             llm_call, prompt, _validate_candidate_planning_response, "candidate_planning"
@@ -435,10 +527,20 @@ def make_candidate_planning_node(
         if not ok:
             return {"phase": "failed", "failed_node": "candidate_planning", "llm_calls_used": used}
 
+        merged_external = _merge_external_evidence_results(
+            {"external_evidence": state.get("external_evidence", []), **(state.get("external_evidence_meta") or {})},
+            external_result,
+        )
         return {
             "idea_candidates": raw["candidates"],
             "contest_analysis": raw.get("contest_analysis"),
             "llm_calls_used": used,
+            "external_evidence": merged_external["external_evidence"],
+            "external_evidence_meta": {
+                "used_dataset_search": merged_external["used_dataset_search"],
+                "used_public_api_search": merged_external["used_public_api_search"],
+                "warnings": merged_external["warnings"],
+            },
         }
 
     return node
@@ -447,16 +549,30 @@ def make_candidate_planning_node(
 def make_candidate_feasibility_node(
     llm_call: LLMCall,
     evidence_lookup: EvidenceLookup | None = None,
+    external_evidence_lookup: ExternalEvidenceLookupFn | None = None,
 ) -> Callable[[IdeationConvState], dict]:
     """개발 전문가가 기획 전문가의 후보들을 실현 가능성 관점에서 검토하고 병합해, 사용자에게
-    선택 질문 하나를 던지고 멈춘다(awaiting_candidate_selection)."""
+    선택 질문 하나를 던지고 멈춘다(awaiting_candidate_selection).
+
+    용준/Claude(2026-07-27, RAG-007 연결) — external_evidence_lookup은 candidate_planning과
+    별개로 dev_expert 역할로 한 번 더 검색한다(요청 5번 역할 매핑: dev_expert -> technology).
+    두 노드의 검색 결과는 _merge_external_evidence_results로 합쳐 state에 누적한다 — 뒤에
+    실행되는 이 노드가 planning의 검색 결과를 덮어쓰지 않는다."""
 
     def node(state: IdeationConvState) -> dict:
         candidates = state.get("idea_candidates") or []
         retrieved = call_evidence_lookup(
             evidence_lookup, "dev_expert", _contest_query(state), runtime_scope=_runtime_scope_for(state)
         )
-        prompt = build_ideation_conv_candidate_feasibility_prompt(state["notice_and_criteria"], candidates, retrieved)
+        external_result = _call_external_evidence_lookup(
+            external_evidence_lookup, "dev_expert", _external_evidence_query(state, candidates)
+        )
+        prompt = build_ideation_conv_candidate_feasibility_prompt(
+            state["notice_and_criteria"],
+            candidates,
+            retrieved,
+            external_research=external_result.get("external_evidence"),
+        )
         raw, ok, attempts = _safe_call_structured_json(
             llm_call, prompt, _validate_candidate_feasibility_response, "candidate_feasibility"
         )
@@ -473,11 +589,21 @@ def make_candidate_feasibility_node(
             referenced_message_ids=[],
             evidence=[],
         )
+        merged_external = _merge_external_evidence_results(
+            {"external_evidence": state.get("external_evidence", []), **(state.get("external_evidence_meta") or {})},
+            external_result,
+        )
         update: dict[str, Any] = {
             "idea_candidates": merged,
             "messages": [question_message],
             "phase": "awaiting_candidate_selection",
             "llm_calls_used": used,
+            "external_evidence": merged_external["external_evidence"],
+            "external_evidence_meta": {
+                "used_dataset_search": merged_external["used_dataset_search"],
+                "used_public_api_search": merged_external["used_public_api_search"],
+                "warnings": merged_external["warnings"],
+            },
         }
         if not state.get("original_idea_candidates"):
             # 최초 생성일 때만 캡처한다 — 재추천으로 idea_candidates가 갱신돼도 이 값은

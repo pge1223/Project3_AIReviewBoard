@@ -143,6 +143,7 @@ def assemble_ideation_conversation_graph(
     ground_claims=None,
     index_target_evidence=None,
     evidence_planner=None,
+    external_evidence_lookup=None,
 ):
     """대화형 아이디어 발전 회의 그래프를 조립한다.
 
@@ -196,8 +197,11 @@ def assemble_ideation_conversation_graph(
     synthesis_node = make_conv_synthesis_node(llm_call)
 
     # 용준/Claude(2026-07-21): discovery(아이디어 발굴) 모드 노드 3종.
-    candidate_planning_node = make_candidate_planning_node(llm_call, evidence_lookup)
-    candidate_feasibility_node = make_candidate_feasibility_node(llm_call, evidence_lookup)
+    # 용준/Claude(2026-07-27, RAG-007 연결) — external_evidence_lookup은 candidate_planning/
+    # candidate_feasibility에만 주입한다(요청 4번). 다른 노드(질문/토론/synthesis)는 이
+    # 파라미터를 받지 않는다 — discovery 후보 생성에만 외부 통계·정책 참고자료가 필요하다.
+    candidate_planning_node = make_candidate_planning_node(llm_call, evidence_lookup, external_evidence_lookup)
+    candidate_feasibility_node = make_candidate_feasibility_node(llm_call, evidence_lookup, external_evidence_lookup)
     candidate_selection_node = make_candidate_selection_node(
         llm_call, evidence_lookup, index_target_evidence=index_target_evidence
     )

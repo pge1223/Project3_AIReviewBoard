@@ -131,7 +131,7 @@ export function isAdministrativeFormField(fieldName) {
 export const SPEAKER_META = {
   planning_expert: { label: '기획 위원', badgeClass: 'purple', align: 'left' },
   dev_expert: { label: '개발 위원', badgeClass: 'blue', align: 'left' },
-  ideation_facilitator: { label: '진행자', badgeClass: 'green', align: 'left' },
+  ideation_facilitator: { label: '진행위원', badgeClass: 'green', align: 'left' },
   user: { label: '나', badgeClass: null, align: 'right' },
 }
 
