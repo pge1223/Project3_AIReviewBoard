@@ -134,8 +134,9 @@ function Shell({ children, active, mode, onNavigate, showNav }) {
             radial-gradient(800px 500px at 50% 110%, rgba(224,96,61,0.06), transparent 55%),
             var(--bg-0);
           color:var(--text-0);
-          font-family:'Pretendard', -apple-system, sans-serif;
-          font-size:15px;
+          font-family:'Pretendard Variable', Pretendard, -apple-system, sans-serif;
+          font-size:16px;
+          font-weight:500;
           display:flex;
         }
         .rb-root .glass{ background:var(--glass); border:1px solid var(--glass-border); backdrop-filter: blur(14px); box-shadow: 0 2px 14px rgba(28,26,46,0.05); }
@@ -148,24 +149,24 @@ function Shell({ children, active, mode, onNavigate, showNav }) {
         .rb-root .navstep-done .navstep-row, .rb-root .navstep-current .navstep-row{ cursor:pointer; }
         .rb-root .navstep-done .navstep-row:hover, .rb-root .navstep-current .navstep-row:hover{ background:var(--bg-2); }
         .rb-root .navstep-upcoming .navstep-row{ cursor:default; }
-        .rb-root .navstep-dot{ width:22px; height:22px; border-radius:999px; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:700; flex-shrink:0; margin-top:1px; }
+        .rb-root .navstep-dot{ width:22px; height:22px; border-radius:999px; display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:700; flex-shrink:0; margin-top:1px; }
         .rb-root .navstep-done .navstep-dot{ background:var(--green-dim); color:var(--green); }
         .rb-root .navstep-current .navstep-dot{ background:var(--purple); color:#fff; }
         .rb-root .navstep-upcoming .navstep-dot{ background:var(--bg-2); color:var(--text-2); }
-        .rb-root .navstep-label{ font-size:14px; font-weight:600; color:var(--text-1); }
+        .rb-root .navstep-label{ font-size:15px; font-weight:600; color:var(--text-1); }
         .rb-root .navstep-current .navstep-label{ color:var(--text-0); font-weight:700; }
         .rb-root .navstep-upcoming .navstep-label{ color:var(--text-2); }
-        .rb-root .navstep-desc{ font-size:12px; color:var(--text-2); margin-top:2px; line-height:1.5; }
+        .rb-root .navstep-desc{ font-size:13px; color:var(--text-2); margin-top:2px; line-height:1.55; }
         .rb-root .main{ flex:1; min-width:0; padding:32px 40px; overflow-y:auto; }
-        .rb-root .badge{ display:inline-flex; align-items:center; gap:6px; font-size:12px; padding:3px 9px; border-radius:99px; font-family:var(--mono); }
+        .rb-root .badge{ display:inline-flex; align-items:center; gap:6px; font-size:13px; font-weight:600; padding:3px 9px; border-radius:99px; font-family:inherit; letter-spacing:-0.005em; }
         .rb-root .badge.purple{ background:var(--purple-dim); color:var(--purple); }
         .rb-root .badge.coral{ background:var(--coral-dim); color:var(--coral); }
         .rb-root .badge.green{ background:var(--green-dim); color:var(--green); }
         .rb-root .badge.amber{ background:var(--amber-dim); color:var(--amber); }
         .rb-root .badge.grey{ background:var(--bg-2); color:var(--text-2); }
-        .rb-root .btn-primary{ background:linear-gradient(135deg, var(--purple), #8b6ef0); color:#0b0a16; font-weight:600; border:none; border-radius:12px; padding:11px 20px; cursor:pointer; font-size:15px; }
+        .rb-root .btn-primary{ background:linear-gradient(135deg, var(--purple), #8b6ef0); color:#0b0a16; font-weight:600; border:none; border-radius:12px; padding:11px 20px; cursor:pointer; font-size:16px; }
         .rb-root .btn-primary:disabled{ opacity:0.4; cursor:not-allowed; }
-        .rb-root .btn-ghost{ background:transparent; border:1px solid var(--glass-border); color:var(--text-1); border-radius:12px; padding:10px 18px; cursor:pointer; font-size:15px; }
+        .rb-root .btn-ghost{ background:transparent; border:1px solid var(--glass-border); color:var(--text-1); border-radius:12px; padding:10px 18px; cursor:pointer; font-size:16px; }
         .rb-root .btn-ghost:hover{ background:var(--bg-2); }
         .rb-root .card{ border-radius:16px; padding:20px; }
         .rb-root .progress-track{ height:8px; border-radius:999px; background:var(--bg-2); overflow:hidden; }
@@ -174,11 +175,11 @@ function Shell({ children, active, mode, onNavigate, showNav }) {
         .rb-root .rb-icon-btn{ width:40px; height:40px; display:inline-flex; align-items:center; justify-content:center; padding:0; border:none; background:transparent; color:var(--text-1); border-radius:10px; cursor:pointer; }
         .rb-root .rb-icon-btn:hover{ background:var(--bg-2); color:var(--text-0); }
         .rb-root .rb-menu-panel{ position:absolute; top:48px; right:0; width:168px; border-radius:12px; padding:6px; }
-        .rb-root .rb-menu-item{ width:100%; display:flex; align-items:center; gap:8px; padding:10px 11px; border:none; border-radius:9px; background:transparent; color:var(--text-1); font-size:14px; cursor:pointer; text-align:left; }
+        .rb-root .rb-menu-item{ width:100%; display:flex; align-items:center; gap:8px; padding:10px 11px; border:none; border-radius:9px; background:transparent; color:var(--text-1); font-size:15px; cursor:pointer; text-align:left; }
         .rb-root .rb-menu-item:hover{ background:var(--bg-2); color:var(--text-0); }
         .rb-root .rb-entry-actions{ display:flex; justify-content:flex-end; margin-bottom:10px; }
-        .rb-root .rb-inline-projects{ display:inline-flex; align-items:center; gap:6px; padding:8px 12px; font-size:15px; font-family:inherit; font-weight:400; letter-spacing:0; }
-        .rb-root .rb-back-button{ width:26px; height:26px; display:inline-flex; align-items:center; justify-content:center; border:none; background:transparent; color:#000; border-radius:8px; cursor:pointer; font-size:13px; font-weight:300; line-height:1; padding:0; flex-shrink:0; }
+        .rb-root .rb-inline-projects{ display:inline-flex; align-items:center; gap:6px; padding:8px 12px; font-size:16px; font-family:inherit; font-weight:500; letter-spacing:0; }
+        .rb-root .rb-back-button{ width:26px; height:26px; display:inline-flex; align-items:center; justify-content:center; border:none; background:transparent; color:#000; border-radius:8px; cursor:pointer; font-size:13px; font-weight:500; line-height:1; padding:0; flex-shrink:0; }
         .rb-root .rb-back-button:hover{ background:var(--bg-2); color:var(--text-0); }
         .rb-root .rb-typing-cursor{ display:inline-block; margin-left:1px; animation: rb-blink 0.9s steps(1) infinite; }
         @keyframes rb-blink{ 0%,49%{ opacity:1; } 50%,100%{ opacity:0; } }
@@ -323,8 +324,8 @@ function ModeCard({ meta, selected, onSelect }) {
         {selected ? <CheckCircle2 size={18} color="var(--purple)" /> : <Circle size={16} color="var(--glass-border)" />}
       </div>
       <span className={`badge ${meta.accent} mono`} style={{ marginTop: 10, width: "fit-content" }}>{meta.badge}</span>
-      <div style={{ fontWeight: 700, fontSize: 15, margin: "10px 0 6px" }}>{meta.title}</div>
-      <div style={{ fontSize: 13, color: "var(--text-2)", lineHeight: 1.6, marginBottom: 12 }}>{meta.description}</div>
+      <div style={{ fontWeight: 700, fontSize: 16, margin: "10px 0 6px" }}>{meta.title}</div>
+      <div style={{ fontSize: 14.5, color: "var(--text-2)", lineHeight: 1.6, marginBottom: 12 }}>{meta.description}</div>
       <ul className="es-mode-outcomes">
         {meta.outcomes.map((o) => <li key={o}>{o}</li>)}
       </ul>
@@ -480,9 +481,9 @@ function EntryScreen({ onEnter, onModeSelect, loading, error, projectId, ensureP
     <div style={{ maxWidth: 1500, margin: "0 auto" }}>
       <style>{`
         .es-header-row{ display:flex; justify-content:space-between; align-items:flex-start; gap:16px; margin-bottom:28px; flex-wrap:wrap; }
-        .es-eyebrow{ font-size:13px; font-weight:700; color:var(--purple); letter-spacing:.03em; margin-bottom:6px; }
-        .es-title{ font-size:28px; font-weight:700; margin:0 0 6px; }
-        .es-subtitle{ font-size:14.5px; color:var(--text-2); margin:0; }
+        .es-eyebrow{ font-size:16px; font-weight:700; color:var(--purple); letter-spacing:.03em; margin-bottom:6px; }
+        .es-title{ font-size:34px; font-weight:700; margin:0 0 6px; }
+        .es-subtitle{ font-size:17px; color:var(--text-2); margin:0; }
 
         .es-layout{ display:grid; grid-template-columns:220px minmax(0,1fr) 320px; gap:28px; align-items:start; }
         @media (max-width:1180px){
@@ -498,50 +499,60 @@ function EntryScreen({ onEnter, onModeSelect, loading, error, projectId, ensureP
         .es-progress-step:last-child{ padding-bottom:0; }
         .es-progress-step::before{ content:''; position:absolute; left:11px; top:26px; bottom:0; width:1.5px; background:var(--glass-border); }
         .es-progress-step:last-child::before{ display:none; }
-        .es-progress-dot{ width:24px; height:24px; border-radius:999px; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:700; flex-shrink:0; }
+        .es-progress-dot{ width:26px; height:26px; border-radius:999px; display:flex; align-items:center; justify-content:center; font-size:15px; font-weight:700; flex-shrink:0; }
         .es-progress-step.active .es-progress-dot{ background:var(--purple); color:#fff; }
         .es-progress-step.upcoming .es-progress-dot{ background:var(--bg-2); color:var(--text-2); }
-        .es-progress-label{ font-size:14px; font-weight:700; }
+        .es-progress-label{ font-size:16.5px; font-weight:700; }
         .es-progress-step.upcoming .es-progress-label{ color:var(--text-2); font-weight:600; }
-        .es-progress-desc{ font-size:12.5px; color:var(--text-2); margin-top:2px; line-height:1.5; }
+        .es-progress-desc{ font-size:15.5px; color:var(--text-2); margin-top:2px; line-height:1.5; }
 
         .es-mode-grid{ display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:20px; }
         @media (max-width:640px){ .es-mode-grid{ grid-template-columns:1fr; } }
-        .es-mode-card{ cursor:pointer; border:1.5px solid var(--glass-border); display:flex; flex-direction:column; transition:border-color .18s ease, box-shadow .18s ease; }
+        .es-mode-card{ cursor:pointer; border:1.5px solid var(--glass-border); display:flex; flex-direction:column; transition:border-color .18s ease, box-shadow .22s ease, transform .22s ease; }
         .es-mode-card:hover{ border-color:var(--purple); }
         .es-mode-card:focus-visible{ outline:2px solid var(--purple); outline-offset:2px; }
-        .es-mode-card-selected{ border:2px solid var(--purple); background:var(--purple-dim); box-shadow:0 4px 14px rgba(124,92,234,0.14); }
+        .es-mode-card-selected{
+          border:2px solid var(--purple);
+          background:var(--purple-dim);
+          transform:translateY(-4px);
+          box-shadow:0 12px 24px -8px rgba(124,92,234,0.38), 0 4px 10px rgba(28,26,46,0.10);
+        }
         .es-mode-card-top{ display:flex; justify-content:space-between; align-items:flex-start; }
-        .es-mode-outcomes{ margin:0; padding-left:16px; font-size:13px; color:var(--text-1); line-height:1.8; }
+        .es-mode-outcomes{ margin:0; padding-left:16px; font-size:14.5px; color:var(--text-1); line-height:1.8; }
 
         .es-material-section.disabled{ opacity:.55; }
         .es-tabs{ display:flex; gap:4px; background:var(--bg-2); border-radius:999px; padding:4px; margin-bottom:14px; width:fit-content; }
-        .es-tab{ padding:7px 16px; border-radius:999px; border:none; cursor:pointer; font-size:14px; font-weight:600; font-family:inherit; background:transparent; color:var(--text-2); }
+        .es-tab{ padding:7px 16px; border-radius:999px; border:none; cursor:pointer; font-size:15px; font-weight:600; font-family:inherit; background:transparent; color:var(--text-2); }
         .es-tab.active{ background:var(--bg-1); color:var(--purple); box-shadow:0 1px 4px rgba(28,26,46,0.1); }
 
         .es-doc-row{ display:flex; justify-content:space-between; align-items:center; padding:12px 0; gap:12px; }
         .es-doc-row + .es-doc-row{ border-top:1px solid var(--glass-border); }
-        .es-doc-name{ font-size:14.5px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:320px; }
-        .es-doc-meta{ font-size:12.5px; color:var(--text-2); margin-top:2px; }
+        .es-doc-name{ font-size:15.5px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:320px; }
+        .es-doc-meta{ font-size:14px; color:var(--text-2); margin-top:2px; }
 
         .es-alert{ display:flex; gap:10px; padding:14px 16px; border-radius:12px; background:var(--amber-dim); border:1px solid rgba(184,131,11,0.25); margin-bottom:12px; }
-        .es-alert-title{ font-size:14px; font-weight:700; color:var(--amber); margin-bottom:4px; }
-        .es-alert-body{ font-size:13px; color:var(--text-1); line-height:1.6; }
+        .es-alert-title{ font-size:15px; font-weight:700; color:var(--amber); margin-bottom:4px; }
+        .es-alert-body{ font-size:14.5px; color:var(--text-1); line-height:1.6; }
         .es-alert-actions{ display:flex; gap:8px; margin-top:10px; }
 
         .es-side{ position:sticky; top:24px; }
-        .es-side-title{ font-size:15px; font-weight:700; margin-bottom:14px; }
+        .es-side-title{ font-size:16px; font-weight:700; margin-bottom:14px; }
         .es-side-row{ padding:12px 0; border-top:1px solid var(--glass-border); }
         .es-side-row:first-child{ border-top:none; padding-top:0; }
-        .es-side-label{ font-size:12.5px; color:var(--text-2); margin-bottom:6px; }
-        .es-checklist{ list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:6px; font-size:13.5px; }
+        .es-side-label{ font-size:14px; color:var(--text-2); margin-bottom:6px; }
+        .es-checklist{ list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:6px; font-size:14.5px; }
         .es-checklist li{ display:flex; align-items:center; gap:8px; color:var(--text-1); }
         .es-checklist li.done{ color:var(--green); }
       `}</style>
 
       <div className="es-header-row">
         <div>
-          <div className="es-eyebrow mono">AI REVIEW BOARD</div>
+          {/* 용준/Claude(2026-07-26, 요청: "AI REVIEW BOARD 글꼴이 픽셀/도트 게임 폰트처럼
+              보여서 완성도가 떨어짐") — .mono가 var(--mono)(JetBrains Mono, 고정폭)를
+              적용해서 작은 크기+letter-spacing과 합쳐지면 도트 폰트처럼 보였다. 이
+              로고성 라벨만 .mono를 빼서 기본 본문 폰트(Pretendard)를 쓰게 하고, 다른
+              곳(배지·타임스탬프 등)의 .mono는 그대로 둔다. */}
+          <div className="es-eyebrow">AI REVIEW BOARD</div>
           <h1 className="es-title">새 분석 시작</h1>
           <p className="es-subtitle">현재 준비 상태에 맞는 분석 방식을 선택하고 필요한 자료를 등록해 주세요.</p>
         </div>
@@ -572,19 +583,19 @@ function EntryScreen({ onEnter, onModeSelect, loading, error, projectId, ensureP
 
           <div className={`card glass es-material-section ${!mode ? "disabled" : ""}`}>
             {!mode ? (
-              <div style={{ fontSize: 14, color: "var(--text-2)" }}>분석 방식을 먼저 선택해 주세요.</div>
+              <div style={{ fontSize: 15, color: "var(--text-2)" }}>분석 방식을 먼저 선택해 주세요.</div>
             ) : (
               <>
-                <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
+                <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
                   <Link2 size={14} color="var(--text-2)" /> 공모전 자료 등록
                   <span className="badge purple mono" style={{ marginLeft: 6 }}>필수 입력</span>
                 </div>
-                <div style={{ fontSize: 13, color: "var(--text-2)", marginBottom: 14 }}>
+                <div style={{ fontSize: 14.5, color: "var(--text-2)", marginBottom: 14 }}>
                   공고문, 평가 기준, 신청서 양식 등 공모전 관련 자료를 등록해 주세요.
                 </div>
 
                 {mode === 'post' && (
-                  <div style={{ fontSize: 12.5, color: "var(--text-1)", background: "var(--bg-2)", borderRadius: 10, padding: "10px 12px", marginBottom: 14, lineHeight: 1.6 }}>
+                  <div style={{ fontSize: 14, color: "var(--text-1)", background: "var(--bg-2)", borderRadius: 10, padding: "10px 12px", marginBottom: 14, lineHeight: 1.6 }}>
                     평가받을 기획서·제안서·사업계획서 같은 문서는 다음 단계(기획서 업로드)에서 따로 등록해요. 여기서는 공모전 공고문·평가기준·신청서 양식만 등록하면 돼요.
                   </div>
                 )}
@@ -619,7 +630,7 @@ function EntryScreen({ onEnter, onModeSelect, loading, error, projectId, ensureP
                       onKeyDown={(e) => e.key === 'Enter' && handleFetchCriteriaUrl()}
                       placeholder="공모전 페이지 URL을 입력하세요."
                       disabled={criteriaLoading}
-                      style={{ flex: 1, background: "var(--bg-1)", border: "1px solid var(--glass-border)", borderRadius: 10, padding: "11px 14px", color: "var(--text-0)", fontSize: 14 }}
+                      style={{ flex: 1, background: "var(--bg-1)", border: "1px solid var(--glass-border)", borderRadius: 10, padding: "11px 14px", color: "var(--text-0)", fontSize: 15 }}
                     />
                     <button type="button" className="btn-ghost" onClick={handleFetchCriteriaUrl} disabled={criteriaLoading || !criteriaUrl.trim()}>
                       {criteriaLoading ? '가져오는 중...' : '가져오기'}
@@ -637,8 +648,8 @@ function EntryScreen({ onEnter, onModeSelect, loading, error, projectId, ensureP
                     <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                       <Upload size={20} color="var(--purple)" />
                       <div>
-                        <div style={{ fontSize: 15, fontWeight: 700 }}>{isCriteriaDragging ? '여기에 놓으세요' : '공고문 · 평가기준 · 신청서 양식'}</div>
-                        <div style={{ fontSize: 13, color: 'var(--text-2)' }}>PDF, DOCX, PPTX, HWP, HWPX · 파일당 최대 50MB · 여러 개 선택 가능</div>
+                        <div style={{ fontSize: 16, fontWeight: 700 }}>{isCriteriaDragging ? '여기에 놓으세요' : '공고문 · 평가기준 · 신청서 양식'}</div>
+                        <div style={{ fontSize: 14.5, color: 'var(--text-2)' }}>PDF, DOCX, PPTX, HWP, HWPX · 파일당 최대 50MB · 여러 개 선택 가능</div>
                       </div>
                     </div>
                     <button type="button" className="btn-ghost" onClick={() => criteriaFileInputRef.current?.click()}>파일 선택</button>
@@ -653,7 +664,7 @@ function EntryScreen({ onEnter, onModeSelect, loading, error, projectId, ensureP
                   </div>
                 )}
 
-                {criteriaError && <p style={{ color: "var(--coral)", fontSize: 13, marginTop: 12 }}>{criteriaError}</p>}
+                {criteriaError && <p style={{ color: "var(--coral)", fontSize: 14.5, marginTop: 12 }}>{criteriaError}</p>}
 
                 {documents.filter((d) => d.unsupportedLinks?.length > 0 && !dismissedAlerts.includes(d.id)).map((doc) => (
                   <div key={`alert-${doc.id}`} className="es-alert" style={{ marginTop: 14 }}>
@@ -663,7 +674,7 @@ function EntryScreen({ onEnter, onModeSelect, loading, error, projectId, ensureP
                       <div className="es-alert-body">
                         공모전 페이지에서 첨부파일을 발견했지만 자동으로 내용을 가져오지 못했습니다.
                       </div>
-                      <ul style={{ margin: '8px 0 0', paddingLeft: 16, fontSize: 12.5, color: "var(--text-1)" }}>
+                      <ul style={{ margin: '8px 0 0', paddingLeft: 16, fontSize: 14, color: "var(--text-1)" }}>
                         {doc.unsupportedLinks.map((link, i) => (
                           <li key={i}>{link.file_name || link.url}</li>
                         ))}
@@ -718,7 +729,7 @@ function EntryScreen({ onEnter, onModeSelect, loading, error, projectId, ensureP
             )}
           </div>
 
-          {error && <p style={{ color: "var(--coral)", fontSize: 13 }}>{error}</p>}
+          {error && <p style={{ color: "var(--coral)", fontSize: 14.5 }}>{error}</p>}
         </div>
 
         <aside className="es-side">
@@ -727,7 +738,7 @@ function EntryScreen({ onEnter, onModeSelect, loading, error, projectId, ensureP
 
             <div className="es-side-row">
               <div className="es-side-label">분석 방식</div>
-              <div style={{ fontSize: 14.5, fontWeight: 600 }}>
+              <div style={{ fontSize: 15.5, fontWeight: 600 }}>
                 {mode ? MODE_META[mode].badge : '분석 방식을 선택해 주세요.'}
               </div>
             </div>
@@ -737,7 +748,7 @@ function EntryScreen({ onEnter, onModeSelect, loading, error, projectId, ensureP
                 <div className="es-side-label">등록된 자료 상태</div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                   {materialStatusEntries.map(([label, count, color]) => (
-                    <div key={label} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13.5 }}>
+                    <div key={label} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14.5 }}>
                       <span style={{ color: 'var(--text-1)' }}>{label}</span>
                       <span className={`badge ${color} mono`}>{count}개</span>
                     </div>
@@ -749,7 +760,7 @@ function EntryScreen({ onEnter, onModeSelect, loading, error, projectId, ensureP
             {mode && expectedResults.length > 0 && (
               <div className="es-side-row">
                 <div className="es-side-label">분석 후 다음 순서</div>
-                <ul style={{ margin: 0, paddingLeft: 16, fontSize: 13.5, color: "var(--text-1)", lineHeight: 1.8 }}>
+                <ul style={{ margin: 0, paddingLeft: 16, fontSize: 14.5, color: "var(--text-1)", lineHeight: 1.8 }}>
                   {expectedResults.map((r) => <li key={r}>{r}</li>)}
                 </ul>
               </div>
@@ -778,7 +789,7 @@ function EntryScreen({ onEnter, onModeSelect, loading, error, projectId, ensureP
                     : "공모전 분석 시작하기"} <ArrowRight size={15} />
               </button>
               {guide && !loading && (
-                <p style={{ fontSize: 12.5, color: "var(--text-2)", marginTop: 8, textAlign: "center" }}>{guide}</p>
+                <p style={{ fontSize: 14, color: "var(--text-2)", marginTop: 8, textAlign: "center" }}>{guide}</p>
               )}
             </div>
           </div>
@@ -856,37 +867,43 @@ function EvaluationCriteriaSummary({ groups, expanded, onToggle }) {
 
       {itemCount === 0 && <div className="cas-empty">등록한 공고문에서 확인된 평가 기준이 없어요.</div>}
 
-      {itemCount > 0 && !expanded && (
-        <div className="cas-criteria-chips">
-          {allItems.slice(0, 4).map((item, i) => (
-            <div key={i} className="cas-criteria-chip">
-              <span>{item.name}</span>
-              {item.score != null && <span className="mono cas-criteria-score">{item.score}점</span>}
-            </div>
-          ))}
-          {allItems.length > 4 && <div className="cas-criteria-more">+{allItems.length - 4}개 항목</div>}
-        </div>
-      )}
-
-      {itemCount > 0 && expanded && (
-        <div className="cas-criteria-groups">
-          {groups.map((group) => (
-            <div key={group.groupName} className="cas-criteria-group">
-              <div className="cas-criteria-group-name">
-                {group.groupName}
-                {group.totalScore != null && <span className="mono cas-criteria-score"> · {group.totalScore}점</span>}
-              </div>
+      {itemCount > 0 && (
+        <>
+          <div className={`cas-collapse ${!expanded ? "open" : ""}`}>
+            <div className="cas-collapse-inner">
               <div className="cas-criteria-chips">
-                {group.items.map((item, i) => (
+                {allItems.slice(0, 4).map((item, i) => (
                   <div key={i} className="cas-criteria-chip">
                     <span>{item.name}</span>
-                    {item.score != null && <span className="mono cas-criteria-score">{item.score}점</span>}
+                  </div>
+                ))}
+                {allItems.length > 4 && <div className="cas-criteria-more">+{allItems.length - 4}개 항목</div>}
+              </div>
+            </div>
+          </div>
+
+          <div className={`cas-collapse ${expanded ? "open" : ""}`}>
+            <div className="cas-collapse-inner">
+              <div className="cas-criteria-groups">
+                {groups.map((group) => (
+                  <div key={group.groupName} className="cas-criteria-group">
+                    <div className="cas-criteria-group-name">
+                      {group.groupName}
+                      {group.totalScore != null && <span className="cas-criteria-score"> · {group.totalScore}점</span>}
+                    </div>
+                    <div className="cas-criteria-chips">
+                      {group.items.map((item, i) => (
+                        <div key={i} className="cas-criteria-chip">
+                          <span>{item.name}</span>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 ))}
               </div>
             </div>
-          ))}
-        </div>
+          </div>
+        </>
       )}
     </div>
   );
@@ -904,8 +921,31 @@ function SimilarCaseSection({ hasData, works, expanded, onToggle, onWorkClick, l
     );
   }
 
-  const visible = expanded ? works : works.slice(0, 3);
-  const restCount = works.length - visible.length;
+  const firstRow = works.slice(0, 3);
+  const rest = works.slice(3);
+
+  const renderCard = (work, i) => {
+    const clickable = !!work.contest_title && !loadingWork;
+    const Tag = clickable ? "button" : "div";
+    return (
+      <Tag
+        key={i}
+        type={clickable ? "button" : undefined}
+        className="card glass cas-case-card"
+        onClick={clickable ? () => onWorkClick(work) : undefined}
+      >
+        {work.selection_status && (
+          <span className={`badge ${work.selection_status === "winner" ? "green" : "amber"} mono`}>
+            {work.selection_status === "winner" ? (work.award_grade || "수상") : "후보"}
+          </span>
+        )}
+        <div className="cas-case-title">{work.title}</div>
+        {(work.contest_title || work.source_org) && (
+          <div className="cas-case-source">{[work.contest_title, work.source_org].filter(Boolean).join(" · ")}</div>
+        )}
+      </Tag>
+    );
+  };
 
   return (
     <div className="card glass cas-section">
@@ -914,40 +954,31 @@ function SimilarCaseSection({ hasData, works, expanded, onToggle, onWorkClick, l
           <div className="cas-card-title"><TrendingUp size={15} color="var(--amber)" /> 수상작·유사 사례 분석</div>
           <div className="cas-card-subtitle">최근 수상작 및 유사 사례 {works.length}건을 분석했습니다.</div>
         </div>
-        <button type="button" className="btn-ghost cas-detail-btn" onClick={onToggle}>
-          {expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />} {expanded ? "접기" : "자세히 보기"}
-        </button>
-      </div>
-
-      <div className="cas-case-grid">
-        {visible.map((work, i) => {
-          const clickable = !!work.contest_title && !loadingWork;
-          const Tag = clickable ? "button" : "div";
-          return (
-            <Tag
-              key={i}
-              type={clickable ? "button" : undefined}
-              className="card glass cas-case-card"
-              onClick={clickable ? () => onWorkClick(work) : undefined}
-            >
-              {work.selection_status && (
-                <span className={`badge ${work.selection_status === "winner" ? "green" : "amber"} mono`}>
-                  {work.selection_status === "winner" ? (work.award_grade || "수상") : "후보"}
-                </span>
-              )}
-              <div className="cas-case-title">{work.title}</div>
-              {(work.contest_title || work.source_org) && (
-                <div className="cas-case-source">{[work.contest_title, work.source_org].filter(Boolean).join(" · ")}</div>
-              )}
-            </Tag>
-          );
-        })}
-        {!expanded && restCount > 0 && (
-          <button type="button" className="card glass cas-case-card cas-case-more" onClick={onToggle}>
-            +{restCount}건 더 보기
+        {rest.length > 0 && (
+          <button type="button" className="btn-ghost cas-detail-btn" onClick={onToggle}>
+            {expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />} {expanded ? "접기" : "자세히 보기"}
           </button>
         )}
       </div>
+
+      <div className="cas-case-grid">
+        {firstRow.map((work, i) => renderCard(work, i))}
+        {!expanded && rest.length > 0 && (
+          <button type="button" className="card glass cas-case-card cas-case-more" onClick={onToggle}>
+            +{rest.length}건 더 보기
+          </button>
+        )}
+      </div>
+
+      {rest.length > 0 && (
+        <div className={`cas-collapse ${expanded ? "open" : ""}`}>
+          <div className="cas-collapse-inner">
+            <div className="cas-case-grid" style={{ marginTop: 12 }}>
+              {rest.map((work, i) => renderCard(work, i + 3))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -984,8 +1015,8 @@ function ContestDetailTabs({ activeTab, onTabChange, facts, strategy, formAnalys
   };
 
   return (
-    <div className="cas-tabs-wrap">
-      <div className="es-tabs cas-detail-tabs" role="tablist" aria-label="핵심 요구사항 상세">
+    <div className="cas-detail-tabs-wrap">
+      <div className="cas-detail-tabs-bar" role="tablist" aria-label="핵심 요구사항 상세">
         {DETAIL_TABS.map((tab) => (
           <button
             key={tab.key}
@@ -993,7 +1024,7 @@ function ContestDetailTabs({ activeTab, onTabChange, facts, strategy, formAnalys
             role="tab"
             aria-selected={activeTab === tab.key}
             tabIndex={activeTab === tab.key ? 0 : -1}
-            className={`es-tab ${activeTab === tab.key ? "active" : ""}`}
+            className={`cas-detail-tab ${activeTab === tab.key ? "active" : ""}`}
             onClick={() => onTabChange(tab.key)}
             onKeyDown={handleTabKeyDown}
           >
@@ -1002,17 +1033,17 @@ function ContestDetailTabs({ activeTab, onTabChange, facts, strategy, formAnalys
         ))}
       </div>
 
-      <div className="cas-tab-panel" role="tabpanel">
+      <div key={activeTab} className="cas-detail-panel" role="tabpanel">
         {activeTab === "strategy" && (
           (strategy?.winning_points?.length || 0) + (strategy?.recommended_direction?.length || 0) > 0 ? (
             <div className="cas-numbered-list">
               {strategy?.winning_points?.length > 0 && <div className="cas-subheading">차별화 포인트</div>}
               {strategy?.winning_points?.map((v, i) => (
-                <div key={`w-${i}`} className="cas-numbered-item"><span className="cas-num">{i + 1}</span><span>{v}</span></div>
+                <div key={`w-${i}`} className="cas-numbered-item"><span className="cas-num">{String(i + 1).padStart(2, "0")}</span><span>{v}</span></div>
               ))}
               {strategy?.recommended_direction?.length > 0 && <div className="cas-subheading">추천 방향</div>}
               {strategy?.recommended_direction?.map((v, i) => (
-                <div key={`r-${i}`} className="cas-numbered-item"><span className="cas-num">{i + 1}</span><span>{v}</span></div>
+                <div key={`r-${i}`} className="cas-numbered-item"><span className="cas-num">{String(i + 1).padStart(2, "0")}</span><span>{v}</span></div>
               ))}
             </div>
           ) : <div className="cas-empty">제안할 전략을 판단할 근거가 부족해요.</div>
@@ -1052,7 +1083,14 @@ function ContestDetailTabs({ activeTab, onTabChange, facts, strategy, formAnalys
         {activeTab === "eligibility" && (
           <>
             {eligibilityItems.length > 0 ? (
-              <ul className="cas-plain-list">{eligibilityItems.map((v, i) => <li key={i}>{v}</li>)}</ul>
+              <ul className="cas-checklist">
+                {eligibilityItems.map((v, i) => (
+                  <li key={i} className="cas-checklist-item">
+                    <CheckCircle2 size={16} color="var(--green)" style={{ flexShrink: 0, marginTop: 2 }} />
+                    <span>{v}</span>
+                  </li>
+                ))}
+              </ul>
             ) : <div className="cas-empty">공고문에서 확인된 신청·심사 조건이 없어요.</div>}
 
             {formAnalysis?.has_application_form && formAnalysis.items.length > 0 && (
@@ -1067,7 +1105,7 @@ function ContestDetailTabs({ activeTab, onTabChange, facts, strategy, formAnalys
                   {formAnalysis.items.map((item, i) => (
                     <li key={i}>
                       <strong>{item.field_name}</strong>
-                      {item.char_limit != null && <span className="mono cas-form-limit"> ({item.char_limit}자 이내)</span>}
+                      {item.char_limit != null && <span className="cas-form-limit"> ({item.char_limit}자 이내)</span>}
                       {item.description && <div className="cas-form-desc">{item.description}</div>}
                     </li>
                   ))}
@@ -1117,17 +1155,21 @@ function ContestDetailTabs({ activeTab, onTabChange, facts, strategy, formAnalys
 
 function CoreRequirementsSection({ open, onToggle, ...tabProps }) {
   return (
-    <div className="card glass cas-section">
-      <div className="cas-section-head">
+    <div className="cas-detail-card">
+      <button type="button" className="cas-detail-head" onClick={onToggle} aria-expanded={open}>
         <div>
-          <div className="cas-card-title"><ShieldCheck size={15} color="var(--green)" /> 핵심 요구사항 정리</div>
-          <div className="cas-card-subtitle">공모전에서 요구하는 핵심 조건과 제출물, 일정, 신청 대상 및 유의사항을 정리했습니다.</div>
+          <div className="cas-detail-title">공모전 상세 분석</div>
+          <div className="cas-detail-desc">지원 전략, 일정, 신청 조건과 혜택을 확인하세요.</div>
         </div>
-        <button type="button" className="btn-ghost cas-detail-btn" onClick={onToggle}>
-          {open ? <ChevronUp size={13} /> : <ChevronDown size={13} />} {open ? "접기" : "자세히 보기"}
-        </button>
+        <ChevronDown size={18} className={`cas-detail-chevron ${open ? "open" : ""}`} />
+      </button>
+      <div className={`cas-collapse ${open ? "open" : ""}`}>
+        <div className="cas-collapse-inner">
+          <div className="cas-detail-body">
+            <ContestDetailTabs {...tabProps} />
+          </div>
+        </div>
       </div>
-      {open && <ContestDetailTabs {...tabProps} />}
     </div>
   );
 }
@@ -1142,33 +1184,45 @@ function EvidenceSection({ evidence, sourceDocs, expanded, onToggle }) {
     );
   }
 
-  const visible = expanded ? evidence : evidence.slice(0, 3);
+  const first3 = evidence.slice(0, 3);
+  const rest = evidence.slice(3);
+
+  const renderRow = (e, i) => (
+    <div key={i} className="cas-evidence-row">
+      <div className="cas-evidence-head">
+        <span className={`badge ${e.source_type === "announcement" ? "green" : "purple"} mono`}>
+          {e.source_type === "announcement" ? "공고문 근거" : "AI 추론"}
+        </span>
+      </div>
+      <div className="cas-evidence-claim">{e.claim}</div>
+      <div className="cas-evidence-meta">
+        {e.location || (e.source_type === "announcement" ? "위치 미상" : "추론")} · {CONFIDENCE_LABEL[e.confidence] || e.confidence}
+      </div>
+    </div>
+  );
 
   return (
     <div className="card glass cas-section">
       <div className="cas-section-head">
         <div className="cas-card-title"><Quote size={15} color="var(--purple)" /> 분석 근거</div>
-        {evidence.length > 3 && (
+        {rest.length > 0 && (
           <button type="button" className="btn-ghost cas-detail-btn" onClick={onToggle}>
             {expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />} {expanded ? "접기" : "전체 근거 보기"}
           </button>
         )}
       </div>
       <div className="cas-evidence-list">
-        {visible.map((e, i) => (
-          <div key={i} className="cas-evidence-row">
-            <div className="cas-evidence-head">
-              <span className={`badge ${e.source_type === "announcement" ? "green" : "purple"} mono`}>
-                {e.source_type === "announcement" ? "공고문 근거" : "AI 추론"}
-              </span>
-            </div>
-            <div className="cas-evidence-claim">{e.claim}</div>
-            <div className="cas-evidence-meta">
-              {e.location || (e.source_type === "announcement" ? "위치 미상" : "추론")} · {CONFIDENCE_LABEL[e.confidence] || e.confidence}
+        {first3.map((e, i) => renderRow(e, i))}
+      </div>
+      {rest.length > 0 && (
+        <div className={`cas-collapse ${expanded ? "open" : ""}`}>
+          <div className="cas-collapse-inner">
+            <div className="cas-evidence-list">
+              {rest.map((e, i) => renderRow(e, i + 3))}
             </div>
           </div>
-        ))}
-      </div>
+        </div>
+      )}
       {sourceDocs.length > 0 && <div className="cas-evidence-sources">참고 문서: {sourceDocs.join(", ")}</div>}
     </div>
   );
@@ -1440,13 +1494,13 @@ function AnalysisScreen({ mode, onNext, onBack, projectId }) {
       <style>{`
         .cas-wrap{ max-width:1320px; }
         .cas-title-row{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:10px 0 6px; }
-        .cas-title{ font-size:28px; font-weight:700; margin:0; }
-        .cas-subtitle{ font-size:14.5px; color:var(--text-2); margin:0 0 18px; }
+        .cas-title{ font-size:29px; font-weight:700; margin:0; }
+        .cas-subtitle{ font-size:16px; color:var(--text-2); margin:0 0 18px; }
 
         .cas-meta-row{ display:flex; flex-wrap:wrap; gap:12px; margin-bottom:18px; }
         .cas-meta-item{ display:flex; align-items:center; gap:8px; background:var(--bg-1); border:1px solid var(--glass-border); border-radius:12px; padding:10px 14px; flex:0 1 auto; }
-        .cas-meta-label{ font-size:12px; color:var(--text-2); }
-        .cas-meta-value{ font-size:14.5px; font-weight:700; }
+        .cas-meta-label{ font-size:13px; color:var(--text-2); }
+        .cas-meta-value{ font-size:16px; font-weight:700; }
         @media (max-width:640px){ .cas-meta-item{ flex:1 1 45%; } }
 
         .cas-layout{ display:grid; grid-template-columns:minmax(0,1fr) 320px; gap:24px; align-items:start; }
@@ -1454,70 +1508,93 @@ function AnalysisScreen({ mode, onNext, onBack, projectId }) {
 
         .cas-section{ display:flex; flex-direction:column; gap:10px; }
         .cas-section-head{ display:flex; justify-content:space-between; align-items:flex-start; gap:12px; }
-        .cas-card-title{ display:flex; align-items:center; gap:7px; font-size:15.5px; font-weight:700; }
-        .cas-card-subtitle{ font-size:13px; color:var(--text-2); margin-top:2px; line-height:1.5; }
-        .cas-detail-btn{ display:flex; align-items:center; gap:4px; padding:7px 14px; font-size:13.5px; flex-shrink:0; white-space:nowrap; }
-        .cas-empty{ font-size:13.5px; color:var(--text-2); }
-        .cas-summary-text{ font-size:14px; color:var(--text-1); line-height:1.7; margin:0; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
+        .cas-card-title{ display:flex; align-items:center; gap:7px; font-size:17px; font-weight:700; }
+        .cas-card-subtitle{ font-size:14.5px; color:var(--text-2); margin-top:2px; line-height:1.5; }
+        .cas-detail-btn{ display:flex; align-items:center; gap:4px; padding:7px 14px; font-size:15px; flex-shrink:0; white-space:nowrap; }
+        .cas-empty{ font-size:15px; color:var(--text-2); }
+        .cas-summary-text{ font-size:16px; color:var(--text-1); line-height:1.7; margin:0; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
 
         .cas-criteria-chips{ display:flex; flex-wrap:wrap; gap:8px; }
-        .cas-criteria-chip{ display:flex; align-items:center; gap:8px; background:var(--bg-2); border-radius:10px; padding:8px 12px; font-size:13.5px; }
-        .cas-criteria-score{ color:var(--purple); font-size:12.5px; }
-        .cas-criteria-more{ display:flex; align-items:center; font-size:13.5px; color:var(--text-2); padding:8px 4px; }
+        .cas-criteria-chip{ display:flex; align-items:center; gap:8px; background:var(--bg-2); border-radius:10px; padding:8px 12px; font-size:15px; }
+        .cas-criteria-score{ color:var(--purple); font-size:14px; }
+        .cas-criteria-more{ display:flex; align-items:center; font-size:15px; color:var(--text-2); padding:8px 4px; }
         .cas-criteria-groups{ display:flex; flex-direction:column; gap:14px; }
-        .cas-criteria-group-name{ font-size:13.5px; font-weight:700; margin-bottom:6px; }
+        .cas-criteria-group-name{ font-size:15px; font-weight:700; margin-bottom:6px; }
 
         .cas-case-grid{ display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
         @media (max-width:900px){ .cas-case-grid{ grid-template-columns:repeat(2,1fr); } }
         @media (max-width:560px){ .cas-case-grid{ grid-template-columns:1fr; } }
         .cas-case-card{ min-height:96px; display:flex; flex-direction:column; gap:8px; text-align:left; font:inherit; color:inherit; }
-        .cas-case-title{ font-size:14px; font-weight:600; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; line-height:1.5; }
-        .cas-case-source{ font-size:12px; color:var(--text-2); }
-        .cas-case-more{ align-items:center; justify-content:center; color:var(--purple); font-size:13.5px; font-weight:600; cursor:pointer; border:1px dashed var(--glass-border); }
+        .cas-case-title{ font-size:15.5px; font-weight:600; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; line-height:1.5; }
+        .cas-case-source{ font-size:13.5px; color:var(--text-2); }
+        .cas-case-more{ align-items:center; justify-content:center; color:var(--purple); font-size:15px; font-weight:600; cursor:pointer; border:1px dashed var(--glass-border); }
 
-        .cas-tabs-wrap{ margin-top:6px; }
-        .cas-detail-tabs{ margin-bottom:14px; flex-wrap:wrap; }
-        .cas-tab-panel{ font-size:13.5px; color:var(--text-1); line-height:1.8; }
-        .cas-subheading{ font-size:13px; font-weight:700; color:var(--text-1); margin:10px 0 6px; }
+        .cas-detail-card{ border-radius:16px; background:#fff; border:1px solid #e2e8f0; box-shadow:0 1px 3px rgba(15,23,42,0.06); overflow:hidden; }
+        .cas-detail-head{ width:100%; display:flex; align-items:center; justify-content:space-between; gap:12px; padding:22px 24px; background:transparent; border:none; cursor:pointer; text-align:left; font:inherit; color:inherit; }
+        .cas-detail-head:hover{ background:rgba(15,23,42,0.02); }
+        .cas-detail-head:focus-visible{ outline:2px solid var(--purple); outline-offset:-2px; }
+        .cas-detail-title{ font-size:18.5px; font-weight:700; color:#020617; }
+        .cas-detail-desc{ font-size:15px; font-weight:400; color:#475569; margin-top:4px; }
+        .cas-detail-chevron{ flex-shrink:0; color:#475569; transition:transform 0.18s ease; }
+        .cas-detail-chevron.open{ transform:rotate(180deg); }
+        .cas-detail-body{ padding:20px 24px 24px; border-top:1px solid #e2e8f0; }
+
+        .cas-detail-tabs-wrap{ display:flex; flex-direction:column; }
+        .cas-detail-tabs-bar{ display:flex; flex-wrap:nowrap; gap:4px; background:#f1f5f9; border-radius:12px; padding:4px; margin-bottom:24px; width:fit-content; max-width:100%; overflow-x:auto; -webkit-overflow-scrolling:touch; }
+        .cas-detail-tab{ flex-shrink:0; border:none; background:transparent; border-radius:8px; padding:10px 16px; font-size:15px; font-weight:500; color:#475569; cursor:pointer; font-family:inherit; white-space:nowrap; transition:background 0.15s ease, color 0.15s ease; }
+        .cas-detail-tab:hover{ background:rgba(255,255,255,0.7); color:#0f172a; }
+        .cas-detail-tab.active{ background:#fff; color:#6d28d9; font-weight:600; box-shadow:0 1px 2px rgba(15,23,42,0.08); }
+        .cas-detail-tab:focus-visible{ outline:2px solid var(--purple); outline-offset:2px; }
+        .cas-detail-panel{ font-size:16px; color:var(--text-1); line-height:1.8; animation:casTabFade 0.28s ease; }
+
+        .cas-subheading{ font-size:15.5px; font-weight:700; color:var(--text-1); margin:10px 0 6px; }
         .cas-subheading:first-child{ margin-top:0; }
         .cas-numbered-item{ display:flex; gap:8px; margin-bottom:6px; }
-        .cas-num{ flex-shrink:0; width:18px; height:18px; margin-top:1px; border-radius:999px; background:var(--purple-dim); color:var(--purple); font-size:10.5px; font-weight:700; display:flex; align-items:center; justify-content:center; }
+        .cas-num{ flex-shrink:0; min-width:27px; height:23px; padding:0 4px; margin-top:1px; border-radius:7px; background:var(--purple-dim); color:var(--purple); font-size:13px; font-weight:700; display:flex; align-items:center; justify-content:center; font-variant-numeric:tabular-nums; }
         .cas-plain-list{ margin:0; padding-left:16px; }
         .cas-plain-list li{ margin-bottom:4px; }
         .cas-plain-text{ color:var(--text-1); }
+        .cas-checklist{ display:flex; flex-direction:column; gap:9px; margin:0; padding:0; list-style:none; }
+        .cas-checklist-item{ display:flex; align-items:flex-start; gap:8px; }
         .cas-timeline{ display:flex; flex-direction:column; gap:10px; }
         .cas-timeline-row{ display:flex; align-items:center; gap:10px; }
         .cas-timeline-dot{ width:8px; height:8px; border-radius:999px; background:var(--purple); flex-shrink:0; }
-        .cas-benefit-grid{ display:grid; grid-template-columns:repeat(2,1fr); gap:10px; }
+        .cas-benefit-grid{ display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
+        @media (max-width:900px){ .cas-benefit-grid{ grid-template-columns:repeat(2,1fr); } }
         @media (max-width:560px){ .cas-benefit-grid{ grid-template-columns:1fr; } }
-        .cas-benefit-card{ display:flex; align-items:flex-start; gap:8px; font-size:13.5px; }
+        .cas-benefit-card{ display:flex; align-items:flex-start; gap:8px; font-size:15px; }
         .cas-warning-box{ display:flex; gap:10px; background:var(--amber-dim); border:1px solid rgba(184,131,11,0.25); border-radius:12px; padding:14px 16px; }
-        .cas-warning-title{ font-weight:700; color:var(--amber); margin-bottom:6px; font-size:13.5px; }
+        .cas-warning-title{ font-weight:700; color:var(--amber); margin-bottom:6px; font-size:15px; }
         .cas-risk-list{ margin-top:14px; }
         .cas-form-items{ margin-top:14px; padding-top:14px; border-top:1px solid var(--glass-border); }
-        .cas-form-note{ font-size:12.5px; color:var(--text-2); margin-bottom:8px; }
-        .cas-form-limit{ color:var(--text-2); font-size:12px; }
-        .cas-form-desc{ font-size:12.5px; color:var(--text-2); }
+        .cas-form-note{ font-size:14px; color:var(--text-2); margin-bottom:8px; }
+        .cas-form-limit{ color:var(--text-2); font-size:13px; }
+        .cas-form-desc{ font-size:14px; color:var(--text-2); }
 
         .cas-evidence-list{ display:flex; flex-direction:column; }
         .cas-evidence-row{ padding:10px 0; border-top:1px solid var(--glass-border); }
         .cas-evidence-row:first-child{ border-top:none; padding-top:0; }
         .cas-evidence-head{ display:flex; align-items:center; gap:6px; margin-bottom:4px; }
-        .cas-evidence-claim{ font-size:13.5px; color:var(--text-1); line-height:1.6; }
-        .cas-evidence-meta{ font-size:12px; color:var(--text-2); margin-top:2px; }
-        .cas-evidence-sources{ font-size:12.5px; color:var(--text-2); margin-top:10px; padding-top:10px; border-top:1px solid var(--glass-border); }
+        .cas-evidence-claim{ font-size:15px; color:var(--text-1); line-height:1.6; }
+        .cas-evidence-meta{ font-size:13px; color:var(--text-2); margin-top:2px; }
+        .cas-evidence-sources{ font-size:14px; color:var(--text-2); margin-top:10px; padding-top:10px; border-top:1px solid var(--glass-border); }
+
+        .cas-collapse{ display:grid; grid-template-rows:0fr; opacity:0; transition:grid-template-rows 0.35s cubic-bezier(0.4,0,0.2,1), opacity 0.28s ease; }
+        .cas-collapse.open{ grid-template-rows:1fr; opacity:1; }
+        .cas-collapse-inner{ overflow:hidden; min-height:0; }
+        @keyframes casTabFade{ from{ opacity:0; transform:translateY(6px); } to{ opacity:1; transform:translateY(0); } }
 
         .cas-aside{ position:sticky; top:24px; display:flex; flex-direction:column; gap:16px; }
-        .cas-aside-title{ font-size:14.5px; font-weight:700; margin-bottom:10px; }
+        .cas-aside-title{ font-size:16px; font-weight:700; margin-bottom:10px; }
         .cas-status-list{ display:flex; flex-direction:column; gap:8px; }
-        .cas-status-row{ display:flex; justify-content:space-between; align-items:center; font-size:13.5px; }
+        .cas-status-row{ display:flex; justify-content:space-between; align-items:center; font-size:15px; }
         .cas-stat-list{ display:flex; flex-direction:column; gap:8px; }
-        .cas-stat-row{ display:flex; justify-content:space-between; gap:10px; font-size:13px; padding-top:8px; border-top:1px solid var(--glass-border); }
+        .cas-stat-row{ display:flex; justify-content:space-between; gap:10px; font-size:14.5px; padding-top:8px; border-top:1px solid var(--glass-border); }
         .cas-stat-row:first-child{ border-top:none; padding-top:0; }
         .cas-stat-label{ color:var(--text-2); }
         .cas-stat-value{ font-weight:600; color:var(--text-1); text-align:right; }
-        .cas-next-title{ font-size:14.5px; font-weight:700; }
-        .cas-next-desc{ font-size:13px; color:var(--text-2); line-height:1.6; margin:6px 0 14px; }
+        .cas-next-title{ font-size:16px; font-weight:700; }
+        .cas-next-desc{ font-size:14.5px; color:var(--text-2); line-height:1.6; margin:6px 0 14px; }
         .cas-next-btn{ width:100%; display:flex; align-items:center; justify-content:center; gap:8px; }
       `}</style>
 

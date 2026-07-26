@@ -101,16 +101,36 @@ export function resolveUseRag(projectId, criteriaDocuments) {
   return (criteriaDocuments || []).some((doc) => doc.status === 'done')
 }
 
+// 가은/Claude(2026-07-24, 요청: "신청기관/도시명/홈페이지 같은 건 회의로 할 이야기가
+// 아니다 — 개인정보 입력란도 있다") — 신청서 양식에서 담당자 연락처·기관 식별 정보처럼
+// AI 위원과 "상의해서 내용을 정할" 필요가 없는 행정/개인정보 항목을 걸러내는 기본
+// 휴리스틱. LLM 호출 없이 필드명 키워드로만 판단한다 — 완벽한 분류가 목적이 아니라
+// "회의 시작 전 확인 팝업"의 기본 선택값을 정하는 용도이므로, 오분류는 사용자가 팝업에서
+// 직접 토글해 바로잡을 수 있다(그래서 이 목록은 넓게 잡지 않고 확실한 것만 넣는다).
+const ADMINISTRATIVE_FIELD_KEYWORDS = [
+  '담당자', '성명', '전화', '이메일', '메일', '팩스', '홈페이지',
+  '사업자등록번호', '법인등록번호', '부서', '직위', '대표자',
+  '신청 기관', '신청기관', '도시명', '주소', '기업(법인)명',
+]
+
+export function isAdministrativeFormField(fieldName) {
+  const name = (fieldName || '').trim()
+  if (!name) return false
+  return ADMINISTRATIVE_FIELD_KEYWORDS.some((keyword) => name.includes(keyword))
+}
+
 // 화면에 노출되는 전문가/진행자/사용자 표시 메타 — 실제 speaker_id는
 // ai/meeting/graph/ideation_conv_nodes.py(_speaker_fields는 persona_cards.json에서
 // display_name/role을 가져오지만, speaker_id 자체는 호출부가 "planning_expert"/
 // "dev_expert"/"ideation_facilitator"/"user" 고정값으로 넘긴다)와
 // ai/meeting/tests/test_ideation_conv_graph.py·test_ideation_discovery_graph.py의 스크립트
 // 스텁이 검증하는 값 그대로다. badgeClass는 ReviewBoardPrototype.jsx Shell이 이미 정의한
-// .badge.purple/.coral/.green 클래스를 재사용한다(새 색을 만들지 않는다).
+// .badge.purple/.green 클래스를 재사용한다. 개발 위원만 "파랑 계열" 요청(2026-07-25)에
+// 맞춰 .badge.blue를 IdeationConversationScreen.jsx의 페이지 스코프 <style>에 추가했다 —
+// Shell(ReviewBoardPrototype.jsx, 공용 파일)은 건드리지 않는다.
 export const SPEAKER_META = {
   planning_expert: { label: '기획 위원', badgeClass: 'purple', align: 'left' },
-  dev_expert: { label: '개발 위원', badgeClass: 'coral', align: 'left' },
+  dev_expert: { label: '개발 위원', badgeClass: 'blue', align: 'left' },
   ideation_facilitator: { label: '진행자', badgeClass: 'green', align: 'left' },
   user: { label: '나', badgeClass: null, align: 'right' },
 }
@@ -119,6 +139,17 @@ export function speakerMetaFor(message) {
   return (
     SPEAKER_META[message?.speaker_id] || { label: message?.speaker_name || '알 수 없음', badgeClass: null, align: 'left' }
   )
+}
+
+// 용준/Claude(2026-07-25, 요청: 메시지를 제안/질문/정리 등으로 시각적으로 구분) —
+// message_type은 백엔드(ai/meeting/graph/ideation_conv_nodes.py 등)가 이미 결정적으로
+// 채워 저장하는 값이다(opinion/question/answer/summary/interjection). 프론트는 그 값을
+// 한국어 라벨로만 바꿔 보여준다 — 지어낸 분류가 아니다.
+export const MESSAGE_TYPE_LABEL_KO = {
+  opinion: '의견',
+  question: '질문',
+  summary: '정리',
+  interjection: '끼어든 의견',
 }
 
 export const FEASIBILITY_LABEL = { high: '높음', medium: '보통', low: '낮음' }
@@ -132,11 +163,17 @@ export const FEASIBILITY_LABEL = { high: '높음', medium: '보통', low: '낮�
 // 이 변경 이전에 시작된 세션(인메모리 세션, TTL 30분)이 여전히 이 phase로 남아 있을 수
 // 있어 라벨은 그대로 둔다(하위 호환).
 const PHASE_LABEL_KO = {
+  candidate_generation: '아이디어 후보 생성 중',
   awaiting_candidate_selection: '후보 선택 대기',
+  candidate_selection: '후보 선택 대기',
+  expert_discussion: '전문가 회의 진행 중',
   awaiting_planning_answer: '기획 위원 답변 대기',
   awaiting_developer_answer: '개발 위원 답변 대기',
+  waiting_user_input: '사용자 의견 대기',
   awaiting_user_decision: '위원 논의 완료 · 의견은 선택 사항',
   discussion_complete: '위원 논의 완료',
+  finalizing: '회의 내용 정리 중',
+  completed: '회의 완료',
   finalized: '완료',
   failed: '실패',
 }
@@ -150,7 +187,7 @@ export function statusLabelFor({ phase, starting, sending, finalizing, interrupt
     if (phase === 'awaiting_developer_answer' || phase === 'awaiting_user_decision') return '위원들이 논의하는 중'
     return '응답을 준비하는 중'
   }
-  return PHASE_LABEL_KO[phase] || phase
+  return PHASE_LABEL_KO[phase] || '회의 상태 확인 중'
 }
 
 // phase별로 사용자가 지금 무엇을 더 해야 하는지 안내하는 문구(요청: "비활성 상태에서는

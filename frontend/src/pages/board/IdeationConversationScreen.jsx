@@ -1,10 +1,11 @@
 import { Fragment, useEffect, useRef, useState } from 'react'
-import { AlertCircle, ChevronDown, ChevronUp, RefreshCw, Send, Sparkles } from 'lucide-react'
+import { AlertCircle, ArrowRight, CheckCircle2, ChevronDown, ChevronUp, Circle, Download, Lightbulb, ListChecks, RefreshCw, Send, Sparkles, Users } from 'lucide-react'
 import {
   cancelIdeationConversation,
   continueIdeationExpertTurnStream,
   finalizeIdeationConversation,
   getIdeationConversation,
+  getLatestIdeationConversation,
   replyIdeationConversation,
   replyIdeationConversationStream,
   startIdeationConversation,
@@ -13,6 +14,8 @@ import {
 import { getAnnouncementAnalysis, getApplicationFormAnalysis } from '../../api/documentApi'
 import IdeaCanvasPanel from './IdeaCanvasPanel'
 import IdeationAvatarStage from './IdeationAvatarStage'
+import ApplicationFormFieldSelectModal from './ApplicationFormFieldSelectModal'
+import ApplicationFormPanel from './ApplicationFormPanel'
 import {
   EXPERT_RECOMMEND_MESSAGE,
   FEASIBILITY_LABEL,
@@ -71,6 +74,18 @@ const REPLYABLE_PHASES = new Set([
 // (진행자/기획/개발)만 IdeationAvatarStage의 AVATAR_SLOTS에 얼굴·목소리가 등록돼 있다.
 const AVATAR_SPEAKER_IDS = new Set(['ideation_facilitator', 'planning_expert', 'dev_expert'])
 
+// 가은/Claude(2026-07-26, 요청: "영상 연결 URL 없으면 대화가 진행이 안 되는 것처럼
+// 보인다 — 개발자용으로 영상 없이 디버깅할 수 있게") — 아래 revealCutoffIndex 게이팅은
+// avatarRevealedCount가 실제 영상 재생 시작(video.play() 성공, IdeationAvatarStage.jsx)
+// 에서만 올라간다. 로컬에 MEDIA_SERVICE_WS_URL(Colab MuseTalk 서버)이 없으면 영상이
+// 영원히 재생되지 않아 avatarRevealedCount가 0에 머물고, 첫 위원 발언 이후 모든 메시지가
+// 화면에서 영원히 숨겨진다 — 회의 자체(백엔드 phase/messages)는 정상 진행 중인데
+// 화면만 멈춘 것처럼 보인다. 개발 중 영상 서버 없이 회의 로직만 확인하고 싶을 때
+// frontend/.env(또는 .env.local)에 VITE_IDEATION_AVATAR_ENABLED=false를 넣으면 이
+// 게이팅과 아바타 소켓 연결 시도 자체를 건너뛴다. 값을 안 주면(기본) 지금까지와 동일하게
+// 항상 켜져 있다 — 운영/일반 개발 흐름에 영향 없음.
+const IDEATION_AVATAR_ENABLED = import.meta.env.VITE_IDEATION_AVATAR_ENABLED !== 'false'
+
 // 재인/Claude(2026-07-23, 실측: "선택된 아이디어... 이거는 아예 코랩에 태우지마"): 후보
 // 선택 확정 직후 진행자가 말하는 이 메시지는 ai/meeting/graph/ideation_conv_discovery.py
 // ::_resolve_selection이 항상 이 문구("선택된 아이디어: ...")로 시작하는 고정 템플릿으로
@@ -88,11 +103,62 @@ function ideationSessionStorageKey(projectId) {
 // 커서 깜빡임 애니메이션 — Shell(ReviewBoardPrototype.jsx)의 전역 <style>을 건드리지 않고
 // 이 컴포넌트 전용으로 한 번만 주입한다(기존 코드베이스가 Shell에서 이미 쓰는 "JSX 안에
 // <style> 태그를 직접 렌더링"하는 패턴 그대로).
+// 용준/Claude(2026-07-25, 요청: 3열 레이아웃 — 왼쪽 전체 Stepper(Shell navrail, 220px)는
+// 그대로 두고, 이 화면 안에서는 "중앙 대화 / 오른쪽 참여 위원·아이디어·캔버스" 2열만 새로
+// 짠다. 데스크톱은 고정 420px 오른쪽 패널 + sticky, 태블릿(<=1180px)은 오른쪽 패널이 중앙
+// 아래로 내려오며 sticky를 끄고, 모바일(<=780px)은 이미 Shell이 navrail을 숨기므로 이
+// 화면 안에서는 그대로 단일 열이 유지된다(요청한 모바일 순서 "단계 → 대화 → 제안 목록 →
+// CTA"는 센터 다음에 오른쪽 패널이 오는 DOM 순서 그대로 만족된다). .badge.blue는 개발
+// 위원 배지 색(요청: "파랑 계열")을 위해 이 페이지에만 추가한다 — Shell(공용 파일)의
+// .badge.purple/.coral/.green/.amber/.grey 정의는 건드리지 않는다.
 function StreamingCursorStyle() {
   return (
     <style>{`
       @keyframes rb-ideation-cursor-blink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
       .rb-ideation-cursor { display: inline-block; width: 2px; margin-left: 1px; background: currentColor; animation: rb-ideation-cursor-blink 1s step-start infinite; }
+      .rb-root .badge.blue{ background: rgba(59,130,246,0.12); color: #2f6fd6; }
+      .rb-ideation-layout .badge{ font-size:12.5px; font-weight:600; padding:4px 10px; }
+      .rb-ideation-layout .badge.green{ color:#087557; background:#dcf7ee; }
+      .rb-ideation-layout .badge.purple{ color:#5e3ec8; background:#eee9ff; }
+      .rb-ideation-layout .badge.blue{ color:#245fb7; background:#e5efff; }
+      .rb-ideation-layout .badge.amber{ color:#805800; background:#f8edcf; }
+      .rb-ideation-layout .rb-ideation-meta-item{ border-color:rgba(28,26,46,0.14); background:rgba(255,255,255,0.86); }
+      .rb-ideation-layout .rb-ideation-meta-label{ font-size:12.5px; font-weight:600; color:#625d72; }
+      .rb-ideation-layout .rb-ideation-meta-label svg{ color:var(--purple); stroke-width:2.2; }
+      .rb-ideation-layout .rb-ideation-meta-value{ margin-top:7px; font-size:18px; line-height:1.2; }
+      .rb-ideation-layout .btn-primary{ min-height:46px; color:#fff; font-weight:700; }
+      .rb-ideation-layout .btn-primary:disabled{
+        opacity:1; background:#eceef1; color:#8a8f98; border:1px solid #dcdfe4;
+        box-shadow:none; cursor:not-allowed;
+      }
+      .rb-ideation-layout .btn-ghost:disabled{ opacity:1; color:#6c6578; background:#f1eef5; cursor:not-allowed; }
+      .rb-ideation-notice{
+        margin:4px 0; padding:10px 12px; border-radius:10px; border:1px solid #ddd5f4;
+        background:#f7f4ff; color:#514a61; font-size:14px; font-weight:600; line-height:1.55;
+      }
+      /* 용준/Claude(2026-07-26, 요청: "아이디어 기획 캔버스는 참여 위원 오른쪽에") —
+         참여 위원 패널과 캔버스를 한 열에 위아래로 쌓지 않고, 채팅 열 옆에 각각
+         독립된 열로 나란히 배치한다(3열: 회의 대화 / 참여 위원 / 기획 캔버스). */
+      .rb-ideation-layout{
+        --text-2:#6f697d;
+        display:grid; grid-template-columns:minmax(0,1fr) 480px 340px;
+        gap:20px; align-items:start; max-width:1680px;
+      }
+      .rb-ideation-side{ position:sticky; top:24px; margin-top:40px; display:flex; flex-direction:column; gap:12px; }
+      .rb-ideation-canvas-col{ position:sticky; top:24px; margin-top:40px; display:flex; flex-direction:column; gap:12px; }
+      .rb-ideation-meta{ display:flex; flex-wrap:wrap; gap:10px; margin-bottom:14px; }
+      .rb-ideation-meta-item{ flex:1 1 120px; border-radius:12px; padding:10px 12px; }
+      .rb-ideation-meta-label{ display:flex; align-items:center; gap:5px; margin-bottom:3px; }
+      .rb-ideation-meta-value{ font-weight:700; color:var(--text-0); }
+      @media (max-width: 1500px){
+        .rb-ideation-layout{ grid-template-columns: minmax(0,1fr) 460px; }
+        .rb-ideation-canvas-col{ position:static; grid-column: 1 / -1; margin-top:0; }
+      }
+      @media (max-width: 1180px){
+        .rb-ideation-layout{ grid-template-columns: minmax(0,1fr); }
+        .rb-ideation-side{ position:static; margin-top:0; }
+        .rb-ideation-canvas-col{ grid-column: auto; margin-top:0; }
+      }
     `}</style>
   )
 }
@@ -107,7 +173,7 @@ function RespondingToCaption({ message, allMessages = [] }) {
   const targetLabel = SPEAKER_META[actualSpeakerId]?.label
   if (!targetLabel) return null
   return (
-    <div style={{ fontSize: 11, color: 'var(--text-2)', marginBottom: 3 }}>↳ {targetLabel}에게 응답</div>
+    <div style={{ fontSize: 13.5, color: 'var(--text-2)', marginBottom: 3 }}>↳ {targetLabel}에게 응답</div>
   )
 }
 
@@ -131,7 +197,7 @@ function EvidenceToggle({ evidence, linkedEvidenceRefs, claims }) {
       <div
         style={{
           marginTop: 4,
-          fontSize: 11.5,
+          fontSize: 13,
           color: 'var(--text-2)',
           display: 'inline-flex',
           alignItems: 'center',
@@ -148,10 +214,11 @@ function EvidenceToggle({ evidence, linkedEvidenceRefs, claims }) {
   return (
     <div style={{ marginTop: 4 }}>
       <button
+        type="button"
         onClick={() => setOpen((v) => !v)}
         style={{
           background: 'none', border: 'none', padding: 0, cursor: 'pointer',
-          fontSize: 11.5, color: 'var(--text-2)', display: 'flex', alignItems: 'center', gap: 2,
+          fontSize: 13, color: 'var(--text-2)', display: 'flex', alignItems: 'center', gap: 2,
         }}
       >
         {open ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
@@ -163,7 +230,7 @@ function EvidenceToggle({ evidence, linkedEvidenceRefs, claims }) {
             <div
               key={e.chunk_id || i}
               style={{
-                fontSize: 11.5, color: 'var(--text-1)', lineHeight: 1.5,
+                fontSize: 13, color: 'var(--text-1)', lineHeight: 1.5,
                 background: 'var(--bg-0)', border: '1px solid var(--glass-border)', borderRadius: 8, padding: '6px 8px',
               }}
             >
@@ -174,11 +241,11 @@ function EvidenceToggle({ evidence, linkedEvidenceRefs, claims }) {
                 </div>
               )}
               {e.section && (
-                <div style={{ fontSize: 10.5, color: 'var(--text-2)', marginBottom: 2 }}>평가항목: {e.section}</div>
+                <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 2 }}>평가항목: {e.section}</div>
               )}
               {(e.text || e.quote) && <div style={{ marginBottom: 2 }}>"{e.text || e.quote}"</div>}
               {e.source_url && (
-                <a href={e.source_url} target="_blank" rel="noreferrer" style={{ fontSize: 10.5, color: 'var(--purple-dim)' }}>
+                <a href={e.source_url} target="_blank" rel="noreferrer" style={{ fontSize: 13.5, fontWeight: 600, color: '#5e3ec8' }}>
                   원문 보기
                 </a>
               )}
@@ -187,7 +254,7 @@ function EvidenceToggle({ evidence, linkedEvidenceRefs, claims }) {
           {items.length === 0 && (
             <div
               style={{
-                fontSize: 11.5, color: 'var(--text-2)', fontStyle: 'italic',
+                fontSize: 13, color: 'var(--text-2)', fontStyle: 'italic',
                 background: 'var(--bg-0)', border: '1px solid var(--glass-border)', borderRadius: 8, padding: '6px 8px',
               }}
             >
@@ -211,7 +278,7 @@ function FacilitatorSummaryCard({ structured }) {
     <div
       style={{
         marginTop: 6, padding: '8px 10px', borderRadius: 10,
-        background: 'var(--bg-0)', border: '1px solid var(--glass-border)', fontSize: 12,
+        background: 'var(--bg-0)', border: '1px solid var(--glass-border)', fontSize: 14.5,
       }}
     >
       {agreements.length > 0 && (
@@ -234,9 +301,15 @@ function FacilitatorSummaryCard({ structured }) {
   )
 }
 
-function MessageBubble({ message, streaming = false, interrupted = false, allMessages = [] }) {
+function MessageBubble({ message, streaming = false, interrupted = false, allMessages = [], isLatest = false }) {
   const meta = speakerMetaFor(message)
   const isRight = meta.align === 'right'
+  const accentColor = {
+    ideation_facilitator: '#16a37a',
+    planning_expert: '#7c5cea',
+    dev_expert: '#3b82f6',
+    user: '#7c5cea',
+  }[message.speaker_id] || '#7c5cea'
   // 스트리밍 중인 말풍선은 displayedContent(타이핑 큐가 드러낸 만큼)만 보여준다 —
   // content(서버에서 실제로 받은 전체 텍스트)를 그대로 쓰면 델타가 도착하는 순간
   // 문장이 통째로 튀어나와 타이핑 효과가 사라진다. canonical(완료된) 메시지는
@@ -256,7 +329,7 @@ function MessageBubble({ message, streaming = false, interrupted = false, allMes
   if (!hasContent && !streaming) {
     return (
       <div style={{ display: 'flex', justifyContent: isRight ? 'flex-end' : 'flex-start', marginBottom: 10 }}>
-        <div style={{ fontSize: 12.5, color: 'var(--coral)' }}>
+        <div style={{ fontSize: 14, color: 'var(--coral)' }}>
           <AlertCircle size={12} style={{ verticalAlign: -1, marginRight: 4 }} />
           {meta.label}의 응답을 만드는 중 오류가 발생했습니다.
         </div>
@@ -280,20 +353,24 @@ function MessageBubble({ message, streaming = false, interrupted = false, allMes
     <div style={{ display: 'flex', justifyContent: isRight ? 'flex-end' : 'flex-start', marginBottom: 10 }}>
       <div style={{ maxWidth: '82%' }}>
         {meta.badgeClass && (
-          <div className={`badge ${meta.badgeClass} mono`} style={{ marginBottom: 4 }}>
-            {meta.label}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+            <span className={`badge ${meta.badgeClass} mono`}>{meta.label}</span>
           </div>
         )}
         {!streaming && <RespondingToCaption message={message} allMessages={allMessages} />}
         <div
           style={{
             background: isRight ? 'var(--purple-dim)' : 'var(--bg-1)',
-            border: '1px solid var(--glass-border)',
+            border: isLatest ? `1px solid ${accentColor}66` : '1px solid var(--glass-border)',
+            borderLeft: isLatest ? `4px solid ${accentColor}` : undefined,
             borderRadius: 12,
-            padding: '10px 14px',
-            fontSize: 13.5,
-            lineHeight: 1.6,
+            padding: '12px 15px',
+            color: 'var(--text-0)',
+            fontSize: 16,
+            fontWeight: 500,
+            lineHeight: 1.7,
             whiteSpace: 'pre-wrap',
+            boxShadow: isLatest ? '0 4px 14px rgba(28,26,46,0.06)' : 'none',
             opacity: interrupted || isReviewing ? 0.6 : 1,
           }}
         >
@@ -305,7 +382,7 @@ function MessageBubble({ message, streaming = false, interrupted = false, allMes
             뿐이며 agreements/decisions/resolved_issues 등 어떤 canonical 상태에도
             포함되지 않는다(서버가 애초에 저장하지 않았으므로). */}
         {interrupted && (
-          <div style={{ fontSize: 11.5, color: 'var(--text-2)', marginTop: 3, fontStyle: 'italic' }}>
+          <div style={{ fontSize: 13, color: 'var(--text-2)', marginTop: 3, fontStyle: 'italic' }}>
             [사용자에 의해 발언이 중단됐습니다]
           </div>
         )}
@@ -313,7 +390,7 @@ function MessageBubble({ message, streaming = false, interrupted = false, allMes
             대기 중임을 알린다. willRetry가 false면(재시도 없이 안전한 fallback을 기다리는
             중) 곧 회의 진행 자체가 멈추지 않는다는 것을 알 수 있게 문구를 살짝 다르게 준다. */}
         {isReviewing && (
-          <div style={{ fontSize: 11.5, color: 'var(--text-2)', marginTop: 3, fontStyle: 'italic' }}>
+          <div style={{ fontSize: 13, color: 'var(--text-2)', marginTop: 3, fontStyle: 'italic' }}>
             {message.willRetry === false ? '더 나은 답변으로 정리하고 있습니다…' : '응답을 다시 검토하고 있습니다…'}
           </div>
         )}
@@ -343,7 +420,7 @@ function InterruptionMarker({ speakerId }) {
       style={{
         margin: '4px 0 8px',
         color: 'var(--text-2)',
-        fontSize: 12,
+        fontSize: 14.5,
         fontStyle: 'italic',
       }}
     >
@@ -352,25 +429,72 @@ function InterruptionMarker({ speakerId }) {
   )
 }
 
-function CandidateCard({ candidate, index, onSelect, disabled }) {
+// 용준/Claude(2026-07-25, 요청: "각 후보마다 큰 보라색 버튼을 반복해서 표시하지 말고,
+// 카드 전체를 클릭 가능한 선택 카드로") — 반복되던 "이 후보 선택" 버튼을 없애고 카드
+// 전체를 role="button"으로 만들었다. 선택 확정 API 호출(onSelect → handleSend →
+// candidateSelectMessage)은 그대로다 — 프론트가 후보를 자체 해석하지 않고 항상 "n번"
+// 문구로 백엔드 candidate_selection 로직을 거치는 기존 방식을 그대로 유지한다. "상세
+// 보기" 토글은 카드 클릭(선택)과 별개 동작이라 stopPropagation으로 분리한다.
+function CandidateCard({ candidate, index, onSelect, disabled, selected = false }) {
   const [expanded, setExpanded] = useState(false)
+
+  function handleCardActivate() {
+    if (disabled || selected) return
+    onSelect(index)
+  }
+
   return (
-    <div className="card glass" style={{ marginBottom: 10, padding: 14 }}>
-      <div style={{ fontSize: 11.5, color: 'var(--text-2)', marginBottom: 2 }}>후보 {index + 1}</div>
-      <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 6 }}>{candidate.title}</div>
-      <div style={{ fontSize: 12.5, color: 'var(--text-1)', lineHeight: 1.6, marginBottom: 4 }}>
-        <strong style={{ color: 'var(--text-2)', fontWeight: 600 }}>해결할 문제 · </strong>
-        {candidate.problem}
+    <div
+      role="button"
+      tabIndex={disabled || selected ? -1 : 0}
+      aria-pressed={selected}
+      aria-disabled={disabled || selected}
+      onClick={handleCardActivate}
+      onKeyDown={(e) => {
+        if (e.key !== 'Enter' && e.key !== ' ') return
+        e.preventDefault()
+        handleCardActivate()
+      }}
+      className="card glass"
+      style={{
+        marginBottom: 10,
+        padding: 14,
+        cursor: disabled || selected ? 'default' : 'pointer',
+        border: selected ? '2px solid var(--purple)' : '1px solid var(--glass-border)',
+        background: selected ? '#f5f1ff' : disabled ? '#faf9fc' : 'var(--bg-1)',
+        opacity: 1,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 2, gap: 8 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: '#625d72' }}>후보 {index + 1}</div>
+        {selected ? (
+          <CheckCircle2 size={18} color="var(--purple)" style={{ flexShrink: 0 }} />
+        ) : (
+          <Circle size={16} color="var(--glass-border)" style={{ flexShrink: 0 }} />
+        )}
       </div>
-      <div style={{ fontSize: 12.5, color: 'var(--text-1)', lineHeight: 1.6, marginBottom: 4 }}>
-        <strong style={{ color: 'var(--text-2)', fontWeight: 600 }}>목표 사용자 · </strong>
-        {candidate.target_user}
-      </div>
+      {selected && (
+        <span className="badge purple mono" style={{ fontSize: 12, marginBottom: 6, display: 'inline-block' }}>선택됨</span>
+      )}
+      <div style={{ fontSize: 17, fontWeight: 700, color: 'var(--text-0)', marginBottom: 7 }}>{candidate.title}</div>
+      {candidate.problem && (
+        <div style={{ fontSize: 15.5, fontWeight: 500, color: 'var(--text-0)', lineHeight: 1.7, marginBottom: 5 }}>
+          <strong style={{ color: '#514a61', fontWeight: 700 }}>해결할 문제 · </strong>
+          {candidate.problem}
+        </div>
+      )}
+      {candidate.target_user && (
+        <div style={{ fontSize: 15.5, fontWeight: 500, color: 'var(--text-0)', lineHeight: 1.7, marginBottom: 5 }}>
+          <strong style={{ color: '#514a61', fontWeight: 700 }}>목표 사용자 · </strong>
+          {candidate.target_user}
+        </div>
+      )}
 
       <button
+        type="button"
         className="btn-ghost"
-        style={{ padding: '4px 10px', fontSize: 11.5, marginTop: 4, marginBottom: expanded ? 8 : 0, display: 'flex', alignItems: 'center', gap: 4 }}
-        onClick={() => setExpanded((v) => !v)}
+        style={{ padding: '4px 10px', fontSize: 13, marginTop: 4, marginBottom: expanded ? 8 : 0, display: 'flex', alignItems: 'center', gap: 4 }}
+        onClick={(e) => { e.stopPropagation(); setExpanded((v) => !v) }}
       >
         {expanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
         {expanded ? '간단히 보기' : '상세 보기'}
@@ -378,24 +502,28 @@ function CandidateCard({ candidate, index, onSelect, disabled }) {
 
       {expanded && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 6 }}>
-          <div style={{ fontSize: 12.5, color: 'var(--text-1)', lineHeight: 1.6 }}>
-            <strong style={{ color: 'var(--text-2)', fontWeight: 600 }}>핵심 가치 · </strong>
-            {candidate.core_value}
-          </div>
+          {candidate.core_value && (
+            <div style={{ fontSize: 14, color: 'var(--text-1)', lineHeight: 1.6 }}>
+              <strong style={{ color: 'var(--text-2)', fontWeight: 600 }}>핵심 가치 · </strong>
+              {candidate.core_value}
+            </div>
+          )}
           {candidate.main_features?.length > 0 && (
-            <div style={{ fontSize: 12.5, color: 'var(--text-1)' }}>
+            <div style={{ fontSize: 14, color: 'var(--text-1)' }}>
               <strong style={{ color: 'var(--text-2)', fontWeight: 600 }}>주요 기능</strong>
               <ul style={{ margin: '4px 0 0', paddingLeft: 16, lineHeight: 1.7 }}>
                 {candidate.main_features.map((f, i) => <li key={i}>{f}</li>)}
               </ul>
             </div>
           )}
-          <div style={{ fontSize: 12.5, color: 'var(--text-1)', lineHeight: 1.6 }}>
-            <strong style={{ color: 'var(--text-2)', fontWeight: 600 }}>공모전 적합성 · </strong>
-            {candidate.contest_fit || '확인되지 않음'}
-          </div>
+          {candidate.contest_fit && (
+            <div style={{ fontSize: 14, color: 'var(--text-1)', lineHeight: 1.6 }}>
+              <strong style={{ color: 'var(--text-2)', fontWeight: 600 }}>차별점 · </strong>
+              {candidate.contest_fit}
+            </div>
+          )}
           {candidate.risks?.length > 0 && (
-            <div style={{ fontSize: 12.5, color: 'var(--text-1)' }}>
+            <div style={{ fontSize: 14, color: 'var(--text-1)' }}>
               <strong style={{ color: 'var(--text-2)', fontWeight: 600 }}>주요 위험</strong>
               <ul style={{ margin: '4px 0 0', paddingLeft: 16, lineHeight: 1.7 }}>
                 {candidate.risks.map((r, i) => <li key={i}>{r}</li>)}
@@ -405,13 +533,11 @@ function CandidateCard({ candidate, index, onSelect, disabled }) {
         </div>
       )}
 
-      <div style={{ fontSize: 11.5, color: 'var(--text-2)', marginBottom: 10 }}>
-        실현 가능성 {FEASIBILITY_LABEL[candidate.feasibility] || '미상'}
-      </div>
-
-      <button className="btn-primary" style={{ width: '100%', padding: '8px 0', fontSize: 12.5 }} disabled={disabled} onClick={() => onSelect(index)}>
-        이 후보 선택
-      </button>
+      {candidate.feasibility && (
+        <div style={{ fontSize: 13, color: 'var(--text-2)' }}>
+          실현 가능성 {FEASIBILITY_LABEL[candidate.feasibility] || '미상'}
+        </div>
+      )}
     </div>
   )
 }
@@ -420,30 +546,30 @@ function MergeAnalysisPanel({ mergeAnalysis, sourceCandidates, userSelectionMess
   if (!mergeAnalysis) return null
   return (
     <div className="card glass" style={{ marginBottom: 12, padding: 14 }}>
-      <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>결합 분석</div>
+      <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 8 }}>결합 분석</div>
       {userSelectionMessage && (
-        <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 8 }}>
+        <div style={{ fontSize: 13.5, color: 'var(--text-2)', marginBottom: 8 }}>
           원문 요청 · “{userSelectionMessage}”
         </div>
       )}
       {sourceCandidates?.length > 0 && (
-        <div style={{ fontSize: 12.5, color: 'var(--text-1)', marginBottom: 8 }}>
+        <div style={{ fontSize: 14, color: 'var(--text-1)', marginBottom: 8 }}>
           <strong style={{ color: 'var(--text-2)', fontWeight: 600 }}>원본 후보 · </strong>
           {sourceCandidates.map((c) => c.title).join(' · ')}
         </div>
       )}
-      <div style={{ fontSize: 12.5, color: 'var(--text-1)', lineHeight: 1.6, marginBottom: 4 }}>
+      <div style={{ fontSize: 14, color: 'var(--text-1)', lineHeight: 1.6, marginBottom: 4 }}>
         <strong style={{ color: 'var(--text-2)', fontWeight: 600 }}>공통 문제 · </strong>{mergeAnalysis.common_problem}
       </div>
-      <div style={{ fontSize: 12.5, color: 'var(--text-1)', lineHeight: 1.6, marginBottom: 4 }}>
+      <div style={{ fontSize: 14, color: 'var(--text-1)', lineHeight: 1.6, marginBottom: 4 }}>
         <strong style={{ color: 'var(--text-2)', fontWeight: 600 }}>공통 가치 · </strong>{mergeAnalysis.common_value}
       </div>
-      <div style={{ fontSize: 12.5, color: 'var(--text-1)', lineHeight: 1.6, marginBottom: 4 }}>
+      <div style={{ fontSize: 14, color: 'var(--text-1)', lineHeight: 1.6, marginBottom: 4 }}>
         <strong style={{ color: 'var(--text-2)', fontWeight: 600 }}>결합 적합도 · </strong>
         {FEASIBILITY_LABEL[mergeAnalysis.fit] || mergeAnalysis.fit || '미상'}
       </div>
       {mergeAnalysis.primary_features?.length > 0 && (
-        <div style={{ fontSize: 12.5, color: 'var(--text-1)', marginBottom: 4 }}>
+        <div style={{ fontSize: 14, color: 'var(--text-1)', marginBottom: 4 }}>
           <strong style={{ color: 'var(--text-2)', fontWeight: 600 }}>주 기능</strong>
           <ul style={{ margin: '4px 0 0', paddingLeft: 16, lineHeight: 1.6 }}>
             {mergeAnalysis.primary_features.map((f, i) => <li key={i}>{f}</li>)}
@@ -451,7 +577,7 @@ function MergeAnalysisPanel({ mergeAnalysis, sourceCandidates, userSelectionMess
         </div>
       )}
       {mergeAnalysis.secondary_features?.length > 0 && (
-        <div style={{ fontSize: 12.5, color: 'var(--text-1)', marginBottom: 4 }}>
+        <div style={{ fontSize: 14, color: 'var(--text-1)', marginBottom: 4 }}>
           <strong style={{ color: 'var(--text-2)', fontWeight: 600 }}>보조 기능</strong>
           <ul style={{ margin: '4px 0 0', paddingLeft: 16, lineHeight: 1.6 }}>
             {mergeAnalysis.secondary_features.map((f, i) => <li key={i}>{f}</li>)}
@@ -459,7 +585,7 @@ function MergeAnalysisPanel({ mergeAnalysis, sourceCandidates, userSelectionMess
         </div>
       )}
       {mergeAnalysis.conflicts?.length > 0 && (
-        <div style={{ fontSize: 12.5, color: 'var(--text-1)', marginBottom: 4 }}>
+        <div style={{ fontSize: 14, color: 'var(--text-1)', marginBottom: 4 }}>
           <strong style={{ color: 'var(--text-2)', fontWeight: 600 }}>충돌 지점</strong>
           <ul style={{ margin: '4px 0 0', paddingLeft: 16, lineHeight: 1.6 }}>
             {mergeAnalysis.conflicts.map((c, i) => <li key={i}>{c}</li>)}
@@ -467,7 +593,7 @@ function MergeAnalysisPanel({ mergeAnalysis, sourceCandidates, userSelectionMess
         </div>
       )}
       {mergeAnalysis.open_questions?.length > 0 && (
-        <div style={{ fontSize: 12.5, color: 'var(--text-1)' }}>
+        <div style={{ fontSize: 14, color: 'var(--text-1)' }}>
           <strong style={{ color: 'var(--text-2)', fontWeight: 600 }}>미확정 사항</strong>
           <ul style={{ margin: '4px 0 0', paddingLeft: 16, lineHeight: 1.6 }}>
             {mergeAnalysis.open_questions.map((q, i) => <li key={i}>{q}</li>)}
@@ -487,16 +613,16 @@ function ErrorBanner({ error, onRetry }) {
     >
       <AlertCircle size={16} color="var(--coral)" style={{ marginTop: 1, flexShrink: 0 }} />
       <div style={{ flex: 1 }}>
-        <div style={{ fontSize: 13, color: 'var(--text-0)', lineHeight: 1.6 }}>{error.message}</div>
+        <div style={{ fontSize: 14.5, color: 'var(--text-0)', lineHeight: 1.6 }}>{error.message}</div>
         {(error.code || error.failedNode) && (
-          <div style={{ marginTop: 5, fontSize: 11.5, color: 'var(--text-2)', fontFamily: 'var(--mono)' }}>
+          <div style={{ marginTop: 5, fontSize: 13, color: 'var(--text-2)', fontFamily: 'var(--mono)' }}>
             {error.code && `오류 코드: ${error.code}`}
             {error.code && error.failedNode && ' · '}
             {error.failedNode && `실패 노드: ${error.failedNode}`}
           </div>
         )}
         {onRetry && (
-          <button className="btn-ghost" style={{ marginTop: 10, padding: '6px 12px', fontSize: 12, display: 'flex', alignItems: 'center', gap: 6 }} onClick={onRetry}>
+          <button type="button" className="btn-ghost" style={{ marginTop: 10, padding: '6px 12px', fontSize: 13.5, display: 'flex', alignItems: 'center', gap: 6 }} onClick={onRetry}>
             <RefreshCw size={12} /> 다시 시도
           </button>
         )}
@@ -554,16 +680,33 @@ export function IdeationScreen({
   // 캔버스가 계속 보여줘야 하므로 상태로 유지한다. 세션 재개(resume) 경로에서는 start를
   // 다시 부르지 않으므로 거기서도 별도로 채운다.
   const [announcementAnalysis, setAnnouncementAnalysis] = useState(null)
+  // 가은/Claude(2026-07-23): 신청서 양식 항목(JSON export에도 포함) — runStart()가 이미
+  // getApplicationFormAnalysis()로 받아오던 값을 상태로 유지한다. 세션 재개(resume)
+  // 경로에서는 start를 다시 부르지 않으므로 ideationConv.application_form_items로
+  // 채워진다(아래 useEffect 없이도 렌더 시점에 반영되도록 초기값에서부터 시도).
+  const [applicationFormItems, setApplicationFormItems] = useState(
+    () => ideationConv?.application_form_items || [],
+  )
+  // 가은/Claude(2026-07-24, 요청: 회의에 쓸 신청서 항목을 사용자가 고르게) — null이면
+  // 팝업이 안 보이고, {items, analysis}면 회의 시작 전 확인 팝업이 뜬다. 실제 /start
+  // 호출(무거운 후보 생성 LLM)은 이 팝업을 사용자가 확정할 때까지 미룬다 — 뒷 화면은
+  // 계속 starting=true 로딩 상태를 보여준다.
+  const [formSelectionPrompt, setFormSelectionPrompt] = useState(null)
   // 재인/Claude(2026-07-23): 아이디어 회의 아바타 연동 — canonical 메시지 중 아바타
   // 3명(진행자/기획/개발)에 해당하는 것만 골라 재생 큐로 넘긴다. 이미 큐에 넣은
   // message_id는 queuedAvatarIdsRef로 추적해서, 메시지 목록이 리렌더될 때마다 같은
   // 발언을 중복으로 다시 큐잉하지 않게 막는다.
   const [avatarPlayQueue, setAvatarPlayQueue] = useState([])
   const queuedAvatarIdsRef = useRef(new Set())
-  // 재인/Claude(2026-07-23): handleAvatarNeedNextSpeaker가 지금 진행 중인 continue-turn
-  // fetch를 추적한다 — "잠시만"이 그 사이에 눌리면 abort()로 끊어서, 이미 중단한 뒤에
-  // 뒤늦게 도착하는 응답이 canonical state를 다시 덮어쓰지 않게 막는다(handleInterject
-  // 참고). handleAvatarNeedNextSpeaker 자신이 sending/interrupting/interjectTarget이 걸려
+  // 재인/Claude(2026-07-24, 요청: "채팅 텍스트도 아바타 재생 순서에 맞춰 공개"): 지금까지
+  // 실제로 재생을 시작한 아바타 발언 개수. IdeationAvatarStage가 각 항목을 화면에 틀기
+  // 시작하는 순간(video.play() 성공 시점)마다 onRevealed로 하나씩 늘려준다 — 재생은
+  // 항상 큐 순서대로(=메시지 순서대로) 진행되므로 개수만 세도 순서가 정확히 맞는다.
+  const [avatarRevealedCount, setAvatarRevealedCount] = useState(0)
+  // 재인/Claude(2026-07-23, 2026-07-24 갱신): 아래 eager fetch effect가 지금 진행 중인
+  // continue-turn fetch를 추적한다 — "잠시만"이 그 사이에 눌리면 abort()로 끊어서, 이미
+  // 중단한 뒤에 뒤늦게 도착하는 응답이 canonical state를 다시 덮어쓰지 않게 막는다
+  // (handleInterject 참고). 그 effect 자신이 sending/interrupting/interjectTarget이 걸려
   // 있으면 애초에 새로 시작하지 않으므로, 세션 락 409 자체는 이 ref 없이도 이미 피한다 —
   // 이 ref는 그 이후(이미 시작된 호출)에 대한 정리용이다.
   const avatarTurnAbortRef = useRef(null)
@@ -692,17 +835,39 @@ export function IdeationScreen({
       // — 신청서 양식을 실제로 안 올렸으면 백엔드가 items를 빈 배열로 돌려줄 뿐이다.
       // 실패해도(네트워크 오류 등) 회의 시작 자체를 막지 않는다 — "참고 자료"일 뿐 필수가
       // 아니기 때문이다.
-      let applicationFormItems = []
+      let items = []
       const hasReadyCriteriaDoc = criteriaDocuments.some((doc) => doc.status === 'done' || doc.status === 'warning')
       if (projectId && hasReadyCriteriaDoc) {
         try {
           const formAnalysis = await getApplicationFormAnalysis(projectId)
-          applicationFormItems = formAnalysis.items || []
+          items = formAnalysis.items || []
         } catch (err) {
           console.warn('[ideation-conv] 신청양식 항목 조회에 실패해 항목 없이 회의를 시작합니다.', err)
         }
       }
+      setApplicationFormItems(items)
 
+      if (items.length > 0) {
+        // 가은/Claude(2026-07-24, 요청: 회의에 쓸 신청서 항목을 사용자가 고르게) — 실제
+        // /start 호출(무거운 후보 생성 LLM)은 사용자가 팝업에서 항목을 확정한 뒤로
+        // 미룬다. starting은 여기서 끄지 않는다 — 팝업 뒤 화면은 계속 로딩 상태로 보인다.
+        setFormSelectionPrompt({ items, analysis })
+        return
+      }
+
+      await startConversation(analysis, [])
+    } catch (err) {
+      setError(classifyIdeationConvError(err))
+      setStarting(false)
+      setStartPhaseLabel('')
+    }
+  }
+
+  // 가은/Claude(2026-07-24): runStart()의 "실제 회의 시작 호출" 부분을 분리했다 — 신청서
+  // 항목이 있으면 확인 팝업 이후에, 없으면 runStart()가 곧바로 호출한다. starting/error
+  // 상태는 이 함수가 끝까지 책임진다(성공/실패 모두 finally에서 정리).
+  async function startConversation(analysis, selectedFormItems) {
+    try {
       const payload = {
         competitionName: competitionNameFrom(analysis),
         competitionDocument: buildCompetitionDocumentText(analysis),
@@ -710,7 +875,7 @@ export function IdeationScreen({
         maxRounds: 3,
         useRag: resolveUseRag(projectId, criteriaDocuments),
         projectId,
-        applicationFormItems,
+        applicationFormItems: selectedFormItems,
       }
 
       // 가은/Claude(2026-07-22, 요청: 회의 시작 대기 체감 개선 1단계): 시작도 답장과 같은
@@ -756,6 +921,13 @@ export function IdeationScreen({
     }
   }
 
+  function handleConfirmFormSelection(selectedItems) {
+    const prompt = formSelectionPrompt
+    setFormSelectionPrompt(null)
+    setApplicationFormItems(selectedItems)
+    startConversation(prompt?.analysis, selectedItems)
+  }
+
   // 부모(ReviewBoardPrototype)가 이미 진행 중인 회의 결과를 들고 있으면(다른 단계로
   // 갔다 돌아온 경우) 절대 다시 시작하지 않는다. 처음 진입할 때만, 그리고 이번 마운트에서
   // 딱 한 번만 시도한다.
@@ -766,7 +938,20 @@ export function IdeationScreen({
     const key = ideationSessionStorageKey(projectId)
     const savedSessionId = key ? sessionStorage.getItem(key) : null
     if (!savedSessionId) {
-      runStart()
+      if (!projectId) {
+        runStart()
+        return
+      }
+      setStarting(true)
+      getAnnouncementAnalysis(projectId).then(setAnnouncementAnalysis).catch(() => {})
+      getLatestIdeationConversation(projectId)
+        .then((data) => {
+          if (!data) return runStart()
+          setIdeationConv(data)
+          if (key) sessionStorage.setItem(key, data.session_id)
+        })
+        .catch((err) => setError(classifyIdeationConvError(err)))
+        .finally(() => setStarting(false))
       return
     }
     setStarting(true)
@@ -775,7 +960,11 @@ export function IdeationScreen({
     }
     getIdeationConversation(savedSessionId)
       .then((data) => setIdeationConv(data))
-      .catch(() => {
+      .catch((err) => {
+        if (err?.status !== 404) {
+          setError(classifyIdeationConvError(err))
+          return
+        }
         if (key) sessionStorage.removeItem(key)
         return runStart()
       })
@@ -811,78 +1000,96 @@ export function IdeationScreen({
     }
   }, [ideationConv?.messages])
 
-  // 재인/Claude(2026-07-23): 아바타 재생 도중 "재생 끝나기 3초 전" 타이머가 울릴 때
-  // 호출된다. 새 사용자 발언 없이 다음 위원(기획/개발) 발언 1건만 더 요청한다
-  // (continue-turn/stream — 백엔드 continue_ideation_expert_turn, ai/meeting/graph 쪽
-  // 회의 로직은 전혀 안 건드리고 "언제 다음 턴을 요청하느냐"만 다루는 함수). 응답이 오면
-  // canonical state를 그대로 갱신하고, 위의 큐잉 effect(ideationConv?.messages 감시)가
-  // 새 메시지를 자동으로 avatarPlayQueue에 넣어 다음 위원 재생으로 이어진다.
+  // 재인/Claude(2026-07-24, 요청: "텍스트는 미리 다 뽑아두고 코랩만 순서대로 처리"):
+  // 예전엔 아바타 pacing timer가 "재생 끝나기 8초 전"에 불러줘야만 다음 턴을 요청했다
+  // (handleAvatarNeedNextSpeaker가 IdeationAvatarStage의 onNeedNextSpeaker로 연결).
+  // 이제 텍스트 생성은 아바타 재생 타이밍과 완전히 분리한다 — 응답이 도착하는 즉시,
+  // phase가 여전히 expert_discussion이면 곧바로 다음 턴을 요청해서 회의 로직이 허용하는
+  // 한 최대한 빠르게 이어붙인다(예전 아바타 연동 전 방식과 동일). 실제로 사용자에게
+  // 보여주는 시점(채팅 텍스트 노출 + 아바타 재생)은 IdeationAvatarStage 쪽에서 별도로
+  // 조절한다(아래 avatarRevealedCount 참고) — 여기서는 "다음 턴이 뭔지 최대한 빨리
+  // 알아내는" 역할만 한다. 회의 로직(누가 다음에 말할지, 언제 라운드가 끝나는지) 자체는
+  // continue_ideation_expert_turn을 그대로 재사용하므로 전혀 안 건드렸다.
   //
   // sending/interrupting/interjectTarget 중 하나라도 걸려 있으면 부르지 않는다 — 사용자가
   // 직접 reply/interject를 보내는 중이면 같은 세션에 동시 요청을 보내 백엔드 세션 락
-  // 409를 유발할 수 있다(호출 자체를 막는 게 가장 안전 — 실패해도 치명적이지 않지만,
-  // 아바타가 조용히 멈추는 것보다 애초에 안 보내는 편이 낫다). phase가 이미
-  // "expert_discussion"이 아니면(라운드가 이미 끝났거나 사용자가 먼저 답해 다음 라운드로
-  // 넘어간 경우) 마찬가지로 부르지 않는다 — 백엔드도 같은 조건을 다시 검사하지만, 프론트
-  // 에서 먼저 걸러야 불필요한 요청/에러 로그를 줄인다.
-  async function handleAvatarNeedNextSpeaker(finishedSpeakerId) {
-    console.log('[avatar-debug] handleAvatarNeedNextSpeaker CALLED', {
-      finishedSpeakerId,
-      hasSessionId: !!ideationConv?.session_id,
-      phase: ideationConv?.phase,
-      sending,
-      interrupting,
-      interjectTarget,
-    })
-    if (!ideationConv?.session_id) {
-      console.log('[avatar-debug] bail: no session_id')
-      return
-    }
-    if (ideationConv.phase !== 'expert_discussion') {
-      console.log('[avatar-debug] bail: phase !== expert_discussion', ideationConv.phase)
-      return
-    }
-    if (sending || interrupting || interjectTarget) {
-      console.log('[avatar-debug] bail: sending/interrupting/interjectTarget guard', { sending, interrupting, interjectTarget })
-      return
-    }
+  // 409를 유발할 수 있다. avatarTurnAbortRef.current가 이미 걸려 있으면(이전 호출이 아직
+  // 진행 중) 또 시작하지 않는다 — 이 ref는 handleInterject("잠시만")가 그대로 재사용해서
+  // 중단 시 함께 끊는다(아래 avatarTurnAbortRef 선언부 참고, 코드 변경 없음).
+  //
+  // 재인/Claude(2026-07-25, 실측: "기획위원 한 번 말하고 그대로 멈춤" - 콘솔/백엔드 로그로
+  // 확정): 처음엔 이 effect가 ideationConv(객체 전체)를 deps로 삼아서, 자기 자신의
+  // setIdeationConv 호출로 매번 다시 실행되며 "다음 턴 요청"을 이어갔다. 근데 그러면
+  // 매번 이 effect의 클린업(controller.abort())과 async 콜백의 finally
+  // (avatarTurnAbortRef.current = null)가 경쟁한다 - 클린업이 먼저 실행된 시점엔 아직
+  // finally가 ref를 안 지웠을 수 있어서, 바로 이어서 실행되는 새 effect가
+  // "avatarTurnAbortRef.current가 있으니 이미 진행 중"으로 오판하고 아무것도 안 하고
+  // 끝나버린다 - 그러면 그 뒤로는 아무도 다시 안 불러서 대화가 영원히 멈춘다(실측
+  // 재현: 기획위원 발언 후 continue-turn 요청 자체가 다시 안 나감). 고친 방법: 렌더
+  // 사이클(effect 재실행)에 의존해서 다음 턴을 잇지 않고, 이 안에서 while 루프로
+  // 직접 이어서 요청한다 - deps에서도 ideationConv(전체 객체)를 빼고 session_id/phase만
+  // 남겨서, 이 루프 자신의 setIdeationConv 호출로 effect가 다시 트리거되는 일 자체가
+  // 없게 했다(그러면 클린업도 안 도니 경쟁 자체가 발생하지 않는다). session_id/phase가
+  // "진짜로" 바뀌거나 sending/interrupting/interjectTarget이 바뀔 때만 재평가한다.
+  useEffect(() => {
+    if (!ideationConv?.session_id) return
+    if (ideationConv.phase !== 'expert_discussion') return
+    if (sending || interrupting || interjectTarget) return
+    if (avatarTurnAbortRef.current) return
 
-    console.log('[avatar-debug] calling continueIdeationExpertTurnStream', { sessionId: ideationConv.session_id })
     const controller = new AbortController()
     avatarTurnAbortRef.current = controller
-    try {
-      await continueIdeationExpertTurnStream(ideationConv.session_id, {
-        signal: controller.signal,
-        onEvent: (event) => {
-          console.log('[avatar-debug] continue-turn event', event.type, event)
-          if (event.type === 'state') {
-            setIdeationConv(event.state)
-            // 재인/Claude(2026-07-23, 실측: "기획위원 발언이 화면에 2번 뜸"): 이 canonical
-            // 갱신은 handleSend의 타이핑 효과 루프(streamState/pendingFinalRef/tick)를 전혀
-            // 거치지 않는다 - 그쪽이 아직 스트리밍 임시 메시지를 못 지운 상태(sending이
-            // 막 false로 바뀐 직후처럼)에서 이 이벤트가 오면, 같은 발언이 streamState
-            // (임시, 다른 message_id)랑 canonical(방금 갱신됨) 양쪽에 동시에 남아 화면에
-            // 두 번 그려질 수 있다. ideationStreamReducer.js 상단 주석의 설계 의도
-            // ("스트리밍 미리보기와 최종 메시지가 절대 동시에 렌더링될 수 없다")를 이
-            // 경로에서도 그대로 지키려고, canonical을 바꿀 때 스트리밍 임시 상태도 같이
-            // 확실하게 비운다.
-            setStreamState(createEmptyStreamState())
-          } else if (event.type === 'error') {
-            console.warn('[ideation-avatar] continue-turn 실패, speaker=', finishedSpeakerId, event)
-          }
-        },
-      })
-      console.log('[avatar-debug] continueIdeationExpertTurnStream resolved OK')
-    } catch (err) {
-      // 조용히 무시한다 — 이 호출은 최선을 다해 다음 위원을 미리 준비시키는 배경 동작이라,
-      // 실패해도(400 phase 불일치, 세션 만료, abort 등) 화면에 에러를 띄우지 않는다.
-      if (err?.name !== 'AbortError') {
-        console.warn('[ideation-avatar] continue-turn 요청 실패, speaker=', finishedSpeakerId, err)
+    let cancelled = false
+    let currentSessionId = ideationConv.session_id
+
+    ;(async () => {
+      try {
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          let nextState = null
+          console.log('[avatar-debug] eager fetch: calling continueIdeationExpertTurnStream', { sessionId: currentSessionId })
+          // eslint-disable-next-line no-await-in-loop
+          await continueIdeationExpertTurnStream(currentSessionId, {
+            signal: controller.signal,
+            onEvent: (event) => {
+              if (cancelled) return
+              console.log('[avatar-debug] continue-turn event', event.type, event)
+              if (event.type === 'state') {
+                nextState = event.state
+                setIdeationConv(event.state)
+                // 재인/Claude(2026-07-23, 실측: "기획위원 발언이 화면에 2번 뜸"): 이 canonical
+                // 갱신은 handleSend의 타이핑 효과 루프(streamState/pendingFinalRef/tick)를 전혀
+                // 거치지 않는다 - 그쪽이 아직 스트리밍 임시 메시지를 못 지운 상태에서 이
+                // 이벤트가 오면, 같은 발언이 streamState(임시, 다른 message_id)랑
+                // canonical(방금 갱신됨) 양쪽에 동시에 남아 화면에 두 번 그려질 수 있다.
+                // canonical을 바꿀 때 스트리밍 임시 상태도 같이 확실하게 비운다.
+                setStreamState(createEmptyStreamState())
+              } else if (event.type === 'error') {
+                console.warn('[ideation-avatar] continue-turn 실패', event)
+              }
+            },
+          })
+          console.log('[avatar-debug] eager fetch: continueIdeationExpertTurnStream resolved OK', { phase: nextState?.phase })
+          if (cancelled || !nextState || nextState.phase !== 'expert_discussion') break
+          currentSessionId = nextState.session_id
+        }
+      } catch (err) {
+        // 조용히 무시한다 — 이 호출은 최선을 다해 다음 턴을 미리 준비시키는 배경 동작이라,
+        // 실패해도(400 phase 불일치, 세션 만료, abort 등) 화면에 에러를 띄우지 않는다.
+        if (err?.name !== 'AbortError') {
+          console.warn('[ideation-avatar] continue-turn 요청 실패', err)
+        }
+      } finally {
+        if (avatarTurnAbortRef.current === controller) avatarTurnAbortRef.current = null
       }
-    } finally {
-      if (avatarTurnAbortRef.current === controller) avatarTurnAbortRef.current = null
+    })()
+
+    return () => {
+      cancelled = true
+      controller.abort()
     }
-  }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ideationConv?.session_id, ideationConv?.phase, sending, interrupting, interjectTarget])
 
   const phase = ideationConv?.phase
   const phaseFailure = phase === 'failed'
@@ -892,7 +1099,28 @@ export function IdeationScreen({
         failedNode: ideationConv?.failed_node || ideationConv?.error?.failed_node,
       }
     : null
-  const canonicalMessages = dedupeMessagesById(ideationConv?.messages)
+  // 재인/Claude(2026-07-24, 요청: "채팅 텍스트도 아바타 재생 순서에 맞춰 공개"): 텍스트은
+  // 이제 아바타 재생과 무관하게 미리 다 뽑혀 ideationConv.messages(canonical)에 들어와
+  // 있을 수 있다. avatarRevealedCount(IdeationAvatarStage가 각 아바타 발언을 실제로
+  // 재생하기 시작할 때마다 하나씩 늘려줌 — 순서 보장됨, 아래 setAvatarRevealedCount 참고)
+  // 만큼만 "아바타 대상 발언"을 공개하고, 아직 안 밝혀진 아바타 발언 지점부터는(그
+  // 뒤에 온 비아바타 메시지 포함) 전부 숨긴다 — 순서를 지키기 위해서다(나중에 온 문구가
+  // 아직 재생 안 한 위원 발언보다 먼저 보이면 안 됨). 아바타 대상이 아닌 메시지(고정
+  // 문구 중 코랩 제외 대상, 사용자 메시지 등)는 게이팅 없이 즉시 보인다.
+  const rawMessages = ideationConv?.messages || []
+  let avatarSeenCount = 0
+  // IDEATION_AVATAR_ENABLED=false(개발자용)면 영상 재생을 기다리지 않고 항상 -1(=자르지
+  // 않음)로 취급한다 — 아바타 서버가 없어도 회의 메시지가 즉시 전부 보인다.
+  const revealCutoffIndex = IDEATION_AVATAR_ENABLED
+    ? rawMessages.findIndex((m) => {
+        const isAvatarTracked = AVATAR_SPEAKER_IDS.has(m.speaker_id) && !(m.content || '').startsWith(AVATAR_EXCLUDED_CONTENT_PREFIX)
+        if (!isAvatarTracked) return false
+        avatarSeenCount += 1
+        return avatarSeenCount > avatarRevealedCount
+      })
+    : -1
+  const revealedMessages = revealCutoffIndex === -1 ? rawMessages : rawMessages.slice(0, revealCutoffIndex)
+  const canonicalMessages = dedupeMessagesById(revealedMessages)
   // 재인/Claude(2026-07-23, 실측: "메시지가 2개 겹쳐 나옴" — 서버 확인 결과 실제 메시지는
   // 1건뿐이었다): canonical과 streamState는 서로 겹칠 수 있다 — 특히 single_turn 응답처럼
   // 아주 짧은 메시지는 canonical(finalizeStream)로 넘어가는 순간과 streamState가 비워지는
@@ -901,6 +1129,13 @@ export function IdeationScreen({
   // 우선하고 streamState 쪽의 같은 id는 제거한다. interruptionMarkers는 메시지가 아니라
   // 렌더링용 마커라 여기(교차 참조용 allMessages)에는 안 넣는다.
   const visibleMessages = dedupeMessagesById([...canonicalMessages, ...streamState.messages])
+  const latestVisibleMessageId = [
+    ...canonicalMessages,
+    ...(optimisticUserMessage ? [optimisticUserMessage] : []),
+    ...streamState.messages,
+  ]
+    .filter((message) => (message?.displayedContent ?? message?.content ?? '').trim())
+    .at(-1)?.message_id
   const busy = starting || sending || finalizing || saving
   // awaiting_user_decision도 입력을 막지 않는다("더 이야기하기") — 백엔드
   // apply_user_answer가 이 경우도 받아 두 전문가 보완 의견으로 이어간다.
@@ -910,6 +1145,18 @@ export function IdeationScreen({
     && !busy
   const hasCandidates = (ideationConv?.idea_candidates?.length || 0) > 0
   const hasSelected = !!ideationConv?.selected_idea
+  // 용준/Claude(2026-07-25, 요청: 아이디어 목록에서 선택 상태를 명확히 보여주기) —
+  // selected_idea/source_candidates는 백엔드가 이미 확정한 값이다(단일 선택은 원본
+  // candidate_id를 그대로 갖고, 결합은 source_candidates에 원본 두 후보가 담긴다). 프론트는
+  // candidate_id 우선, 없으면 title로 후보 카드와 대조해 "선택됨" 표시만 붙인다.
+  const selectedCandidateKeys = new Set(
+    [ideationConv?.selected_idea, ...(ideationConv?.source_candidates || [])]
+      .filter(Boolean)
+      .flatMap((idea) => [idea.candidate_id, idea.title])
+      .filter(Boolean),
+  )
+  const isCandidateSelected = (candidate) =>
+    selectedCandidateKeys.has(candidate.candidate_id) || selectedCandidateKeys.has(candidate.title)
   // 용준/Claude(2026-07-22, 요청: "잠시만" 버튼) — 실제로 기획/개발 위원이 발언을
   // 스트리밍하는 동안에만(말풍선이 하나 이상 생겨야) 활성화한다. 이미 취소 확인을 기다리는
   // 중이면(interrupting) 다시 누를 수 없다.
@@ -977,9 +1224,11 @@ export function IdeationScreen({
         targetSpeakerId: target || undefined,
         opinionTargetSpeakerId: target || undefined,
         interruptedSpeakerId: target ? interruptedSpeakerId || undefined : undefined,
-        // 재인/Claude(2026-07-23): 이 화면은 항상 아바타를 재생하므로, 라운드를 새로 여는
-        // reply라도 위원 발언이 한 번에 다 몰려오지 않고 첫 발언부터 페이싱 대상이 되도록
-        // 매번 true로 보낸다(handleAvatarNeedNextSpeaker가 나머지 턴을 이어서 요청함).
+        // 재인/Claude(2026-07-23, 2026-07-24 갱신): 이 화면은 항상 아바타를 재생하므로,
+        // 라운드를 새로 여는 reply라도 위원 발언이 한 번에 다 몰려오지 않고 딱 1건만
+        // 오게 매번 true로 보낸다(위쪽 eager fetch effect가 나머지 턴을 이어서 요청함 —
+        // 텍스트는 이제 아바타 재생과 무관하게 미리 다 뽑히지만, 채팅/아바타 노출은
+        // avatarRevealedCount로 여전히 하나씩 순서대로 공개된다).
         singleTurn: true,
         onEvent: (event) => {
           if (event.type === 'state') {
@@ -1117,6 +1366,53 @@ export function IdeationScreen({
     }
   }
 
+  // 가은/Claude(2026-07-24, 요청: 분석용 JSON 내보내기) — 아이디어 기획 캔버스(idea_canvas),
+  // 대화 전체(발화자·내용, UI 토글로 숨겨진 발언도 전부 포함 — 분석 목적이라 화면 표시
+  // 필터를 따르지 않는다), 신청서 양식 항목을 한 파일로 내려받는다. 세션 루프·회귀
+  // 디버깅용으로 실제 대화 로그를 그대로 봐야 할 때 쓴다(구두 요청, 2026-07-26 dev
+  // #131-167 merge 후 재이식 — merge 전 이 함수가 참조하던 confirmed_plan/
+  // application_form_draft/candidate_seed 등 form_coach_v2 전용 필드는 dev 쪽 데이터
+  // 모델에 없어 뺐다. message.structured는 스키마가 계속 바뀌므로 가공하지 않고
+  // 그대로 담는다).
+  function handleExportAnalysisJson() {
+    if (!ideationConv) return
+    const payload = {
+      exported_at: new Date().toISOString(),
+      session_id: ideationConv.session_id,
+      competition_name: ideationConv.competition_name || null,
+      phase: ideationConv.phase || null,
+      round: ideationConv.round || null,
+      stop_reason: ideationConv.stop_reason || null,
+      idea_canvas: ideationConv.idea_canvas || null,
+      last_user_selection: ideationConv.user_selection_message || null,
+      conversation: (ideationConv.messages || []).map((m) => ({
+        round: m.round ?? null,
+        speaker: speakerMetaFor(m).label,
+        speaker_id: m.speaker_id,
+        role: m.role || null,
+        message_type: m.message_type,
+        content: m.content,
+        structured: m.structured || null,
+      })),
+      application_form_items: applicationFormItems,
+    }
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    // 가은/Claude(2026-07-24, 요청: "저장 제목 기준이 뭐야? 시간 넣어줘") — 이전엔
+    // session_id만 써서 같은 세션을 여러 번 내보내면 파일명이 계속 같았다(다운로드 폴더에서
+    // 몇 번째로 내보낸 건지 구분 불가). 내보낸 시각(로컬 시간, YYYYMMDD-HHmmss)을 붙인다.
+    const now = new Date()
+    const pad = (n) => String(n).padStart(2, '0')
+    const timestamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
+    a.download = `ideation-${ideationConv.session_id || 'export'}-${timestamp}.json`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }
+
   function handleRestart() {
     const key = ideationSessionStorageKey(projectId)
     if (key) sessionStorage.removeItem(key)
@@ -1135,9 +1431,10 @@ export function IdeationScreen({
     return (
       <div style={{ maxWidth: 860 }}>
         <div className="badge green mono" style={{ marginBottom: 10 }}>주제 확정 완료</div>
-        <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 16 }}>이미 이 회의로 주제를 확정했어요</h2>
-        {saveError && <p style={{ color: 'var(--coral)', fontSize: 13, marginBottom: 12 }}>{saveError}</p>}
+        <h2 style={{ fontSize: 21, fontWeight: 700, marginBottom: 16 }}>이미 이 회의로 주제를 확정했어요</h2>
+        {saveError && <p style={{ color: 'var(--coral)', fontSize: 14.5, marginBottom: 12 }}>{saveError}</p>}
         <button
+          type="button"
           className="btn-primary"
           style={{ display: 'flex', alignItems: 'center', gap: 8 }}
           onClick={() => onFinalized(ideationConv)}
@@ -1149,38 +1446,110 @@ export function IdeationScreen({
     )
   }
 
+  // 용준/Claude(2026-07-25, 요청: 상단 상태 요약 바) — "회의 진행 시간"은 서버가 주는
+  // 값이 없어(세션에 시작 타임스탬프 필드 자체가 없음) 하드코딩하지 않고 뺐다. 대신 실제로
+  // 있는 값(라운드, 참여 위원 수, 논의 중인 아이디어 수, 다음 단계 라벨)만 보여준다.
+  const nextStepLabel = phase === 'finalized' ? '완료' : '주제 확정'
+  const metaItems = ideationConv
+    ? [
+        // 용준/Claude(2026-07-26, 요청: "/3은 필요없고 실시간 라운드 숫자만, 4라운드
+        // 넘어가면 4로") — max_rounds는 백엔드가 무한 루프를 막는 안전 상한일 뿐
+        // "정확히 이 라운드까지"라는 목표치가 아니므로 더 이상 분모로 보여주지 않는다.
+        // ideationConv.round 값 자체를 그대로 보여주면 라운드가 늘어날 때마다 자동으로
+        // 최신 숫자가 표시된다.
+        { icon: ListChecks, label: '진행 라운드', value: `${ideationConv.round ?? 0}` },
+        { icon: Users, label: '참여 위원', value: '3명' },
+        { icon: Lightbulb, label: '논의 아이디어', value: `${ideationConv.idea_candidates?.length ?? 0}개` },
+        { icon: ArrowRight, label: '다음 단계', value: nextStepLabel },
+      ]
+    : []
+
   return (
-    <div className="rb-grid-2" style={{ maxWidth: 1570, display: 'grid', gridTemplateColumns: '1fr 80px 468px 80px 320px', gap: 20 }}>
+    <div className="rb-ideation-layout">
+      <StreamingCursorStyle />
+      {formSelectionPrompt && (
+        <ApplicationFormFieldSelectModal
+          items={formSelectionPrompt.items}
+          onConfirm={handleConfirmFormSelection}
+        />
+      )}
       <div>
-        <div className="badge coral mono" style={{ marginBottom: 10 }}>주제 아이디어 회의</div>
-        {onBack && (
-          <button className="btn-ghost" style={{ marginBottom: 10, padding: '5px 10px', fontSize: 12 }} onClick={onBack} disabled={busy}>
-            ← 이전
-          </button>
-        )}
-        {ideationConv?.competition_name ? (
-          <>
-            <div style={{ fontSize: 12, color: 'var(--text-2)', fontFamily: 'var(--mono)', marginBottom: 4 }}>공모전 주제</div>
-            <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>{ideationConv.competition_name}</h2>
-            <div style={{ fontSize: 13, color: 'var(--text-2)', marginBottom: 10 }}>기획 위원 · 개발 위원과 함께 좁혀가는 중</div>
-          </>
-        ) : (
-          <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 10 }}>기획 위원 · 개발 위원과 함께 좁혀가는 중</h2>
-        )}
-        <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
+          {onBack && (
+            <button type="button" className="btn-ghost" style={{ padding: '5px 10px', fontSize: 13.5 }} onClick={onBack} disabled={busy}>
+              ← 이전
+            </button>
+          )}
+          {ideationConv && (
+            <button
+              type="button"
+              className="btn-ghost"
+              style={{ padding: '5px 10px', fontSize: 12.5, display: 'inline-flex', alignItems: 'center', gap: 5 }}
+              onClick={handleExportAnalysisJson}
+              title="분석용 JSON 내보내기"
+            >
+              <Download size={13} /> JSON 내보내기
+            </button>
+          )}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 2 }}>
+          <h2 style={{ fontSize: 27, fontWeight: 700, color: 'var(--text-0)', letterSpacing: '-0.02em' }}>AI 아이디어 회의</h2>
           {ideationConv && (
             <span className="badge amber mono">
               {statusLabelFor({ phase, starting, sending, finalizing, interrupting })}
             </span>
           )}
         </div>
+        <div style={{ fontSize: 16, fontWeight: 500, color: '#625d72', marginBottom: 14, lineHeight: 1.5 }}>
+          공모전 분석 결과를 바탕으로 진행자, 기획 위원, 개발 위원이 함께 아이디어를 논의하고 있습니다.
+        </div>
+        {ideationConv?.competition_name && (
+          <div
+            style={{
+              display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16,
+              padding: '12px 16px', borderRadius: 10,
+              background: '#fff', border: '1px solid var(--border-1, #e4e0ee)',
+            }}
+          >
+            <span
+              style={{
+                flexShrink: 0, fontSize: 12, fontWeight: 700, color: '#918d9f',
+                letterSpacing: '0.02em', border: '1px solid #dcd7ea', borderRadius: 6,
+                padding: '3px 8px',
+              }}
+            >
+              이번 회의 주제
+            </span>
+            <span style={{ fontSize: 20, fontWeight: 800, color: '#111', letterSpacing: '-0.01em' }}>
+              {ideationConv.competition_name}
+            </span>
+          </div>
+        )}
 
         <ErrorBanner error={phaseFailure || error} onRetry={handleRestart} />
-        <StreamingCursorStyle />
 
+        {/* 용준/Claude(2026-07-25, 요청: "회의 대화 영역 상단에 가로형 상태 요약 카드") —
+            round/idea_candidates.length/phase는 전부 ideationConv에 이미 있는 실제 값이다. */}
+        {metaItems.length > 0 && (
+          <div className="rb-ideation-meta">
+            {metaItems.map(({ icon: Icon, label, value }) => (
+              <div key={label} className="card glass rb-ideation-meta-item">
+                <div className="rb-ideation-meta-label"><Icon size={11} /> {label}</div>
+                <div className="rb-ideation-meta-value">{value}</div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+          <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text-0)' }}>회의 대화</div>
+          {ideationConv && phase !== 'finalized' && phase !== 'failed' && (
+            <span className="badge green mono" style={{ fontSize: 12 }}>실시간</span>
+          )}
+        </div>
         <div className="card glass" style={{ minHeight: 360, maxHeight: 520, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4, padding: 16 }}>
           {starting && !ideationConv && (
-            <p style={{ color: 'var(--text-2)', fontSize: 13 }}>
+            <p className="rb-ideation-notice">
               {startPhaseLabel ? `${startPhaseLabel}...` : '공모전 분석을 바탕으로 아이디어 후보를 만들고 있어요...'}
             </p>
           )}
@@ -1189,7 +1558,11 @@ export function IdeationScreen({
             .map((marker) => <InterruptionMarker key={marker.markerId} speakerId={marker.speakerId} />)}
           {canonicalMessages.map((m) => (
             <Fragment key={m.message_id}>
-              <MessageBubble message={m} allMessages={visibleMessages} />
+              <MessageBubble
+                message={m}
+                allMessages={visibleMessages}
+                isLatest={m.message_id === latestVisibleMessageId}
+              />
               {interruptionMarkers
                 .filter((marker) => marker.afterMessageId === m.message_id)
                 .map((marker) => <InterruptionMarker key={marker.markerId} speakerId={marker.speakerId} />)}
@@ -1200,62 +1573,64 @@ export function IdeationScreen({
               finalizeStream/sendNonStreaming이 도착 즉시 지운다 - 그래서 진짜 메시지와
               동시에 두 번 보이는 순간은 없다). */}
           {optimisticUserMessage && (
-            <MessageBubble message={optimisticUserMessage} allMessages={visibleMessages} />
+            <MessageBubble
+              message={optimisticUserMessage}
+              allMessages={visibleMessages}
+              isLatest={optimisticUserMessage.message_id === latestVisibleMessageId}
+            />
           )}
           {/* 스트리밍 임시 메시지 — message_start를 받는 즉시 말풍선이 생기고, 실제 LLM
               델타가 도착하는 대로 안에서 텍스트가 자란다(완성 후 재생하는 효과 아님).
               streamState는 최종 state 이벤트가 오면 즉시 비워지므로, 이 목록과 위
               ideationConv.messages가 같은 내용으로 동시에 남아 중복되는 순간은 없다. */}
           {streamState.messages.map((m) => (
-            <MessageBubble key={m.message_id} message={m} streaming allMessages={visibleMessages} />
+            <MessageBubble
+              key={m.message_id}
+              message={m}
+              streaming
+              allMessages={visibleMessages}
+              isLatest={m.message_id === latestVisibleMessageId}
+            />
           ))}
           {sending && streamState.messages.length === 0 && (
-            <p style={{ fontSize: 12.5, color: 'var(--text-2)' }}>
+            <p className="rb-ideation-notice">
               {streamState.phaseLabel || `${statusLabelFor({ phase, starting, sending, finalizing })}...`}
             </p>
           )}
           {finalizing && (
-            <p style={{ fontSize: 12.5, color: 'var(--text-2)' }}>
+            <p className="rb-ideation-notice">
               {statusLabelFor({ phase, starting, sending, finalizing })}...
             </p>
           )}
-          {/* 가은/Claude(2026-07-23, 요청: 후보 패널을 대화창 안으로) — 진행자가 선택을
-              요청하는 첫 버블("제안된 후보 중... 답할 수 있습니다") 바로 아래에 후보
-              카드를 띄운다. 이전엔 오른쪽 사이드 패널에 항상 떠 있었는데, 대화 흐름
-              밖이라 어느 버블에 대한 응답인지 연결이 약했다. phase가
+          {/* 용준/Claude(2026-07-25, 요청: "아이디어 후보를 채팅 영역 안으로") — 오른쪽은
+              참여 위원 전용 공간으로 비우고, 후보 카드는 진행자의 선택 안내 메시지
+              바로 아래(대화 흐름 안)에 특수 메시지 형태로 보여준다. phase가
               awaiting_candidate_selection인 동안은 항상 그 마지막 메시지가 이 선택
               질문이므로, 메시지 목록 맨 끝에 붙이면 자연히 그 버블 바로 아래에 온다.
-              선택하면 phase가 바뀌어(hasSelected) 이 블록 자체가 사라진다. */}
-          {phase === 'awaiting_candidate_selection' && hasCandidates && !hasSelected && (
+              선택 확정(handleSend → candidateSelectMessage)은 기존 로직 그대로다 —
+              카드 클릭도 텍스트 "n번" 입력과 같은 API 호출을 탄다. */}
+          {phase === 'awaiting_candidate_selection' && hasCandidates && (
             <div style={{ marginTop: 4 }}>
-              <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              <div style={{ fontSize: 13.5, color: 'var(--text-2)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                 주제 후보
               </div>
-              {ideationConv.idea_candidates.map((c, i) => (
-                <CandidateCard key={c.candidate_id || i} candidate={c} index={i} onSelect={(idx) => handleSend(candidateSelectMessage(idx))} disabled={!canReplyOrContinue} />
-              ))}
-              <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}>
-                <button
-                  aria-label="다시 추천"
-                  title="다시 추천"
-                  disabled={!canReplyOrContinue}
-                  onClick={() => handleSend(REGENERATE_MESSAGE)}
-                  style={{
-                    background: 'none',
-                    border: '1px solid var(--glass-border)',
-                    borderRadius: 999,
-                    width: 30,
-                    height: 30,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    cursor: canReplyOrContinue ? 'pointer' : 'default',
-                    opacity: canReplyOrContinue ? 1 : 0.5,
-                    color: 'var(--text-2)',
-                  }}
-                >
-                  <RefreshCw size={14} />
-                </button>
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: ideationConv.idea_candidates.length > 1 ? 'repeat(auto-fit, minmax(220px, 1fr))' : '1fr',
+                  gap: 10,
+                }}
+              >
+                {ideationConv.idea_candidates.map((c, i) => (
+                  <CandidateCard
+                    key={c.candidate_id || i}
+                    candidate={c}
+                    index={i}
+                    selected={isCandidateSelected(c)}
+                    onSelect={(idx) => handleSend(candidateSelectMessage(idx))}
+                    disabled={!canReplyOrContinue || hasSelected}
+                  />
+                ))}
               </div>
             </div>
           )}
@@ -1267,7 +1642,7 @@ export function IdeationScreen({
             효과 아님). */}
         {canInterject && (
           <div style={{ marginTop: 8 }}>
-            <button className="btn-ghost" style={{ fontSize: 12, borderColor: 'var(--amber, var(--coral))' }} onClick={handleInterject}>
+            <button type="button" className="btn-ghost" style={{ fontSize: 13.5, borderColor: 'var(--amber, var(--coral))' }} onClick={handleInterject}>
               잠시만
             </button>
           </div>
@@ -1277,17 +1652,17 @@ export function IdeationScreen({
             반응하는지"를 명시한다. 선택된 위원이 먼저 답하고 상대 위원이 이어서 검토한다. */}
         {awaitingInterjectTarget && (
           <div style={{ marginTop: 8 }}>
-            <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 6 }}>
+            <div style={{ fontSize: 13.5, color: 'var(--text-2)', marginBottom: 6 }}>
               어느 의견에 대해 말씀하시겠어요?
             </div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              <button className="btn-ghost" style={{ fontSize: 12 }} onClick={() => setInterjectTarget('planning_expert')}>
+              <button type="button" className="btn-ghost" style={{ fontSize: 13.5 }} onClick={() => setInterjectTarget('planning_expert')}>
                 기획 위원 의견에
               </button>
-              <button className="btn-ghost" style={{ fontSize: 12 }} onClick={() => setInterjectTarget('dev_expert')}>
+              <button type="button" className="btn-ghost" style={{ fontSize: 13.5 }} onClick={() => setInterjectTarget('dev_expert')}>
                 개발 위원 의견에
               </button>
-              <button className="btn-ghost" style={{ fontSize: 12 }} onClick={() => setInterjectTarget('both')}>
+              <button type="button" className="btn-ghost" style={{ fontSize: 13.5 }} onClick={() => setInterjectTarget('both')}>
                 두 의견 모두에
               </button>
             </div>
@@ -1313,14 +1688,20 @@ export function IdeationScreen({
                     ? '회의 처리 오류가 발생했습니다. 위의 다시 시도 버튼을 눌러주세요.'
                   : !canReplyOrContinue
                     ? '전문가 응답을 기다리는 중입니다'
-                    : phase === 'awaiting_user_decision'
-                      ? '필요하면 의견을 남겨주세요 (선택 사항)'
-                      : '답변을 입력하세요')
+                    : phase === 'awaiting_candidate_selection'
+                      ? '답변을 입력하거나 후보를 선택해 주세요.'
+                      : phase === 'awaiting_user_decision'
+                        ? '필요하면 의견을 남겨주세요 (선택 사항)'
+                        : hasSelected
+                          ? '선택한 아이디어에 대해 추가 의견을 입력해 주세요.'
+                          : '답변을 입력하세요')
               }
               disabled={!canReplyOrContinue && !chosenInterjectTarget && !awaitingInterjectTarget}
-              style={{ flex: 1, background: 'var(--bg-1)', border: '1px solid var(--glass-border)', borderRadius: 10, padding: '10px 14px', color: 'var(--text-0)', fontSize: 13 }}
+              style={{ flex: 1, background: 'var(--bg-1)', border: '1px solid var(--glass-border)', borderRadius: 10, padding: '10px 14px', color: 'var(--text-0)', fontSize: 15.5 }}
             />
             <button
+              type="button"
+              aria-label="메시지 보내기"
               className="btn-primary"
               style={{ padding: '10px 14px' }}
               disabled={(!canReplyOrContinue && !chosenInterjectTarget) || !draft.trim()}
@@ -1331,59 +1712,116 @@ export function IdeationScreen({
           </div>
         )}
 
-        {/* 가은/Claude(2026-07-23, 요청: "다시 추천"을 후보 패널의 새로고침 아이콘으로 이동) —
-            이 버튼은 후보 카드 아래(위 채팅 영역)로 옮겼다. "전문가 추천"은 후보 자체를
-            새로 만드는 게 아니라 다른 답변 경로라 그대로 입력창 아래에 남긴다. */}
+        {/* 선택한 아이디어 안내는 채팅 입력창 아래에 표시한다. selected_idea는 백엔드가
+            확정한 값이며, 선택 취소 API나 phase 되돌리기 동작은 제공하지 않는다. */}
+        {ideationConv?.selected_idea?.title && (
+          <div
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+              marginTop: 12, padding: '13px 16px', borderRadius: 12,
+              background: 'var(--bg-1)', border: '1px solid var(--glass-border)',
+            }}
+          >
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-2)' }}>선택한 아이디어</div>
+              <div style={{ marginTop: 2, fontSize: 17, fontWeight: 600, color: 'var(--text-0)' }}>
+                {ideationConv.selected_idea.title}
+              </div>
+              <div style={{ marginTop: 3, fontSize: 14.5, fontWeight: 500, color: 'var(--text-2)', lineHeight: 1.65 }}>
+                현재 이 아이디어를 중심으로 회의 중입니다.
+              </div>
+            </div>
+            <CheckCircle2 size={21} color="var(--text-2)" style={{ flexShrink: 0 }} />
+          </div>
+        )}
+
+        {/* "전문가 추천"은 후보 자체를 새로 만드는 게 아니라 다른 답변 경로라 입력창
+            아래에 남긴다. "다시 추천"은 후보 카드가 오른쪽 패널로 옮겨가면서 이 자리로
+            같이 옮겨왔다(기존 handleSend(REGENERATE_MESSAGE) 로직 그대로). */}
         {phase === 'awaiting_candidate_selection' && (
           <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-            <button className="btn-ghost" style={{ fontSize: 12 }} disabled={!canReplyOrContinue} onClick={() => handleSend(EXPERT_RECOMMEND_MESSAGE)}>
+            <button type="button" className="btn-ghost" style={{ fontSize: 13.5 }} disabled={!canReplyOrContinue} onClick={() => handleSend(EXPERT_RECOMMEND_MESSAGE)}>
               전문가 추천
+            </button>
+            <button
+              type="button"
+              className="btn-ghost"
+              style={{ fontSize: 13.5, display: 'flex', alignItems: 'center', gap: 4 }}
+              disabled={!canReplyOrContinue}
+              onClick={() => handleSend(REGENERATE_MESSAGE)}
+            >
+              <RefreshCw size={12} /> 다시 추천
             </button>
           </div>
         )}
       </div>
 
-      {/* 재인/Claude(2026-07-24, 실측: "아바타가 채팅 쪽에 쏠려 보임"): 처음엔 아바타-캔버스
-          사이에만 스페이서(160px)를 뒀더니 채팅-아바타 간격(그리드 기본 gap 20px)보다
-          아바타-캔버스 간격이 훨씬 넓어서 아바타 블록이 왼쪽(채팅 쪽)으로 쏠려 보였다.
-          스페이서를 양쪽에 80px씩 나눠서 아바타 블록이 채팅-캔버스 사이에서 가운데
-          오도록 했다(위 gridTemplateColumns '1fr 80px 468px 80px 320px'). */}
-      <div aria-hidden="true" />
+      {/* 용준/Claude(2026-07-25, 요청: "오른쪽 영역은 참여 AI 휴먼 전용 공간으로 사용") —
+          아이디어 제안 목록은 채팅 안으로 옮겨갔으니 오른쪽 패널에는 더 이상 두지 않는다.
+          아바타 패널을 이 열의 시각적 핵심으로 둔다. 데스크톱에서는 sticky, 태블릿
+          이하에서는 중앙 아래로 내려간다(위 rb-ideation-side 참고).
+          용준/Claude(2026-07-26, 요청: "아이디어 기획 캔버스는 참여 위원 오른쪽에") —
+          캔버스/합의사항/CTA는 이 열 아래에 이어붙이지 않고 별도의 세 번째 열
+          (rb-ideation-canvas-col)로 분리했다. */}
+      <div className="rb-ideation-side">
+        <div className="card glass">
+          <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text-0)', marginBottom: 3 }}>참여 위원</div>
+          <div style={{ fontSize: 14.5, fontWeight: 500, color: '#625d72', lineHeight: 1.65, marginBottom: 12 }}>
+            진행자 · 기획 위원 · 개발 위원이 실시간으로 함께 회의해요.
+          </div>
+          {/* 재인/Claude(2026-07-26, dev #166 병합): 용준님이 만든 이 레이아웃(참여 위원
+              카드 안에 아바타 배치)은 그대로 두되, prop만 새 구조로 교체했다. 예전
+              onNeedNextSpeaker(페이싱 타이머가 "다음 화자 불러줘"를 알리던 방식)는
+              제거됐고(handleAvatarNeedNextSpeaker 함수 자체가 없어서 그대로 두면
+              ReferenceError), 지금은 텍스트를 미리 받아두고 아바타가 실제로 재생을
+              시작할 때마다 onRevealed로 하나씩 공개하는 방식이다. */}
+          {IDEATION_AVATAR_ENABLED ? (
+            <IdeationAvatarStage
+              playQueue={avatarPlayQueue}
+              onRevealed={() => setAvatarRevealedCount((n) => n + 1)}
+            />
+          ) : (
+            // 가은/Claude(2026-07-26): VITE_IDEATION_AVATAR_ENABLED=false일 때는
+            // IdeationAvatarStage를 아예 마운트하지 않는다 — 마운트하면 매번 없는
+            // 영상 서버에 WebSocket 연결을 시도해 콘솔에 에러만 쌓인다.
+            <div style={{ fontSize: 12.5, color: 'var(--text-2)', padding: '10px 0' }}>
+              개발 모드: 영상 없이 회의 진행 중 (VITE_IDEATION_AVATAR_ENABLED=false)
+            </div>
+          )}
+        </div>
+      </div>
 
-      <IdeationAvatarStage
-        playQueue={avatarPlayQueue}
-        onNeedNextSpeaker={handleAvatarNeedNextSpeaker}
-      />
-
-      <div aria-hidden="true" />
-      <div>
+      <div className="rb-ideation-canvas-col">
         <MergeAnalysisPanel
           mergeAnalysis={ideationConv?.merge_analysis}
           sourceCandidates={ideationConv?.source_candidates}
           userSelectionMessage={ideationConv?.user_selection_message}
         />
 
-        <IdeaCanvasPanel ideationConv={ideationConv} analysis={announcementAnalysis} />
+        {/* 가은/Claude(2026-07-26, dev #131-167 merge 후 재이식) — 신청서 항목 선택
+            모달에서 확정한 항목을 회의 중에도 계속 보여준다(items가 비어있으면
+            ApplicationFormPanel 자체가 null을 반환해 숨는다). dev 쪽엔
+            application_form_draft(항목별 실시간 작성 상태) 데이터 모델이 없어서
+            draft는 넘기지 않는다 — 전부 "아직 작성되지 않았어요"로 보이는 대신, 최소
+            "이 항목들을 준비해야 한다"는 목록 자체는 다시 보인다. */}
+        <ApplicationFormPanel items={applicationFormItems} />
 
-        {/* 가은/Claude(2026-07-23, 요청: "후보 선택하면 아이디어 선택 패널 없애줘") — 후보
-            카드는 대화창 안(선택 질문 버블 아래)에서 보여주고, 선택 후에는 이 자리에
-            요약 카드도 더 이상 띄우지 않는다. 선택 결과는 아래 IdeaCanvasPanel(문제
-            상황/타깃 사용자 등)과 대화 자체로 계속 드러난다. */}
+        <IdeaCanvasPanel ideationConv={ideationConv} analysis={announcementAnalysis} />
 
         {ideationConv && (ideationConv.consensus?.length > 0 || ideationConv.unresolved_issues?.length > 0) && (
           <div className="card glass" style={{ marginBottom: 12, padding: 14 }}>
             {ideationConv.consensus?.length > 0 && (
               <div style={{ marginBottom: 10 }}>
-                <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--text-2)', marginBottom: 4 }}>합의 사항</div>
-                <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12, lineHeight: 1.7 }}>
+                <div style={{ fontSize: 15, fontWeight: 700, color: '#514a61', marginBottom: 4 }}>합의 사항</div>
+                <ul style={{ margin: 0, paddingLeft: 18, fontSize: 15.5, fontWeight: 500, color: 'var(--text-0)', lineHeight: 1.7 }}>
                   {ideationConv.consensus.map((c, i) => <li key={i}>{c}</li>)}
                 </ul>
               </div>
             )}
             {ideationConv.unresolved_issues?.length > 0 && (
               <div>
-                <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--text-2)', marginBottom: 4 }}>미해결 쟁점</div>
-                <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12, lineHeight: 1.7 }}>
+                <div style={{ fontSize: 15, fontWeight: 700, color: '#514a61', marginBottom: 4 }}>미해결 쟁점</div>
+                <ul style={{ margin: 0, paddingLeft: 18, fontSize: 15.5, fontWeight: 500, color: 'var(--text-0)', lineHeight: 1.7 }}>
                   {ideationConv.unresolved_issues.map((u, i) => <li key={i}>{u}</li>)}
                 </ul>
               </div>
@@ -1391,12 +1829,32 @@ export function IdeationScreen({
           </div>
         )}
 
-        <button className="btn-primary" style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }} disabled={!canFinalize} onClick={handleFinalize}>
+        {/* 용준/Claude(2026-07-25, 요청: "버튼은 한 곳에만, 상태별 문구를 명확하게") —
+            handleFinalize/canFinalize는 그대로고, 라벨과 비활성 사유만 3단계로 나눈다.
+            "회의를 바탕으로 주제 확정하기"는 후보는 골랐지만 위원 논의가 아직 끝나지
+            않은 상태를 알려주는 라벨일 뿐, 이 버튼 자체가 그 논의를 진행시키지는
+            않는다(논의는 채팅으로 계속된다) — 그래서 이 상태에서도 버튼은 비활성이다. */}
+        <div style={{ fontSize: 14.5, fontWeight: 500, color: '#514a61', marginBottom: 8, lineHeight: 1.65 }}>
+          지금까지 논의된 내용을 바탕으로 최종 주제를 확정하고 다음 단계로 이동합니다.
+        </div>
+        <button
+          type="button"
+          className="btn-primary"
+          style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
+          disabled={!canFinalize}
+          onClick={handleFinalize}
+        >
           <Sparkles size={14} />
-          {finalizing ? '초안 생성 중...' : '주제 확정하고 이어서 받기'}
+          {finalizing
+            ? '초안 생성 중...'
+            : canFinalize
+              ? '주제 확정 단계로 이동하기 →'
+              : '회의를 바탕으로 주제 확정하기 →'}
         </button>
         {!canFinalize && ideationConv && phase !== 'finalized' && phase !== 'failed' && (
-          <p style={{ fontSize: 11.5, color: 'var(--text-2)', marginTop: 8 }}>{nextActionGuideFor(phase)}</p>
+          <p style={{ fontSize: 14.5, fontWeight: 600, color: '#514a61', marginTop: 9, lineHeight: 1.55 }}>
+            {!hasSelected && hasCandidates ? '먼저 아이디어 후보를 선택해 주세요.' : nextActionGuideFor(phase)}
+          </p>
         )}
       </div>
     </div>
@@ -1456,8 +1914,8 @@ export function IdeationResultScreen({ ideationConv, onBack }) {
     return (
       <div style={{ maxWidth: 760 }}>
         <div className="badge amber mono" style={{ marginBottom: 12 }}>아직 확정되지 않음</div>
-        <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 16 }}>주제 발전 회의를 먼저 완료해 주세요</h2>
-        <p style={{ fontSize: 13, color: 'var(--text-2)' }}>
+        <h2 style={{ fontSize: 21, fontWeight: 700, marginBottom: 16 }}>주제 발전 회의를 먼저 완료해 주세요</h2>
+        <p style={{ fontSize: 14.5, color: 'var(--text-2)' }}>
           "주제 아이디어 회의" 단계에서 후보를 선택하고 전문가 질문에 답한 뒤, 확정 버튼을 눌러야 결과가 만들어져요.
         </p>
       </div>
@@ -1472,50 +1930,50 @@ export function IdeationResultScreen({ ideationConv, onBack }) {
     <div style={{ maxWidth: 780 }}>
       <div className="badge green mono" style={{ marginBottom: 12 }}>주제 확정 · 기획서 작성 출발점</div>
       {onBack && (
-        <button className="btn-ghost" style={{ marginBottom: 12, padding: '5px 10px', fontSize: 12 }} onClick={onBack}>
+        <button type="button" className="btn-ghost" style={{ marginBottom: 12, padding: '5px 10px', fontSize: 13.5 }} onClick={onBack}>
           ← 이전
         </button>
       )}
-      <h2 style={{ fontSize: 22, fontWeight: 700, marginBottom: 20 }}>{proposal.idea_name || '확정된 주제'}</h2>
+      <h2 style={{ fontSize: 23, fontWeight: 700, marginBottom: 20 }}>{proposal.idea_name || '확정된 주제'}</h2>
 
       <div className="card glass">
         {PROPOSAL_ROWS.map(([key, label], i) => (
           <div key={key} style={{ display: 'grid', gridTemplateColumns: '150px 1fr', gap: 16, padding: '14px 0', borderTop: i > 0 ? '1px solid var(--glass-border)' : 'none' }}>
-            <div style={{ fontSize: 12, color: 'var(--text-2)', fontFamily: 'var(--mono)' }}>{label}</div>
-            <div style={{ fontSize: 13.5, lineHeight: 1.6 }}>{proposalValueDisplay(proposal[key])}</div>
+            <div style={{ fontSize: 13.5, color: 'var(--text-2)', fontFamily: 'var(--mono)' }}>{label}</div>
+            <div style={{ fontSize: 14.5, lineHeight: 1.6 }}>{proposalValueDisplay(proposal[key])}</div>
           </div>
         ))}
       </div>
 
       {hasDiscoveryHistory && (
         <div className="card glass" style={{ marginTop: 16 }}>
-          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 12 }}>아이디어 발굴 이력</div>
+          <div style={{ fontSize: 14.5, fontWeight: 700, marginBottom: 12 }}>아이디어 발굴 이력</div>
 
           <div style={{ marginBottom: 12 }}>
-            <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--text-2)', marginBottom: 6 }}>최초 후보</div>
-            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12.5, lineHeight: 1.7 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-2)', marginBottom: 6 }}>최초 후보</div>
+            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 14, lineHeight: 1.7 }}>
               {originalCandidates.map((c) => <li key={c.candidate_id}>{c.title}</li>)}
             </ul>
           </div>
 
           {ideationConv.selected_idea && (
             <div style={{ marginBottom: 12 }}>
-              <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--text-2)', marginBottom: 6 }}>선택하거나 결합한 후보</div>
-              <div style={{ fontSize: 12.5, lineHeight: 1.6 }}>{ideationConv.selected_idea.title}</div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-2)', marginBottom: 6 }}>선택하거나 결합한 후보</div>
+              <div style={{ fontSize: 14, lineHeight: 1.6 }}>{ideationConv.selected_idea.title}</div>
             </div>
           )}
 
           {ideationConv.selection_reason && (
             <div style={{ marginBottom: 12 }}>
-              <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--text-2)', marginBottom: 6 }}>선택 이유</div>
-              <div style={{ fontSize: 12.5, lineHeight: 1.6 }}>{ideationConv.selection_reason}</div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-2)', marginBottom: 6 }}>선택 이유</div>
+              <div style={{ fontSize: 14, lineHeight: 1.6 }}>{ideationConv.selection_reason}</div>
             </div>
           )}
 
           {ideationConv.user_selection_message && (
             <div style={{ marginBottom: 12 }}>
-              <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--text-2)', marginBottom: 6 }}>사용자 원문 선택 요청</div>
-              <div style={{ fontSize: 12.5, lineHeight: 1.6 }}>“{ideationConv.user_selection_message}”</div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-2)', marginBottom: 6 }}>사용자 원문 선택 요청</div>
+              <div style={{ fontSize: 14, lineHeight: 1.6 }}>“{ideationConv.user_selection_message}”</div>
             </div>
           )}
 

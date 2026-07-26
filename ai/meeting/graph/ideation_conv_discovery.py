@@ -77,7 +77,7 @@ _REQUIRED_IDEA_FIELDS = ("title", "problem", "target_user", "solution")
 
 _SELECTION_QUESTION = (
     "제안된 후보 중 발전시키고 싶은 아이디어를 선택해 주세요. 번호나 제목을 입력하거나, "
-    "'1번과 2번 결합', '다시 추천', '전문가 추천'처럼 답할 수 있습니다."
+    "'다시 추천', '전문가 추천'처럼 답할 수 있습니다."
 )
 
 _REGENERATE_KEYWORDS = (
@@ -357,9 +357,22 @@ def _resolve_selection(
     problem = idea.get("problem", "") or ""
     initial_idea_text = f"{title} — {problem}".strip(" —") or None
 
-    # 용준/Claude(2026-07-21, 요청: 전문가 라운드테이블 전환) — refinement 시작과 동일하게,
-    # 후보 확정 직후에도 라운드테이블 진입 전 진행자 안건 제시 메시지를 붙인다(LLM 호출 없음).
-    opening_message = build_roundtable_opening_message(initial_idea_text or title, round_number=state["round"])
+    # 신청 양식이 있으면 작성 코치 전환 안내를, 없으면 기존 라운드테이블 안건을 붙인다.
+    # 두 메시지 모두 LLM 호출 없이 현재 후보 데이터만 사용한다.
+    if state.get("application_form_items"):
+        opening_message = _build_message(
+            persona_id="ideation_facilitator",
+            round_number=state["round"],
+            message_type="summary",
+            content=f"선택한 '{title}' 아이디어를 바탕으로 신청 양식 초안을 함께 작성하겠습니다.",
+            referenced_message_ids=[],
+            evidence=[],
+        )
+    else:
+        opening_message = build_roundtable_opening_message(
+            initial_idea_text or title,
+            round_number=state["round"],
+        )
 
     # 용준/Claude(2026-07-22, 요청: 선택된 아이디어를 target 문서로 생성) — 후보가 확정되는
     # 이 시점(사용자 API 호출이 끝나기 전, state에 selected_idea가 저장되는 것과 같은 노드

@@ -13,7 +13,9 @@ function authHeaders() {
 async function handleResponse(res) {
   const data = await res.json()
   if (!res.ok) {
-    throw new Error(data.detail || '아이디어 회의 프리뷰 요청에 실패했습니다.')
+    const error = new Error(data.detail || '아이디어 회의 프리뷰 요청에 실패했습니다.')
+    error.status = res.status
+    throw error
   }
   return data
 }
@@ -40,7 +42,8 @@ export async function startIdeationConversation({
       user_idea: userIdea,
       max_rounds: maxRounds,
       use_rag: useRag,
-      project_id: useRag ? projectId : undefined,
+      // MongoDB 회의 복원은 RAG 사용 여부와 무관하게 프로젝트 범위가 필요하다.
+      project_id: projectId || undefined,
       model: model || undefined,
       application_form_items: applicationFormItems || undefined,
     }),
@@ -143,7 +146,7 @@ export async function startIdeationConversationStream(
       user_idea: userIdea,
       max_rounds: maxRounds,
       use_rag: useRag,
-      project_id: useRag ? projectId : undefined,
+      project_id: projectId || undefined,
       model: model || undefined,
       application_form_items: applicationFormItems || undefined,
     }),
@@ -152,13 +155,14 @@ export async function startIdeationConversationStream(
   await readNdjsonStream(res, onEvent)
 }
 
-// 재인/Claude(2026-07-23, 아바타 페이싱 연동): POST /continue-turn/stream — 새 사용자
-// 발언 없이, 진행 중인 라운드에서 다음 위원(기획/개발) 발언 딱 1건만 더 요청한다. 아바타가
-// 방금 발언을 재생하는 도중(재생 끝나기 3초 전, avatarPacingTimer.js) "다음 위원 미리
-// 준비" 신호로 호출하는 용도 — message 필드가 아예 없다(reply와의 차이). 세션 phase가
-// "expert_discussion"이 아니면(라운드가 이미 끝났거나 진행자 차례로 넘어간 경우) 백엔드가
-// 400을 반환한다 — 호출부(IdeationConversationScreen)가 그 경우 그냥 무시하면 된다(다음
-// 라운드는 사용자의 실제 reply로 시작되므로).
+// 재인/Claude(2026-07-23, 아바타 페이싱 연동, 2026-07-24 갱신): POST /continue-turn/stream
+// — 새 사용자 발언 없이, 진행 중인 라운드에서 다음 위원(기획/개발) 발언 딱 1건만 더
+// 요청한다. message 필드가 아예 없다(reply와의 차이). 예전엔 아바타 재생 타이밍(재생
+// 끝나기 N초 전)에 맞춰 호출했지만, 이제는 아바타 재생과 무관하게 IdeationConversationScreen
+// 이 응답이 도착하는 즉시 곧바로 이어서 호출한다(텍스트를 미리 다 뽑아두는 방식으로
+// 전환 — avatarPacingTimer.js는 삭제됨). 세션 phase가 "expert_discussion"이 아니면
+// (라운드가 이미 끝났거나 진행자 차례로 넘어간 경우) 백엔드가 400을 반환한다 —
+// 호출부가 그 경우 그냥 무시하면 된다(다음 라운드는 사용자의 실제 reply로 시작되므로).
 export async function continueIdeationExpertTurnStream(sessionId, { model, signal, onEvent } = {}) {
   const res = await fetch(`${API_BASE_URL}/ideation-conversation/${sessionId}/continue-turn/stream`, {
     method: 'POST',
@@ -240,5 +244,13 @@ export async function getIdeationConversation(sessionId) {
   const res = await fetch(`${API_BASE_URL}/ideation-conversation/${sessionId}`, {
     headers: { ...authHeaders() },
   })
+  return handleResponse(res)
+}
+
+export async function getLatestIdeationConversation(projectId) {
+  const res = await fetch(`${API_BASE_URL}/ideation-conversation/project/${projectId}/latest`, {
+    headers: { ...authHeaders() },
+  })
+  if (res.status === 404) return null
   return handleResponse(res)
 }

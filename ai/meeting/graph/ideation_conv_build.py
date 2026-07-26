@@ -119,21 +119,16 @@ def _route_after_candidate_planning(state: IdeationConvState) -> str:
 
 
 def _route_after_candidate_selection(state: IdeationConvState) -> str:
-    """candidate_selection 노드가 반환한 phase/next_route를 보고 이번 요청 안에서 더
-    진행할지 정한다.
-    - next_route="to_refinement": 선택/결합/추천이 확정됐다 — 같은 요청 안에서 곧바로
-      refinement의 라운드테이블(planning_expert_discussion)까지 만든다(요청 4번, 사용자
-      왕복을 하나 아낀다). 용준/Claude(2026-07-22, 요청: "잠시만" 취소 중 phase 오염 수정) —
-      이전에는 이 신호를 phase="planning_question"으로 표현했지만, candidate_selection 직후
-      바로 이어지는 노드 실행 중 취소되면 그 내부 신호값이 그대로 세션에 저장돼 재개를
-      막았다. 이제 phase는 항상 canonical 상태("expert_discussion")를 유지한다.
-    - "candidate_generation"(phase 자체가 이미 정확한 canonical 진입 phase다): "다시 추천" —
-      같은 요청 안에서 후보를 다시 만든다.
-    - 그 외("awaiting_candidate_selection" 그대로거나 재추천 상한 도달 안내): 정지(END).
+    """후보 선택 결과와 신청 양식 유무에 따라 다음 노드를 고른다.
+
+    신청 양식이 있으면 진행자가 첫 문제 범위 선택지를 제시하고, 없으면 기존 전문가
+    라운드테이블로 진입한다. 재추천 요청은 후보 생성으로 돌아가며 나머지는 입력을 기다린다.
     """
     phase = state.get("phase")
     if phase == "failed":
         return "failed"
+    if state.get("next_route") == "to_refinement" and state.get("application_form_items"):
+        return "to_form_coach"
     if state.get("next_route") == "to_refinement":
         return "to_refinement"
     if phase == "candidate_generation":
@@ -288,10 +283,10 @@ def assemble_ideation_conversation_graph(
         "candidate_selection",
         _route_after_candidate_selection,
         {
-            # 용준/Claude(2026-07-21, 요청: 전문가 라운드테이블 전환) — 후보 확정 직후에도
-            # 1:1 인터뷰가 아니라 라운드테이블로 바로 들어간다(refinement 시작과 동일한
-            # 원칙). 안건 제시 메시지는 ideation_conv_discovery.py의 후보 확정 지점이
-            # build_roundtable_opening_message로 미리 붙여 둔다.
+            # 신청 양식이 있으면 전문가 토론 전에 진행자가 첫 문제 범위 선택지를 제시한다.
+            "to_form_coach": "discussion_facilitator",
+            # 신청 양식이 없는 기존 세션은 후보 확정 직후 라운드테이블로 바로 들어간다.
+            # 안내 메시지는 ideation_conv_discovery.py에서 미리 붙인다.
             "to_refinement": "planning_expert_discussion",
             "regenerate": "candidate_planning",
             "await_selection": END,
