@@ -32,8 +32,12 @@ _HWPTAG_PARA_TEXT = 67
 
 
 def _local_tag(tag: str) -> str:
-    """XML 네임스페이스 접두사를 제거하고 로컬 태그명만 반환 (예: '{ns}p' -> 'p')"""
-    return tag.rsplit("}", 1)[-1] if "}" in tag else tag
+    """XML 네임스페이스 접두사를 제거하고 로컬 태그명만 반환 (예: '{ns}p' -> 'p', 'hp:tbl' -> 'tbl')"""
+    if "}" in tag:
+        return tag.rsplit("}", 1)[-1]
+    if ":" in tag:
+        return tag.rsplit(":", 1)[-1]
+    return tag
 
 
 def _collect_paragraph_text(p_elem: ET.Element) -> str:
