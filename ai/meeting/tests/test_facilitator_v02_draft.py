@@ -91,8 +91,8 @@ def test_form_facilitator_contract_requires_all_four_visible_parts():
     draft = initialize_application_form_draft([{"field_name": "사업 목적"}])
     validate = _make_validate_form_facilitator_response(
         draft,
-        focus_phase="problem_definition",
-        next_phase="target_user",
+        focus_phase="form_field_1",
+        next_phase="form_field_2",
         prior_field_id=None,
     )
     payload = _valid_problem_facilitator_payload()
@@ -107,9 +107,10 @@ def test_early_facilitator_phase_rejects_downstream_technical_question():
     draft = initialize_application_form_draft([{"field_name": "사업 목적"}])
     validate = _make_validate_form_facilitator_response(
         draft,
-        focus_phase="problem_definition",
-        next_phase="target_user",
+        focus_phase="form_field_1",
+        next_phase="form_field_2",
         prior_field_id=None,
+        is_session_first_turn=True,
     )
     payload = _valid_problem_facilitator_payload()
     payload["user_question"] = "데이터 수집 인프라는 어떻게 구축할 예정인가요?"
@@ -152,8 +153,8 @@ def test_facilitator_rejects_generic_question_reused_across_ideas():
     draft = initialize_application_form_draft([{"field_name": "사업 목적"}])
     validate = _make_validate_form_facilitator_response(
         draft,
-        focus_phase="problem_definition",
-        next_phase="target_user",
+        focus_phase="form_field_1",
+        next_phase="form_field_2",
         prior_field_id=None,
         context_anchors=["교통"],
     )
@@ -168,8 +169,8 @@ def test_facilitator_question_must_name_selected_idea_context():
     draft = initialize_application_form_draft([{"field_name": "사업 목적"}])
     validate = _make_validate_form_facilitator_response(
         draft,
-        focus_phase="problem_definition",
-        next_phase="target_user",
+        focus_phase="form_field_1",
+        next_phase="form_field_2",
         prior_field_id=None,
         context_anchors=["교통"],
     )
@@ -192,17 +193,19 @@ def test_facilitator_validation_failure_has_contextual_non_failing_fallback():
     )
     fallback = _form_facilitator_fallback_payload(
         draft,
-        focus_phase="problem_definition",
+        focus_phase="form_field_2",
         prior_field_id=None,
         context_anchors=["교통"],
         selected_idea={"problem": "출퇴근 교통 혼잡으로 이동 시간이 길어지는 문제"},
+        is_session_first_turn=True,
     )
     validate = _make_validate_form_facilitator_response(
         draft,
-        focus_phase="problem_definition",
-        next_phase="target_user",
+        focus_phase="form_field_2",
+        next_phase="form_field_3",
         prior_field_id=None,
         context_anchors=["교통"],
+        is_session_first_turn=True,
     )
 
     assert fallback["current_field_id"] == "form_field_2"
@@ -227,7 +230,14 @@ def test_candidate_selection_starts_with_form_coach_when_form_exists():
     assert _route_after_candidate_selection(state) == "to_refinement"
 
 
-def test_early_form_phase_returns_planning_review_to_facilitator():
+def test_form_phase_label_no_longer_gates_dev_expert_participation():
+    """2026-07-26 라운드테이블 재설계: 예전엔 진행자의 structured.phase가 고정 9단계 중
+    앞의 두 단계("problem_definition"/"target_user")일 때 기획 검토 뒤 dev_expert를
+    건너뛰고 바로 facilitator로 돌려보냈다. 이제 그 게이트는 삭제됐다 — "전문가 발언 없이
+    진행자 혼자 묻는" 턴(고정 문제정의 확인 턴)은 라우터가 호출되기도 전에
+    discussion_facilitator가 처리하고 끝내므로, 이 라우터는 항상 "전문가가 이번 주제에
+    대해 최소 1회는 말한 뒤"에만 불린다 — phase 라벨과 무관하게 recommended_next_speaker를
+    그대로 따라야 한다."""
     state = {
         "session_id": "TEST-SESSION",
         "phase": "expert_discussion",
@@ -235,7 +245,7 @@ def test_early_form_phase_returns_planning_review_to_facilitator():
         "messages": [
             {
                 "speaker_id": "ideation_facilitator",
-                "structured": {"phase": "problem_definition"},
+                "structured": {"current_field_id": "form_field_1"},
             },
             {
                 "speaker_id": "planning_expert",
@@ -252,9 +262,6 @@ def test_early_form_phase_returns_planning_review_to_facilitator():
         "counterpart_review_completed": True,
     }
 
-    assert _route_next_expert_turn(state) == "facilitator"
-
-    state["messages"][0]["structured"]["phase"] = "solution_context"
     assert _route_next_expert_turn(state) == "dev_expert"
 
 
@@ -279,8 +286,10 @@ def test_facilitator_v02_prompt_receives_form_draft_and_latest_user_answer():
             }
         ],
         latest_user_answer="사용자가 방금 제공한 내용",
-        required_phase="problem_definition",
-        next_phase_if_confirmed="target_user",
+        remaining_form_fields=[
+            {"field_id": "form_field_1", "field_name": "동적 양식 항목", "description": ""}
+        ],
+        meeting_stage_hint="form_filling",
         context_anchors=["교통", "출퇴근"],
         recent_messages=[
             {
@@ -326,7 +335,8 @@ def test_facilitator_v02_prompt_receives_form_draft_and_latest_user_answer():
     assert "어느 하나만 보고 전문가 의견을 요약하지 않는다" in prompt
     assert "<<APPLICATION_FORM_DRAFT_JSON>>" not in prompt
     assert "<<RECENT_MESSAGES_JSON>>" not in prompt
-    assert "<<REQUIRED_PHASE>>" not in prompt
-    assert "[코드가 지정한 이번 단계 required_phase]\nproblem_definition" in prompt
+    assert "<<REMAINING_FORM_FIELDS_JSON>>" not in prompt
+    assert "<<MEETING_STAGE_HINT>>" not in prompt
+    assert "meeting_stage_hint" in prompt.lower() or "form_filling" in prompt
     assert '"교통"' in prompt
     assert "<<CONTEXT_ANCHORS_JSON>>" not in prompt

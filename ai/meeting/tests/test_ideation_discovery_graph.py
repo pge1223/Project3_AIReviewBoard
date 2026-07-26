@@ -26,6 +26,10 @@ from graph.ideation_conv_discovery import make_candidate_selection_node  # noqa:
 from graph.ideation_conv_nodes import make_conv_question_node  # noqa: E402
 from graph.ideation_conv_run import _new_user_message  # noqa: E402
 from graph.ideation_conv_state import apply_user_answer  # noqa: E402
+from prompts import (  # noqa: E402
+    build_ideation_conv_candidate_feasibility_prompt,
+    build_ideation_conv_candidate_planning_prompt,
+)
 
 _REMAINING_TOPICS_RE = re.compile(
     r"\[아직 확인되지 않은 주제\(우선순위 순\) remaining_topics\]\n(.*?)\n\n", re.S
@@ -48,6 +52,31 @@ CANVAS_STUB_RESPONSE = json.dumps(
     },
     ensure_ascii=False,
 )
+
+
+def test_candidate_novelty_prompt_is_enabled_by_default(monkeypatch):
+    monkeypatch.delenv("IDEATION_NOVELTY_PROMPT_ENABLED", raising=False)
+
+    planning = build_ideation_conv_candidate_planning_prompt({}, [], [], None)
+    feasibility = build_ideation_conv_candidate_feasibility_prompt({}, [], [])
+
+    assert "[참신성 강화 규칙" in planning
+    assert '"innovation_axis": "string"' in planning
+    assert '"novel_mechanism": "string"' in planning
+    assert "[참신성 보존 검토" in feasibility
+    assert '"novelty_preservation": "string"' in feasibility
+
+
+def test_candidate_novelty_prompt_can_be_rolled_back_with_env(monkeypatch):
+    monkeypatch.setenv("IDEATION_NOVELTY_PROMPT_ENABLED", "false")
+
+    planning = build_ideation_conv_candidate_planning_prompt({}, [], [], None)
+    feasibility = build_ideation_conv_candidate_feasibility_prompt({}, [], [])
+
+    assert "[참신성 강화 규칙" not in planning
+    assert '"innovation_axis": "string"' not in planning
+    assert "[참신성 보존 검토" not in feasibility
+    assert '"novelty_preservation": "string"' not in feasibility
 
 
 def _selection_context_from_prompt(prompt: str) -> dict:

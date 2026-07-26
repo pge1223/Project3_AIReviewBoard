@@ -111,6 +111,7 @@ const ADMINISTRATIVE_FIELD_KEYWORDS = [
   '담당자', '성명', '전화', '이메일', '메일', '팩스', '홈페이지',
   '사업자등록번호', '법인등록번호', '부서', '직위', '대표자',
   '신청 기관', '신청기관', '도시명', '주소', '기업(법인)명',
+  '설립연도', '매출액', '매출', '경영실적', '자본금', '종업원', '고용 인원',
 ]
 
 export function isAdministrativeFormField(fieldName) {
@@ -125,14 +126,14 @@ export function isAdministrativeFormField(fieldName) {
 // "dev_expert"/"ideation_facilitator"/"user" 고정값으로 넘긴다)와
 // ai/meeting/tests/test_ideation_conv_graph.py·test_ideation_discovery_graph.py의 스크립트
 // 스텁이 검증하는 값 그대로다. badgeClass는 ReviewBoardPrototype.jsx Shell이 이미 정의한
-// .badge.purple/.green 클래스를 재사용한다. 개발 위원만 "파랑 계열" 요청(2026-07-25)에
+// .badge.purple/.green/.grey 클래스를 재사용한다. 개발 위원만 "파랑 계열" 요청(2026-07-25)에
 // 맞춰 .badge.blue를 IdeationConversationScreen.jsx의 페이지 스코프 <style>에 추가했다 —
 // Shell(ReviewBoardPrototype.jsx, 공용 파일)은 건드리지 않는다.
 export const SPEAKER_META = {
   planning_expert: { label: '기획 위원', badgeClass: 'purple', align: 'left' },
   dev_expert: { label: '개발 위원', badgeClass: 'blue', align: 'left' },
   ideation_facilitator: { label: '진행자', badgeClass: 'green', align: 'left' },
-  user: { label: '나', badgeClass: null, align: 'right' },
+  user: { label: '사용자', badgeClass: 'grey', align: 'right' },
 }
 
 export function speakerMetaFor(message) {
