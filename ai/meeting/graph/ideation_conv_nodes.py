@@ -43,6 +43,7 @@ from .ideation_conv_state import (
     IdeationConvState,
     remaining_topics_for,
 )
+from .ideation_llm_log import log_llm_response
 from .ideation_nodes import EvidenceLookup, _safe_call_json, call_evidence_lookup
 from .ideation_trace import sanitize_preview, trace_event
 from .llm import LLMCall, parse_json_response
@@ -344,8 +345,9 @@ def _safe_call_structured_json(
         attempt_prompt = prompt
         if attempt > 1 and retry_note_for is not None:
             attempt_prompt += retry_note_for(last_reason)
+        llm_text = llm_call(attempt_prompt)
         try:
-            raw = parse_json_response(llm_call(attempt_prompt))
+            raw = parse_json_response(llm_text)
         except (ValueError, KeyError, TypeError):
             last_reason = "json_parse_failed"
             trace_event(
@@ -355,12 +357,16 @@ def _safe_call_structured_json(
                 reason=last_reason,
                 will_retry=attempt < 2,
             )
+            log_llm_response(
+                node_name=node_name, attempt=attempt, ok=False, reason=last_reason, raw_response=llm_text
+            )
             discard = getattr(llm_call, "discard_streamed_prompt", None)
             if callable(discard):
                 discard(attempt_prompt, last_reason, attempt < 2)
             continue
         problem = validate(raw)
         if problem is None:
+            log_llm_response(node_name=node_name, attempt=attempt, ok=True, reason=None, raw_response=llm_text)
             return raw, True, attempt
         last_reason = problem
         trace_event(
@@ -369,6 +375,9 @@ def _safe_call_structured_json(
             attempt=attempt,
             reason=last_reason,
             will_retry=attempt < 2,
+        )
+        log_llm_response(
+            node_name=node_name, attempt=attempt, ok=False, reason=last_reason, raw_response=llm_text
         )
         discard = getattr(llm_call, "discard_streamed_prompt", None)
         if callable(discard):
@@ -1732,10 +1741,17 @@ def _make_validate_form_facilitator_response(
         if _blank(raw.get("user_question")):
             return "missing_or_empty_field:user_question"
         is_turn_one_anchor = is_session_first_turn
-        if is_turn_one_anchor:
-            choice_labels = _choice_labels(raw.get("choices"))
-            if not 2 <= len(choice_labels) <= 4:
-                return "initial_problem_turn_requires_two_to_four_choices"
+        # 가은/Claude(2026-07-27, 요청: "선택지 없이 직접 입력만 하는 진행 방식 없애기") —
+        # 예전엔 세션 첫 턴에만 선택지 개수를 강제해, 그 이후 턴은 LLM이 choices=[]를
+        # 반환해도 검증을 통과했다(안내 문구는 "기본적으로 만든다"였지만 코드가 강제하지
+        # 않았다). await_user_decision인 턴은 첫 턴 여부와 무관하게 항상 2~4개를 요구한다.
+        choice_labels = _choice_labels(raw.get("choices"))
+        if not 2 <= len(choice_labels) <= 4:
+            return (
+                "initial_problem_turn_requires_two_to_four_choices"
+                if is_turn_one_anchor
+                else "facilitator_question_requires_two_to_four_choices"
+            )
 
         confirms_prior_field = any(
             isinstance(patch, dict)
@@ -1880,6 +1896,17 @@ def _form_facilitator_fallback_payload(
         if problem:
             choices.append({"id": "problem_hypothesis", "label": problem[:80]})
         choices.append({"id": "direct_input", "label": "다른 문제를 직접 입력"})
+    else:
+        # 가은/Claude(2026-07-27, 요청: "선택지 없이 직접 입력만 하는 턴 없애기") — 이
+        # 안전망도 첫 턴처럼 항상 2개 이상의 선택지를 준다. 필드에 이미 초안 값이 있으면
+        # 그 값을 그대로 선택지 하나로 제시하고, 없으면 위원 제안을 참고하겠다는 일반
+        # 선택지를 쓴다.
+        existing_value = str(current_row.get("value") or "").strip()
+        if existing_value:
+            choices.append({"id": "keep_current_draft", "label": existing_value[:80]})
+        else:
+            choices.append({"id": "follow_expert_suggestion", "label": "위원 제안을 참고해서 정리"})
+        choices.append({"id": "direct_input", "label": "직접 입력"})
     confirmed_content = (
         str(current_row.get("value") or "").strip()
         if current_row.get("status") == "confirmed"
@@ -2482,7 +2509,7 @@ def judge_answer_sufficiency(
         user_idea,
         idea_candidates,
     )
-    raw, ok = _safe_call_json(llm_call, prompt)
+    raw, ok = _safe_call_json(llm_call, prompt, node_name="answer_sufficiency")
     if not ok or raw is None:
         return {
             "answer_type": "answer",
@@ -2920,7 +2947,7 @@ _VALID_NEXT_SPEAKERS = {"planning_expert", "dev_expert", "ideation_facilitator",
 MIN_EXPERT_TURNS_PER_ISSUE = 1
 MAX_EXPERT_TURNS_PER_ISSUE = 3
 MIN_EXPERT_TURNS_PER_ROUND = 2
-MAX_EXPERT_TURNS_PER_ROUND = 10
+MAX_EXPERT_TURNS_PER_ROUND = 4
 
 # 2026-07-26 라운드테이블 재설계 — "아이디어 성숙도 게이트": 신청서가 있는 세션도 후보
 # 선택 직후 바로 필드 채우기로 들어가지 않고, 몇 바퀴는 자유롭게 아이디어를 구체화한 뒤에만
@@ -5948,10 +5975,23 @@ def _validate_canvas_response(raw: dict) -> str | None:
     return None
 
 
+_CANVAS_UPDATE_ROUND_INTERVAL = 3
+
+
 def make_canvas_update_node(llm_call: LLMCall) -> Callable[[IdeationConvState], dict]:
-    """라운드 종료 뒤 캔버스를 갱신한다. 실패해도 회의 상태는 실패로 바꾸지 않는다."""
+    """라운드 종료 뒤 캔버스를 갱신한다. 실패해도 회의 상태는 실패로 바꾸지 않는다.
+
+    가은/Claude(2026-07-27, 요청: 사용자 턴당 LLM 호출 체인이 길어 응답이 느리다는
+    피드백 — 캔버스는 보조 표시 계층일 뿐이라 매 라운드 갱신할 필요가 없다) —
+    _CANVAS_UPDATE_ROUND_INTERVAL 라운드마다만 실제로 LLM을 호출하고, 그 사이
+    라운드는 직전 idea_canvas 값을 그대로 유지한다(round=1은 세션 초반부터 캔버스가
+    빈 채로 남지 않도록 항상 갱신한다)."""
 
     def node(state: IdeationConvState) -> dict:
+        round_number = state.get("round", 1)
+        if round_number != 1 and (round_number - 1) % _CANVAS_UPDATE_ROUND_INTERVAL != 0:
+            return {}
+
         prompt = build_ideation_conv_canvas_update_prompt(
             state.get("idea_canvas"),
             state.get("selected_idea"),
@@ -6011,7 +6051,7 @@ def make_conv_synthesis_node(llm_call: LLMCall) -> Callable[[IdeationConvState],
             state["unresolved_issues"],
             discovery_history=discovery_history,
         )
-        raw, ok = _safe_call_json(llm_call, prompt)
+        raw, ok = _safe_call_json(llm_call, prompt, node_name="conv_synthesis")
         used = state.get("llm_calls_used", 0) + 1
         if not ok:
             return {"phase": "failed", "failed_node": "conv_synthesis", "llm_calls_used": used}

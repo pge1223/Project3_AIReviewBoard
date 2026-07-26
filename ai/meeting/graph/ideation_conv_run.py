@@ -23,7 +23,6 @@ from .ideation_conv_nodes import (
     REVISION_TRIGGER_STANCES,
     _route_next_expert_turn,
     _runtime_scope_for,
-    _safe_call_structured_json,
     conversation_context_for,
     generate_expert_delegation_facilitator_recommendation,
     generate_expert_delegation_proposal,
@@ -47,7 +46,7 @@ from .ideation_conv_state import (
     request_finalize,
 )
 from .ideation_trace import sanitize_preview, trace_event
-from .llm import LLMCall
+from .llm import LLMCall, parse_json_response
 
 IdeationConvProgressCallback = Callable[[dict], None]
 
@@ -971,6 +970,83 @@ def finalize_ideation_conversation(
     return _drive_graph(graph, state, on_progress, on_snapshot)
 
 
+# 가은/Claude(2026-07-27, 버그 리포트: "target_fields 26개 세션에서 LLM이 매번 11~15개만
+# 채우고 나머지를 빠뜨림") — 필드 수가 많을수록 "한 번의 JSON 응답에 전부 빠짐없이"라는
+# 요구 자체가 안 지켜지는 빈도가 늘어난다. 한 번에 요청하는 필드 수를 이 상한으로 쪼갠다.
+_FORM_DRAFT_BATCH_SIZE = 10
+
+
+def _chunked(items: list[dict], size: int) -> list[list[dict]]:
+    return [items[i : i + size] for i in range(0, len(items), size)]
+
+
+def _fill_form_draft_batch(
+    *,
+    llm_call: LLMCall,
+    notice_and_criteria: Any,
+    idea_proposal: Any,
+    working_draft: list[dict],
+    batch: list[dict],
+    session_id: str | None,
+) -> tuple[list[dict], int, list[str], int]:
+    """batch(최대 _FORM_DRAFT_BATCH_SIZE개 필드)를 채운다. 요청 제안 2번("전부 아니면 실패
+    대신 채워진 필드는 그대로 적용하고 누락분만 재시도") 그대로 — _safe_call_structured_json은
+    검증 실패 시 raw 자체를 버리므로(all-or-nothing 계약) 여기서는 쓰지 않고, 채워진 필드는
+    즉시 적용한 뒤 다음 시도에서 남은 필드만 다시 요청한다. 반환값은
+    (updated_working_draft, applied_count, supplement_notes, attempts_used)."""
+    remaining = list(batch)
+    applied_count = 0
+    supplement_notes: list[str] = []
+    attempts_used = 0
+
+    for attempt in range(2):  # 최초 1회 + 누락분 재시도 1회(요청 10번과 동일한 상한 정책)
+        if not remaining:
+            break
+        remaining_ids = {str(row.get("field_id")) for row in remaining}
+        prompt = build_ideation_conv_form_draft_prompt(
+            notice_and_criteria, idea_proposal, working_draft, remaining
+        )
+        attempts_used += 1
+        try:
+            raw = parse_json_response(llm_call(prompt))
+        except (ValueError, KeyError, TypeError):
+            trace_event(
+                "IDEATION_FORM_DRAFT_BATCH_PARSE_FAILED",
+                level=30,
+                session_id=session_id,
+                attempt=attempt + 1,
+                batch_field_count=len(remaining),
+            )
+            continue
+
+        patch = raw.get("draft_patch") if isinstance(raw, dict) else None
+        if isinstance(patch, list):
+            working_draft, applied = apply_application_form_draft_patch(
+                working_draft, patch, confirmable_field_ids=remaining_ids
+            )
+            applied_ids = {row["field_id"] for row in applied}
+            for row in working_draft:
+                if row.get("field_id") in applied_ids:
+                    row["status"] = "confirmed"
+            applied_count += len(applied)
+            remaining = [row for row in remaining if str(row.get("field_id")) not in applied_ids]
+        if isinstance(raw, dict):
+            supplement_notes.extend(
+                note.strip()
+                for note in (raw.get("needs_supplementation") or [])
+                if isinstance(note, str) and note.strip()
+            )
+        trace_event(
+            "IDEATION_FORM_DRAFT_BATCH_PROGRESS",
+            session_id=session_id,
+            attempt=attempt + 1,
+            requested_field_count=len(remaining_ids),
+            still_missing_field_count=len(remaining),
+        )
+
+    return working_draft, applied_count, supplement_notes, attempts_used
+
+
 def generate_application_form_draft(
     *,
     previous_state: IdeationConvState,
@@ -980,6 +1056,13 @@ def generate_application_form_draft(
     페이지로 하나 띄워주자") — 주제가 확정된(phase="finalized") 세션에서, 사용자가 회의 중
     선택한 신청양식 항목(application_form_items) 중 아직 대화로 확정되지 않은 필드를
     idea_proposal(방금 만든 종합 결과)을 근거로 문서체로 채운다.
+
+    가은/Claude(2026-07-27, 버그 리포트 반영) — target_fields가 많은 세션(예: 26개)에서
+    한 번의 JSON 응답에 전부 채우라고 요구하면 매 시도 다른 필드 조합이 빠지는 문제가
+    있었다. _FORM_DRAFT_BATCH_SIZE 단위로 나눠 호출하고, 배치 안에서도 채워진 필드는 그대로
+    적용한 뒤 누락분만 재시도한다(제안 1·2번 모두 반영) — 그래도 못 채운 필드는 status가
+    "empty"로 남을 뿐 요청 전체를 실패시키지 않는다. remaining_content_fields()가 매번
+    현재 draft에서 다시 계산하므로, 사용자가 버튼을 다시 누르면 그때 남은 필드만 대상이 된다.
 
     LangGraph 노드가 아니라 독립 함수다 — 그래프 라운드 진행과 무관한 1회성 후처리라
     ideation_conv_build.py의 그래프 구조(다른 담당자가 계속 손대는 중인 라운드테이블
@@ -998,69 +1081,45 @@ def generate_application_form_draft(
         # 이미 대화 중 전부 확정됐다 — 새로 만들 것 없이 현재 상태 그대로 반환.
         return previous_state
 
-    prompt = build_ideation_conv_form_draft_prompt(
-        previous_state["notice_and_criteria"],
-        previous_state.get("idea_proposal"),
-        current_draft,
-        target_fields,
-    )
-    target_ids = {str(row.get("field_id")) for row in target_fields}
+    session_id = previous_state.get("session_id")
+    working_draft = current_draft
+    used = previous_state.get("llm_calls_used", 0)
+    total_applied = 0
+    supplement_notes: list[str] = []
 
-    def validate(raw: dict) -> str | None:
-        patch = raw.get("draft_patch")
-        if not isinstance(patch, list):
-            return "missing_or_empty_field:draft_patch"
-        patched_ids = {
-            str(item.get("field_id"))
-            for item in patch
-            if isinstance(item, dict) and str(item.get("value") or "").strip()
-        }
-        missing = target_ids - patched_ids
-        if missing:
-            return "missing_field_values:" + ",".join(sorted(missing))
-        return None
+    for batch in _chunked(target_fields, _FORM_DRAFT_BATCH_SIZE):
+        working_draft, applied_count, batch_notes, attempts_used = _fill_form_draft_batch(
+            llm_call=llm_call,
+            notice_and_criteria=previous_state["notice_and_criteria"],
+            idea_proposal=previous_state.get("idea_proposal"),
+            working_draft=working_draft,
+            batch=batch,
+            session_id=session_id,
+        )
+        used += attempts_used
+        total_applied += applied_count
+        supplement_notes.extend(batch_notes)
 
-    raw, ok, attempts = _safe_call_structured_json(llm_call, prompt, validate, "form_draft_finalize")
-    used = previous_state.get("llm_calls_used", 0) + attempts
-    if not ok:
+    if total_applied == 0:
         trace_event(
             "IDEATION_FORM_DRAFT_GENERATION_FAILED",
             level=30,
-            session_id=previous_state.get("session_id"),
+            session_id=session_id,
             target_field_count=len(target_fields),
         )
         raise RuntimeError("신청서 초안 생성에 실패했습니다. 다시 시도해 주세요.")
 
-    updated_draft, applied = apply_application_form_draft_patch(
-        current_draft, raw.get("draft_patch"), confirmable_field_ids=target_ids
-    )
-    # 이 단계는 대화가 아니라 확정된 종합 결과를 근거로 쓰는 1회성 마무리 작성이므로,
-    # 적용된 필드는 곧바로 confirmed로 승격한다(draft_patch 원소에 status가 없으면
-    # apply_application_form_draft_patch 기본값이 "draft"라 여기서 다시 한 번 승격한다).
-    applied_ids = {row["field_id"] for row in applied}
-    for row in updated_draft:
-        if row.get("field_id") in applied_ids:
-            row["status"] = "confirmed"
-    # 가은/Claude(2026-07-27, 요청: "보완이 필요한 정보 섹션") — 본문에 넣지 못한(입력에
-    # 없어서 지어낼 수 없었던) 항목을 별도로 남긴다. 이번 호출로 새로 생성한 값을 그대로
-    # 대체한다(누적하지 않는다) — 재생성하면 그 사이 사용자가 채운 값 때문에 더 이상
-    # 유효하지 않은 예전 보완 요청이 남아있으면 안 되기 때문이다.
-    supplement_notes = [
-        note.strip()
-        for note in (raw.get("needs_supplementation") or [])
-        if isinstance(note, str) and note.strip()
-    ]
     trace_event(
         "IDEATION_FORM_DRAFT_GENERATED",
-        session_id=previous_state.get("session_id"),
+        session_id=session_id,
         target_field_count=len(target_fields),
-        applied_field_count=len(applied),
+        applied_field_count=total_applied,
         supplement_note_count=len(supplement_notes),
     )
     return IdeationConvState(
         **{
             **previous_state,
-            "application_form_draft": updated_draft,
+            "application_form_draft": working_draft,
             "application_form_supplement_notes": supplement_notes,
             "llm_calls_used": used,
         }
