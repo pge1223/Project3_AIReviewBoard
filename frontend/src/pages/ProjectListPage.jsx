@@ -291,6 +291,7 @@ const styles = {
   page: {
     minHeight: '100vh',
     display: 'flex',
+    justifyContent: 'center',
     background:
       'radial-gradient(1100px 600px at 12% -10%, rgba(124,92,234,0.10), transparent 60%), ' +
       'radial-gradient(900px 500px at 100% 10%, rgba(22,163,122,0.07), transparent 55%), ' +

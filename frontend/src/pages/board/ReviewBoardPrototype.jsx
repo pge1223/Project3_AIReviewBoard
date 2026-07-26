@@ -875,6 +875,7 @@ function EvaluationCriteriaSummary({ groups, expanded, onToggle }) {
                 {allItems.slice(0, 4).map((item, i) => (
                   <div key={i} className="cas-criteria-chip">
                     <span>{item.name}</span>
+                    {item.score != null && <span className="cas-criteria-item-score">{item.score}점</span>}
                   </div>
                 ))}
                 {allItems.length > 4 && <div className="cas-criteria-more">+{allItems.length - 4}개 항목</div>}
@@ -895,6 +896,7 @@ function EvaluationCriteriaSummary({ groups, expanded, onToggle }) {
                       {group.items.map((item, i) => (
                         <div key={i} className="cas-criteria-chip">
                           <span>{item.name}</span>
+                          {item.score != null && <span className="cas-criteria-item-score">{item.score}점</span>}
                         </div>
                       ))}
                     </div>
@@ -1517,6 +1519,7 @@ function AnalysisScreen({ mode, onNext, onBack, projectId }) {
         .cas-criteria-chips{ display:flex; flex-wrap:wrap; gap:8px; }
         .cas-criteria-chip{ display:flex; align-items:center; gap:8px; background:var(--bg-2); border-radius:10px; padding:8px 12px; font-size:15px; }
         .cas-criteria-score{ color:var(--purple); font-size:14px; }
+        .cas-criteria-item-score{ color:var(--purple); font-size:13px; font-weight:700; font-variant-numeric:tabular-nums; white-space:nowrap; }
         .cas-criteria-more{ display:flex; align-items:center; font-size:15px; color:var(--text-2); padding:8px 4px; }
         .cas-criteria-groups{ display:flex; flex-direction:column; gap:14px; }
         .cas-criteria-group-name{ font-size:15px; font-weight:700; margin-bottom:6px; }

@@ -290,12 +290,6 @@ function FacilitatorSummaryCard({ structured }) {
 function MessageBubble({ message, streaming = false, interrupted = false, allMessages = [], isLatest = false }) {
   const meta = speakerMetaFor(message)
   const isRight = meta.align === 'right'
-  const accentColor = {
-    ideation_facilitator: '#16a37a',
-    planning_expert: '#7c5cea',
-    dev_expert: '#3b82f6',
-    user: '#7c5cea',
-  }[message.speaker_id] || '#7c5cea'
   // 스트리밍 중인 말풍선은 displayedContent(타이핑 큐가 드러낸 만큼)만 보여준다 —
   // content(서버에서 실제로 받은 전체 텍스트)를 그대로 쓰면 델타가 도착하는 순간
   // 문장이 통째로 튀어나와 타이핑 효과가 사라진다. canonical(완료된) 메시지는
@@ -347,8 +341,7 @@ function MessageBubble({ message, streaming = false, interrupted = false, allMes
         <div
           style={{
             background: isRight ? 'var(--purple-dim)' : 'var(--bg-1)',
-            border: isLatest ? `1px solid ${accentColor}66` : '1px solid var(--glass-border)',
-            borderLeft: isLatest ? `4px solid ${accentColor}` : undefined,
+            border: '1px solid var(--glass-border)',
             borderRadius: 12,
             padding: '12px 15px',
             color: 'var(--text-0)',
@@ -356,6 +349,7 @@ function MessageBubble({ message, streaming = false, interrupted = false, allMes
             fontWeight: 500,
             lineHeight: 1.7,
             whiteSpace: 'pre-wrap',
+            wordBreak: 'keep-all',
             boxShadow: isLatest ? '0 4px 14px rgba(28,26,46,0.06)' : 'none',
             opacity: interrupted || isReviewing ? 0.6 : 1,
           }}
