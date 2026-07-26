@@ -1093,8 +1093,9 @@ function AiFeedbackPanel({ findings, format, missingVersion }) {
   }
   return (
     <>
-      <FormatSummary format={format} />
+      {/* '중요한 정보'는 패널 맨 위(AI 피드백 탭 버튼 바로 아래)에 — 경이 위치 지정 2026-07-27 */}
       <ImportantInfoTab />
+      <FormatSummary format={format} />
       <div className="card glass" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', borderLeft: '4px solid #16a37a', marginBottom: 16, padding: '16px 20px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <span style={{ width: 42, height: 42, borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(22,163,122,0.12)', color: '#16a37a' }}>
