@@ -83,6 +83,11 @@ class Settings(BaseSettings):
     IDEATION_TRACE_CONTENT_MAX_CHARS: int = 500
     IDEATION_TRACE_STREAM_DELTAS: bool = False
 
+    # 가은/Claude(2026-07-27, 요청: "검증 실패까지 포함한 LLM 원본 응답을 로그로 남겨서
+    # 버그 재현") — 위 trace 로그와 달리 마스킹 없이 LLM 원본 응답 전체를 로컬
+    # logs/ideation_llm_calls/*.txt에 남긴다. 원본 그대로라 운영 기본값은 항상 False다.
+    ENABLE_IDEATION_LLM_RESPONSE_LOG: bool = False
+
     # 용준/Claude(2026-07-22, 요청: RAG 품질 오프라인 평가 도구): Faithfulness/Persona
     # Evidence Fit LLM-as-judge 전용 모델. 실제 답변을 생성하는 모델(DEV_LLM_REVIEWER_MODEL
     # 등)과 분리해 둔다 — 평가자가 생성자와 같은 모델·같은 편향을 공유하지 않도록 하기
