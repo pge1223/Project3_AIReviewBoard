@@ -41,7 +41,11 @@ export function pollDocumentIndexing(pid, documentId, rowId, contentStatus, cont
       }
       clearInterval(timer)
       if (statusResult.status === 'indexing_failed') {
-        updateDoc(rowId, { status: 'error', progress: 100, meta: '문서 색인 중 오류가 발생했습니다.' })
+        updateDoc(rowId, {
+          status: 'error',
+          progress: 100,
+          meta: statusResult.indexing_error?.message || '문서 색인 중 오류가 발생했습니다.',
+        })
       } else if (statusResult.status === 'indexing_timeout') {
         updateDoc(rowId, {
           status: 'error',

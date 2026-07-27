@@ -24,6 +24,7 @@ class DocumentResponse(BaseModel):
     # 가은/Claude(2026-07-16): HWP/HWPX 변환 결과(성공/실패/불필요) — 프론트가 실패 시
     # conversion_metadata.conversion_error(user_message)를 그대로 보여준다.
     conversion_metadata: Optional[dict] = None
+    indexing_error: Optional[dict] = None
     # 가은/Claude(2026-07-18): URL 공고문 수집 시 발견됐지만 자동으로 못 읽은 첨부파일
     # (HWP/HWPX) — 프론트가 "직접 받아서 파일 업로드 탭으로 올려주세요" 안내 + 다운로드
     # 링크를 보여준다. [{"url", "file_name", "reason"}]

@@ -172,15 +172,11 @@ function AvatarTileFrame({ speakerId, videoRefs, speaking, statusText, style }) 
           </span>
         )}
       </div>
-      <div style={{ marginTop: 6, minHeight: 18 }}>
-        {statusText && !hasError ? (
+      {statusText && !hasError && (
+        <div style={{ marginTop: 6, minHeight: 18 }}>
           <span style={{ fontSize: 14, fontWeight: 500, color: '#625d72' }}>{statusText}</span>
-        ) : (
-          <span style={{ fontSize: 14, fontWeight: 500, color: '#625d72' }}>
-            {speaking ? '실시간 발언 중' : '대기 중'}
-          </span>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   )
 }

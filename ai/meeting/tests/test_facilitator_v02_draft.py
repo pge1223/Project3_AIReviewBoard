@@ -118,7 +118,7 @@ def test_early_facilitator_phase_rejects_downstream_technical_question():
     assert validate(payload) == "downstream_technical_topic_before_problem_target_context"
 
 
-def test_form_facilitator_text_is_composed_from_the_four_required_parts():
+def test_form_facilitator_text_hides_empty_confirmation_marker():
     content = _compose_form_facilitator_text(
         "사업 목적",
         "아직 없음",
@@ -127,7 +127,8 @@ def test_form_facilitator_text_is_composed_from_the_four_required_parts():
     )
 
     assert "사업 목적" in content
-    assert "아직 없음" in content
+    assert "지금까지 확정된 내용: 아직 없음" not in content
+    assert "아직 없음" not in content
     assert "평가 기준" in content
     assert "누가 어떤 상황" in content
     assert len(content.splitlines()) == 3
@@ -279,8 +280,6 @@ def test_form_phase_label_no_longer_gates_dev_expert_participation():
         "expert_turn_count": 1,
         "open_issues": [{"issue_id": "issue-1", "turns": 1}],
         "active_issue_id": "issue-1",
-        "required_counterpart_speaker_id": None,
-        "counterpart_review_completed": True,
     }
 
     assert _route_next_expert_turn(state) == "dev_expert"

@@ -4,8 +4,8 @@
 #       다시 만들어지는지 검증한다.
 #
 #       실제 버그: ReplyRequest 스키마에 use_rag/project_id가 없고, 세션에도 저장하지
-#       않아서 reply_ideation_conversation()/reply_to_interjection()이 evidence_lookup을
-#       항상 기본값(None)으로 호출받았다 — /start에서 만든 후보 생성 단계까지만 RAG가
+#       않아서 reply_ideation_conversation()이 evidence_lookup을 항상 기본값(None)으로
+#       호출받았다 — /start에서 만든 후보 생성 단계까지만 RAG가
 #       실제로 호출되고, 그 이후 모든 회의 턴(전문가 라운드테이블 discussion)은 RAG 검색
 #       없이 진행됐다(로그의 elapsed_ms=0, chunk_ids=[] 전부가 이 경로였다).
 #
@@ -183,9 +183,8 @@ def test_reply_reuses_use_rag_and_project_id_from_start(client: TestClient, monk
 
 
 def test_reply_stream_also_reuses_use_rag_and_project_id(client: TestClient, monkeypatch):
-    """/reply/stream 경로(reply_to_interjection 포함)도 동일하게 evidence_lookup을
-    다시 만들어야 한다 — 스트리밍 워커가 그래프를 호출하는 지점이 sync /reply와
-    별도이므로 따로 검증한다."""
+    """/reply/stream 경로도 동일하게 evidence_lookup을 다시 만들어야 한다 — 스트리밍
+    워커가 그래프를 호출하는 지점이 sync /reply와 별도이므로 따로 검증한다."""
     factory = _RecordingEvidenceLookupFactory()
     monkeypatch.setattr(conv_route, "_evidence_lookup_for", factory)
     monkeypatch.setattr(
