@@ -169,6 +169,10 @@ def make_reviewer_node(
                 cid = item.get("criterion_id")
                 if cid is None:
                     continue
+                if my_criterion_ids is not None and cid not in my_criterion_ids:
+                    # 담당 아닌 항목은 transform에서 집계 제외되므로(경이 확정 2026-07-27)
+                    # RAG-004/005 근거 연결 호출도 건너뛴다(불필요한 검색·판정 비용 절약).
+                    continue
                 criterion_evidence[cid] = evidence_callback(persona_id, cid, item)
 
         v2_result = raw_reviewer_to_v2(
