@@ -7,6 +7,7 @@ ChunkingResult(indexable=True 청크)를 KURE-v1로 임베딩한다. LangGraph/F
 
 import logging
 import math
+import threading
 import time
 from typing import Optional
 
@@ -40,6 +41,10 @@ class KUREEmbedder:
             trust_remote_code=self._config.trust_remote_code,
         )
         self._dimension = self._model.get_embedding_dimension()
+        # SentenceTransformer/PyTorch의 동일 모델 인스턴스를 여러 FastAPI background
+        # thread가 동시에 encode하면 tokenizer/model 내부 상태가 충돌할 수 있다.
+        # 파일 여러 개와 URL을 한 번에 등록하는 화면은 실제로 이 경로를 만든다.
+        self._encode_lock = threading.RLock()
 
     @staticmethod
     def _resolve_device(device: str) -> str:
@@ -62,12 +67,13 @@ class KUREEmbedder:
         if not query or not query.strip():
             raise EmptyQueryError("query는 빈 문자열일 수 없습니다")
 
-        vector = self._model.encode(
-            [query],
-            batch_size=1,
-            normalize_embeddings=self._config.normalize_embeddings,
-            show_progress_bar=False,
-        )[0]
+        with self._encode_lock:
+            vector = self._model.encode(
+                [query],
+                batch_size=1,
+                normalize_embeddings=self._config.normalize_embeddings,
+                show_progress_bar=False,
+            )[0]
         self._validate_finite(vector)
         return vector.tolist()
 
@@ -123,12 +129,13 @@ class KUREEmbedder:
             context.document_id, len(embed_texts), total_chars, max_chars, self._config.batch_size,
         )
         t0 = time.monotonic()
-        vectors = self._model.encode(
-            embed_texts,
-            batch_size=self._config.batch_size,
-            normalize_embeddings=self._config.normalize_embeddings,
-            show_progress_bar=self._config.show_progress,
-        )
+        with self._encode_lock:
+            vectors = self._model.encode(
+                embed_texts,
+                batch_size=self._config.batch_size,
+                normalize_embeddings=self._config.normalize_embeddings,
+                show_progress_bar=self._config.show_progress,
+            )
         logger.info(
             "rag.embed.encode_done document_id=%s elapsed_ms=%.0f",
             context.document_id, (time.monotonic() - t0) * 1000,

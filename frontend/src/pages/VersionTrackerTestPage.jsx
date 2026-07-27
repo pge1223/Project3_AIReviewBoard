@@ -430,7 +430,7 @@ function WhyFeedbackFlow({ f, crit, rubricInfo, citations, statusColor, noticeNa
   if (f.ref?.quote) pool.push({ quote: f.ref.quote, page: f.ref.page ?? null, source: '' })
   for (const q of (citations || []).filter((q) => q.role === 'submission')) pool.push(q)
   const seenQ = new Set()
-  const subs = pool.filter((a, i) => {
+  const deduped = pool.filter((a, i) => {
     const ka = normQ(a.quote)
     if (!ka || seenQ.has(ka)) return false
     // 다른(더 긴) 인용에 포함되는 부분 문장이면 제거
@@ -438,9 +438,37 @@ function WhyFeedbackFlow({ f, crit, rubricInfo, citations, statusColor, noticeNa
     seenQ.add(ka)
     return true
   })
-  // 중심 자료(파일명에 '공고문') 인용 vs 보조 자료(그 외 공고 자료) 인용 — STEP 2에서 구분 표시.
-  const notices = (citations || []).filter((q) => q.role === 'notice')
-  const supports = (citations || []).filter((q) => q.role === 'support')
+  // 지적-근거 정합(경이 확인 2026-07-27): 제출 문서 인용은 "항목 단위"로 모이기 때문에, 이
+  // 지적과 무관한 문단이 붙을 수 있다(예: '법적 제약' 지적 밑에 '구현 서비스 혁신성' 문단).
+  // 지적의 핵심 주제 토큰이 하나도 없는 인용은 이 지적의 근거로 보여주지 않는다. 지적 전용
+  // 검증 인용(f.ref)도 동일하게 검사한다(경이 확인 2026-07-27) — 위원 LLM이 다른 항목의
+  // 문장을 지적에 붙이는 사례 실측('법적 제약·예산' 지적에 '수치 목표' 문장). 원문 게이트는
+  // 존재만 검증하지 주제는 못 거르므로 여기서 거른다. 걸러서 하나도 안 남으면 "내용 부재"로
+  // 정직하게 표기(그 부재 자체가 지적의 사유인 경우가 대부분).
+  const issueTopics = issueTopicTokens(f.text)
+  const subs = issueTopics.size
+    ? deduped.filter((q) => [...issueTopics].some((t) => normQ(`${q.section || ''}${q.quote}`).includes(t)))
+    : deduped
+  // 보조 자료(그 외 공고 자료) 인용 — STEP 2 접힘 탭에서 표시. 중심 자료(공고문) 원문 청크
+  // 인용은 배점표가 한 줄로 풀린 표 덤프·심사 절차 안내 같은 노이즈라 보여주지 않는다
+  // (경이 X 표시 2026-07-27) — 중심 자료 블록은 파일명·배점·세부 기준만.
+  const normC = (s) => (s || '').replace(/[^\p{L}\p{N}]/gu, '')
+  let supports = (citations || []).filter((q) => q.role === 'support')
+  // 소제목만 있는 청크(작성 요령 불릿이 이웃 청크로 잘려 내용이 없는 경우)는 정보가 없어 숨긴다
+  supports = supports.filter((q) => {
+    const sec = normC(q.section || '')
+    if (!sec) return true
+    const residue = normC(q.quote).split(sec).join('').replace(/\d+/g, '')
+    return residue.length >= 8
+  })
+  // 같은 파일·페이지에서 한 블록이 다른 블록에 통째로 포함되면 더 완전한 쪽만 남긴다(중복 제거)
+  supports = supports.filter((a, i) => !supports.some((b, j) => {
+    if (j === i || a.source !== b.source || a.page !== b.page) return false
+    const na = normC(a.quote)
+    const nb = normC(b.quote)
+    if (!na || !nb.includes(na)) return false
+    return nb.length > na.length || j < i
+  }))
   const diff = guide ? DIFFICULTY[guide.level] : null
   const quoteLine = (q, i) => (
     <div key={`${q.quote}-${i}`} style={{ fontSize: 12, color: '#5b5770', lineHeight: 1.65, marginTop: 3 }}>
@@ -473,7 +501,6 @@ function WhyFeedbackFlow({ f, crit, rubricInfo, citations, statusColor, noticeNa
             <div style={{ fontSize: 12.5, lineHeight: 1.65, marginTop: 2 }}>
               「{crit.name}」 <b>배점 {crit.max}점</b>{rubricInfo?.description ? ` — ${rubricInfo.description}` : ''}
             </div>
-            {notices.map(quoteLine)}
           </div>
           {/* 둘째, 보조 자료('공고문'이 아닌 공고 자료) — 중심 자료를 보완하는 세부 근거.
               의미 유사도(KURE score) 높은 순으로 표시하며, 파일명·페이지·불릿 구조로 가독성 있게. */}
@@ -845,6 +872,20 @@ function personaRank(pid) {
   return 1
 }
 
+// 판정 표시 일관성(경이 2026-07-27): 위원 LLM의 원 판정은 상한(calibration) 적용 "전" 제안
+// 기준이라, 상한으로 점수가 깎이면 "판정 적정인데 15점 중 6점" 같은 모순이 화면에 남고,
+// 재분석마다 LLM 판정이 흔들리면 같은 점수인데 접속마다 판정이 달라 보인다. 그래서 화면
+// 판정은 **최종(보정 후) 점수 비율**에서 결정론적으로 도출한다 — 경계는 reviewer_prompt의
+// 점수 구간 기준과 동일(0~40% 중대 리스크 / 40~64% 보완 필요 / 65~84% 적정 / 85%~ 우수).
+function judgmentFromScore(score, max) {
+  if (!max || max <= 0) return 'acceptable'
+  const r = score / max
+  if (r >= 0.85) return 'strong'
+  if (r >= 0.65) return 'acceptable'
+  if (r >= 0.4) return 'needs_improvement'
+  return 'critical_risk'
+}
+
 function reportToVersions(report) {
   const sr = report.score_result || {}
   const detail = new Map() // criterion_id -> {name, judgment, issues, suggestions, personaId}
@@ -891,7 +932,7 @@ function reportToVersions(report) {
       score: b.raw_score ?? 0,
       max: b.max_score ?? CRITERION_MAX,
       calibration: b.calibration || null,
-      judgment: d.judgment || 'acceptable',
+      judgment: judgmentFromScore(b.raw_score ?? 0, b.max_score ?? CRITERION_MAX),
       feedback,
     }
   })
@@ -923,6 +964,51 @@ const stripIssueCitation = (s) => {
   return cut.length >= 4 ? cut : (s || '').trim()
 }
 const _normIssueText = (s) => stripIssueCitation(s).replace(/[‘’“”'"()[\]{}<>.,·;:!?~\s-]/g, '')
+
+// 지적문의 "핵심 주제 토큰"만 남긴다(경이 확인 2026-07-27) — 평가 지적에 공통으로 나오는
+// 일반어(구체적/설명/부족/계획/근거 등)를 빼면 남는 단어가 지적의 실제 주제다
+// (법·제도/예산/모델·알고리즘/데이터·품질/확산/성과지표 …). 재표현 잔존 매칭과
+// STEP 1 지적-근거 정합 필터가 함께 쓴다.
+const _ISSUE_TOPIC_STOP = new Set([
+  '구체', '설명', '부족', '필요', '방안', '언급', '제시', '고려', '검토', '분석', '계획',
+  '내용', '정보', '수준', '정도', '부분', '관련', '문제', '문서', '명확', '명시', '미흡',
+  '보완', '근거', '항목', '대하', '대한', '위한', '없음', '있음', '전반', '여부', '해결',
+])
+const issueTopicTokens = (s) => {
+  const out = new Set()
+  // 벗긴 결과가 2자 미만이 되는 제거는 하지 않는다 — '제도'의 '도'까지 조사로 벗겨
+  // 주제 토큰 자체가 사라지는 과잉 제거 방지.
+  const strip = (w, re) => {
+    const m = w.match(re)
+    return m && w.length - m[0].length >= 2 ? w.slice(0, w.length - m[0].length) : w
+  }
+  for (let w of stripIssueCitation(s).split(/[^\p{L}\p{N}]+/u)) {
+    // 접미가 겹쳐 붙은 형태는 변화가 없을 때까지 반복해서 벗긴다(경이 확인 2026-07-27) —
+    // 1회만 벗기면 '구체적인'이 '구체적'에서 멈춰 불용어('구체')에 못 닿고, 무관한 지적과
+    // 인용이 '구체적' 같은 일반어로 이어지는 오매칭이 생긴다(실측: '법적 제약·예산' 지적에
+    // '수치 목표' 인용이 통과).
+    for (let prev = ''; prev !== w; ) {
+      prev = w
+      w = strip(w, /(에서|으로|이나|이라|하다|되다|하여|되어|했다|됐다|하고)$/u)
+      w = strip(w, /(은|는|이|가|을|를|에|의|도|와|과|만|로|들)$/u)
+      w = strip(w, /(적|성|인|된|한|함|됨)$/u)
+    }
+    if (w.length >= 2 && !_ISSUE_TOPIC_STOP.has(w)) out.add(w)
+  }
+  return out
+}
+// 두 지적이 같은 주제인가 — 핵심 주제 토큰이 (작은 쪽 기준) 절반 이상 겹치면 같은 지적의
+// 재표현으로 본다. 예: "법·제도적 제약 수준 설명 부족" ↔ "법적 제약·제도적 문제 고려 부족"
+// = {제도,제약} 겹침 → 같음. "확산 계획 부족" ↔ "성과 지표(KPI) 계획 부족" = 겹침 0 → 다름.
+function sameIssueTopic(a, b) {
+  const A = issueTopicTokens(a)
+  const B = issueTopicTokens(b)
+  if (!A.size || !B.size) return false
+  let inter = 0
+  for (const t of A) if (B.has(t)) inter += 1
+  return inter / Math.min(A.size, B.size) >= 0.5
+}
+
 function sameIssueText(a, b) {
   const na = _normIssueText(a)
   const nb = _normIssueText(b)
@@ -952,15 +1038,31 @@ function buildVersionsFromHistory(versions) {
       const issues = c.issues || []
       const suggestions = c.suggestions || []
       const issueRefs = c.issue_refs || []
+      // 직전 버전의 같은 항목 지적 — "잔존(재표현)"과 "해결됨" 판정의 기준 원본
+      const prevC = vi > 0 ? (versions[vi - 1].criteria || []).find((p) => p.criterion_id === c.criterion_id) : null
+      const prevIssues = (prevC?.issues || []).filter(Boolean)
+      const prevNewSet = new Set(prevC?.new_issues || [])
+      // 재표현 잔존 매칭(경이 확인 2026-07-27): 재분석마다 LLM이 같은 지적을 조금 다른 문장으로
+      // 다시 내면, 백엔드 집합 비교(문자열 일치)는 "이전 것 해결됨 + 사실상 같은 지적 신규"로
+      // 잘못 갈라 모순이 보인다("법·제도적 제약 수준 설명 부족" 해결됨과 "법적 제약·제도적 문제
+      // 고려 부족" 신규가 동시 표시). 핵심 주제 토큰이 겹치면 같은 지적의 재표현(잔존)으로 보고
+      // '보완 필요'로 표시하며, 매칭된 직전 지적은 해결됨 후보에서 제외한다.
+      const carriedPrevIdx = new Set()
       const feedback = []
       const n = Math.max(issues.length, suggestions.length)
       for (let i = 0; i < n; i++) {
         const issue = issues[i] || ''
         const sug = suggestions[i] || ''
         if (!issue && !sug) continue
+        let status = 'open'
+        if (issue && newSet.has(issue)) {
+          const pi = prevIssues.findIndex((p, j) => !carriedPrevIdx.has(j) && (sameIssueText(issue, p) || sameIssueTopic(issue, p)))
+          if (pi !== -1) carriedPrevIdx.add(pi)
+          status = pi !== -1 ? 'open' : 'new'
+        }
         feedback.push({
           id: `${c.criterion_id}-${i}`,
-          status: issue && newSet.has(issue) ? 'new' : 'open',
+          status,
           text: issue || sug,
           suggestion: issue ? sug : '',
           // 이 지적이 근거한 원문 문장(백엔드 원문 검증 통과분만)
@@ -971,12 +1073,10 @@ function buildVersionsFromHistory(versions) {
       // 매칭되는 것만 보여주고(직전 버전 어디에도 없던 해결됨 = 근거 없는 생성이라 감춤),
       // ② 같은 지적의 표현 변형이 여러 건 오면 직전 지적 1건당 해결됨 1건으로 합치며,
       // ③ 문구는 재표현본이 아니라 직전 버전 지적 원문을 그대로 쓴다(취소선 + 해결됨 표시용).
-      const prevC = vi > 0 ? (versions[vi - 1].criteria || []).find((p) => p.criterion_id === c.criterion_id) : null
-      const prevIssues = (prevC?.issues || []).filter(Boolean)
-      const prevNewSet = new Set(prevC?.new_issues || [])
+      // ④ 이번 버전에 재표현으로 잔존한 지적(carriedPrevIdx)은 해결된 게 아니므로 제외한다.
       const resolvedPrevIdx = new Set()
       for (const t of c.resolved_issues || []) {
-        const pi = prevIssues.findIndex((p, j) => !resolvedPrevIdx.has(j) && sameIssueText(t, p))
+        const pi = prevIssues.findIndex((p, j) => !resolvedPrevIdx.has(j) && !carriedPrevIdx.has(j) && sameIssueText(t, p))
         if (pi !== -1) resolvedPrevIdx.add(pi)
       }
       for (const pi of [...resolvedPrevIdx].sort((a, b) => a - b)) {
@@ -996,7 +1096,7 @@ function buildVersionsFromHistory(versions) {
         score: c.score ?? 0,
         max: c.max ?? CRITERION_MAX,
         calibration: c.calibration || null,
-        judgment: c.judgment || 'acceptable',
+        judgment: judgmentFromScore(c.score ?? 0, c.max ?? CRITERION_MAX),
         feedback,
       }
     }),
@@ -1093,8 +1193,9 @@ function AiFeedbackPanel({ findings, format, missingVersion }) {
   }
   return (
     <>
-      <FormatSummary format={format} />
+      {/* '중요한 정보'는 패널 맨 위(AI 피드백 탭 버튼 바로 아래)에 — 경이 위치 지정 2026-07-27 */}
       <ImportantInfoTab />
+      <FormatSummary format={format} />
       <div className="card glass" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', borderLeft: '4px solid #16a37a', marginBottom: 16, padding: '16px 20px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <span style={{ width: 42, height: 42, borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(22,163,122,0.12)', color: '#16a37a' }}>
@@ -1407,6 +1508,47 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
           m.set(rs.criterion_id, arr.slice(0, 4))
           seenByCid.set(rs.criterion_id, seen)
         }
+      }
+    }
+    // 보조 자료 배타 배정(경이 확정 2026-07-27): 위원이 다른 항목 채점에 인용했더라도, 보조
+    // 청크(섹션 제목+본문)는 "의미가 가장 잘 맞는 평가 항목"에서만 보여준다 — 신청 서식의
+    // 'AI 모델·알고리즘 설계 적정성' 섹션이 실현 가능성 밑에 뜨는 어긋남 방지. 매칭은 항목명+
+    // 설명의 2-gram이 청크 텍스트에 얼마나 나타나는지(결정론적 커버리지)로 판정하고, 어느
+    // 항목과도 뚜렷이 안 맞으면(신호 부족) 그대로 둔다. 제외 항목(안전성·윤리성)도 배정 후보에
+    // 넣어, 그런 섹션이 채점 항목에 잘못 붙는 것까지 막는다.
+    const normGram = (s) => (s || '').replace(/[^\p{L}\p{N}]/gu, '')
+    const gramSet = (s) => {
+      const t = normGram(s)
+      const g = new Set()
+      for (let i = 0; i < t.length - 1; i++) g.add(t.slice(i, i + 2))
+      return g
+    }
+    const pool = [
+      ...(report.rubric?.criteria || []),
+      ...(report.rubric?.excluded_criteria || []),
+    ]
+      .map((c) => ({ id: c.criterion_id, grams: gramSet(`${c.criterion_name || ''} ${c.description || c.reason || ''}`) }))
+      .filter((c) => c.grams.size > 0)
+    if (pool.length) {
+      const coverage = (text, grams) => {
+        let hit = 0
+        for (const g of grams) if (text.includes(g)) hit += 1
+        return hit / grams.size
+      }
+      for (const [cid, arr] of m) {
+        m.set(cid, arr.filter((q) => {
+          if (q.role !== 'support') return true
+          const text = normGram(`${q.section || ''} ${q.quote}`)
+          let best = 0
+          let bestIds = []
+          for (const c of pool) {
+            const cov = coverage(text, c.grams)
+            if (cov > best + 1e-9) { best = cov; bestIds = [c.id] }
+            else if (cov > 0 && Math.abs(cov - best) <= 1e-9) bestIds.push(c.id)
+          }
+          if (best < 0.1) return true // 어느 항목과도 뚜렷이 안 맞으면 배정 판단 보류
+          return bestIds.includes(cid)
+        }))
       }
     }
     return m
@@ -1733,7 +1875,7 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
         <div key={`body-${animKey}-${statusFilter}`} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           {visibleItems.length === 0 && (
             <div className="card glass" style={{ padding: 18, textAlign: 'center', color: '#918d9f', fontSize: 13 }}>
-              이 필터에 해당하는 지적이 없습니다.
+              이 필터에 해당하는 {statusFilter === 'resolved' ? '해결' : '지적'}이 없습니다.
             </div>
           )}
           {visibleItems.map((c, i) => {

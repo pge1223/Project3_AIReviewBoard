@@ -240,6 +240,33 @@ _similar_case_repo = SimilarCaseRepository(
 )
 _similar_case_service = SimilarCaseSearchService(_similar_case_repo, _kure_embedder, config=_similar_case_config)
 
+# RAG-007: 외부 시장·정책·통계 자료 검색 서비스(앱 시작 시 1회 초기화, 상태 없음 — 검색 결과
+# 캐시가 필요 없어 MeetingEvidenceOrchestrationService와 달리 요청마다 새로 만들지 않는다).
+# 용준/Claude(2026-07-27, RAG-007 연결): _similar_case_repo/_similar_case_service와 동일한
+# 패턴 — documents.py의 client/embedder 싱글턴을 그대로 재사용하고(새 PersistentClient/
+# KUREEmbedder 생성 금지, 위 주석 참고) DatasetProvider만 연결한다. 실시간 공공데이터 API
+# (PublicApiProvider)는 아직 실제 fetch 구현이 없어(config.py의 enable_public_api_search
+# 기본값 False) 여기서는 연결하지 않는다 — 단순히 환경변수만 켜면 PublicApiProvider.search()가
+# ExternalProviderUnavailableError를 던지므로, 실제 fetch 콜러블을 구현하기 전까지는 이
+# 상태(dataset-only)를 유지해야 한다(README.md 8절).
+from ai.rag.external_research import (  # noqa: E402
+    DatasetProvider,
+    ExternalEvidenceRepository,
+    ExternalResearchConfig,
+    ExternalResearchService,
+)
+
+_external_research_config = ExternalResearchConfig()
+_external_evidence_repo = ExternalEvidenceRepository(
+    client=_chroma_client,
+    collection_name=_external_research_config.collection_name,
+    embedding_model=_kure_embedder.model_name,
+    embedding_dimension=_kure_embedder.embedding_dimension,
+    embedding_version="embedding_v1",
+)
+_external_dataset_provider = DatasetProvider(_external_evidence_repo, _kure_embedder, config=_external_research_config)
+_external_research_service = ExternalResearchService(_external_dataset_provider, config=_external_research_config)
+
 _CHAIR_MARKER = "위원장(review_chair)입니다"
 
 # 가은/Claude(2026-07-17): "진짜 진행률로 바꿔줘" — run_meeting()이 이미 on_progress

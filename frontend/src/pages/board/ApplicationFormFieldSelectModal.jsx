@@ -48,7 +48,7 @@ export default function ApplicationFormFieldSelectModal({ items, onConfirm }) {
         </div>
         <p style={{ fontSize: 12.5, color: 'var(--text-2)', lineHeight: 1.6, marginBottom: 14 }}>
           담당자 연락처나 신청 기관명처럼 위원과 상의할 내용이 아닌 항목은 기본으로
-          꺼뒀어요. 필요하면 눌러서 켜고 끌 수 있어요 — 선택한 항목만 회의 중 진행자가
+          꺼뒀어요. 필요하면 눌러서 켜고 끌 수 있어요 — 선택한 항목만 회의 중 진행위원이
           같이 채워나갑니다.
         </p>
 

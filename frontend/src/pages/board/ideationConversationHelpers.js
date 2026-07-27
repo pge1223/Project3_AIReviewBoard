@@ -107,16 +107,24 @@ export function resolveUseRag(projectId, criteriaDocuments) {
 // 휴리스틱. LLM 호출 없이 필드명 키워드로만 판단한다 — 완벽한 분류가 목적이 아니라
 // "회의 시작 전 확인 팝업"의 기본 선택값을 정하는 용도이므로, 오분류는 사용자가 팝업에서
 // 직접 토글해 바로잡을 수 있다(그래서 이 목록은 넓게 잡지 않고 확실한 것만 넣는다).
+// 가은/Claude(2026-07-27, 요청: "과제번호, email 이런 게 다 체크되어 있다" 버그 확인) —
+// 실사용 신청서에서 이 목록에 없어 걸러지지 않았던 개인정보/행정 항목을 추가했다:
+// 핸드폰(전화와 다른 표기), 영문 E-mail(한글 이메일/메일과 다른 표기라 별도 키워드
+// 필요), 주민등록번호·생년월일(개인 식별정보), 개인정보(수집 항목 등 포괄 표현),
+// 소속(기관), 책임자(총괄책임자/실무책임자), 참여기관/주관기관/기관명(신청기관과
+// 다른 표기의 기관 식별 필드).
 const ADMINISTRATIVE_FIELD_KEYWORDS = [
-  '담당자', '성명', '전화', '이메일', '메일', '팩스', '홈페이지',
-  '사업자등록번호', '법인등록번호', '부서', '직위', '대표자',
-  '신청 기관', '신청기관', '도시명', '주소', '기업(법인)명',
+  '담당자', '성명', '전화', '핸드폰', '휴대폰', '휴대전화', '이메일', '메일', 'e-mail', '팩스', '홈페이지',
+  '사업자등록번호', '법인등록번호', '부서', '직위', '대표자', '책임자',
+  '신청 기관', '신청기관', '참여기관', '주관기관', '기관명', '소속', '도시명', '주소', '기업(법인)명',
+  '설립연도', '매출액', '매출', '경영실적', '자본금', '종업원', '고용 인원',
+  '주민등록번호', '생년월일', '개인정보',
 ]
 
 export function isAdministrativeFormField(fieldName) {
-  const name = (fieldName || '').trim()
+  const name = (fieldName || '').trim().toLowerCase()
   if (!name) return false
-  return ADMINISTRATIVE_FIELD_KEYWORDS.some((keyword) => name.includes(keyword))
+  return ADMINISTRATIVE_FIELD_KEYWORDS.some((keyword) => name.includes(keyword.toLowerCase()))
 }
 
 // 화면에 노출되는 전문가/진행자/사용자 표시 메타 — 실제 speaker_id는
@@ -125,14 +133,23 @@ export function isAdministrativeFormField(fieldName) {
 // "dev_expert"/"ideation_facilitator"/"user" 고정값으로 넘긴다)와
 // ai/meeting/tests/test_ideation_conv_graph.py·test_ideation_discovery_graph.py의 스크립트
 // 스텁이 검증하는 값 그대로다. badgeClass는 ReviewBoardPrototype.jsx Shell이 이미 정의한
-// .badge.purple/.green 클래스를 재사용한다. 개발 위원만 "파랑 계열" 요청(2026-07-25)에
+// .badge.purple/.green/.grey 클래스를 재사용한다. 개발 위원만 "파랑 계열" 요청(2026-07-25)에
 // 맞춰 .badge.blue를 IdeationConversationScreen.jsx의 페이지 스코프 <style>에 추가했다 —
 // Shell(ReviewBoardPrototype.jsx, 공용 파일)은 건드리지 않는다.
 export const SPEAKER_META = {
-  planning_expert: { label: '기획 위원', badgeClass: 'purple', align: 'left' },
-  dev_expert: { label: '개발 위원', badgeClass: 'blue', align: 'left' },
+  planning_expert: { label: '기획 의원', badgeClass: 'purple', align: 'left' },
+  dev_expert: { label: '개발 의원', badgeClass: 'blue', align: 'left' },
   ideation_facilitator: { label: '진행자', badgeClass: 'green', align: 'left' },
-  user: { label: '나', badgeClass: null, align: 'right' },
+  user: { label: '사용자', badgeClass: 'grey', align: 'right' },
+}
+
+// API/상태 스키마의 speaker_id는 내부 계약이므로 바꾸지 않는다. 다만 LLM이 합의 사항이나
+// 최종 판단 본문에 ID를 그대로 쓴 경우에도 사용자 화면에는 역할명만 보이도록 변환한다.
+export function humanizeExpertIdentifiers(value) {
+  if (typeof value !== 'string') return value
+  return value
+    .replace(/\bplanning_expert\b/g, '기획 의원')
+    .replace(/\bdev_expert\b/g, '개발 의원')
 }
 
 export function speakerMetaFor(message) {
@@ -167,8 +184,8 @@ const PHASE_LABEL_KO = {
   awaiting_candidate_selection: '후보 선택 대기',
   candidate_selection: '후보 선택 대기',
   expert_discussion: '전문가 회의 진행 중',
-  awaiting_planning_answer: '기획 위원 답변 대기',
-  awaiting_developer_answer: '개발 위원 답변 대기',
+  awaiting_planning_answer: '기획 의원 답변 대기',
+  awaiting_developer_answer: '개발 의원 답변 대기',
   waiting_user_input: '사용자 의견 대기',
   awaiting_user_decision: '위원 논의 완료 · 의견은 선택 사항',
   discussion_complete: '위원 논의 완료',
@@ -200,9 +217,9 @@ export function nextActionGuideFor(phase) {
     case 'awaiting_candidate_selection':
       return '후보를 선택하거나("1번"), 결합("1번과 2번 결합"), 다시 추천을 요청해야 다음 단계로 진행할 수 있어요.'
     case 'awaiting_planning_answer':
-      return '기획 위원의 질문에 답변해야 개발 위원의 질문으로 넘어갈 수 있어요.'
+      return '기획 의원의 질문에 답변해야 개발 의원의 질문으로 넘어갈 수 있어요.'
     case 'awaiting_developer_answer':
-      return '개발 위원의 질문에 답변해야 두 위원의 의견을 볼 수 있어요.'
+      return '개발 의원의 질문에 답변해야 두 의원의 의견을 볼 수 있어요.'
     case 'awaiting_user_decision':
       return '위원들의 논의가 한 라운드 끝났어요. 답할 의무는 없어요 — 의견이 있으면 남기고, 없으면 바로 확정할 수 있어요.'
     default:

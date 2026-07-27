@@ -642,22 +642,20 @@ def test_cancel_stops_active_stream_and_releases_lock_without_failing_phase(clie
     # 취소는 일반 오류가 아니므로 error 이벤트가 나가면 안 된다.
     assert not any(e.get("type") == "error" for e in events)
 
-    # 취소 확인 응답을 받은 뒤에는 곧바로 새 요청을 보내도 409가 나지 않아야 한다(요청:
-    # "취소 완료 전에 새 reply를 보내 세션 lock 409가 발생하지 않게"). 취소 시점의 phase는
-    # 라운드 중간(expert_discussion)이라 일반 /reply가 아니라 "잠시만" 재개 경로
-    # (target_speaker_id 지정)로만 이어갈 수 있다 — 정상적인 사용자 플로우 그대로다.
+    # 취소 확인 응답을 받은 뒤에는 곧바로 새 요청을 보내도 409(세션 락)가 나지 않아야 한다
+    # (요청: "취소 완료 전에 새 reply를 보내 세션 lock 409가 발생하지 않게"). 취소 시점의
+    # phase는 라운드 중간(expert_discussion)이라 사용자 답변을 받을 수 있는 phase가 아니므로
+    # (REPLYABLE_PHASES 밖) 그래프 자체가 400을 반환한다 — 락이 이미 풀려 있다는 것만
+    # 확인한다(409가 아니라 400이어야 한다).
     fresh = _FakeStreamState(chunk_size=4)
     monkeypatch.setattr(conv_route, "_build_streaming_backends", lambda sid, m: fresh.build())
     with client.stream(
         "POST",
         f"/ideation-conversation/{session_id}/reply/stream",
-        json={"message": "이어서 질문", "target_speaker_id": "planning_expert"},
+        json={"message": "이어서 질문"},
     ) as follow_up:
-        assert follow_up.status_code == 200
         follow_up_events = _read_ndjson_events(follow_up)
-    assert not any(e.get("type") == "error" for e in follow_up_events)
-    follow_up_state = next(e for e in follow_up_events if e.get("type") == "state")
-    assert follow_up_state["state"]["phase"] != "failed"
+    assert any(e.get("type") == "error" for e in follow_up_events)
     ordered_events = [
         "IDEATION_CANCEL_REQUESTED",
         "IDEATION_CANCEL_SIGNALLED",
@@ -665,7 +663,6 @@ def test_cancel_stops_active_stream_and_releases_lock_without_failing_phase(clie
         "IDEATION_GRAPH_CANCELLED",
         "IDEATION_SESSION_UNLOCKED",
         "IDEATION_CANCEL_COMPLETED",
-        "IDEATION_RESUME_STARTED",
     ]
     positions = [caplog.text.index(event) for event in ordered_events]
     assert positions == sorted(positions)
@@ -735,13 +732,12 @@ class _RoundTransitionCancelStreamState:
         return stream_chat_completion, call_chat_completion
 
 
-def test_cancel_during_facilitator_round_transition_then_resume_via_interjection(client: TestClient, monkeypatch):
+def test_cancel_during_facilitator_round_transition_normalizes_phase(client: TestClient, monkeypatch):
     """용준/Claude(2026-07-22) — 실제 브라우저에서 보고된 시나리오를 그대로 재현한다:
     "잠시만"이 진행자가 다음 라운드로 넘어가는 경계에서 눌리면, 이전에는 취소된 partial_state
-    의 phase가 그래프 내부에서만 의미 있는 신호값("planning_question")으로 저장돼
-    reply_to_interjection이 재개를 거부했다. 이제는 phase가 항상 "expert_discussion"으로
-    정규화되어 재개가 성공하고, 지정 위원이 먼저 답한 뒤 상대 위원이 검토하며, 세션 락도
-    정상 해제되어 후속 요청이 409 없이 처리돼야 한다."""
+    의 phase가 그래프 내부에서만 의미 있는 신호값("planning_question")으로 저장돼 재개
+    시점에 거부됐다. 이제는 phase가 항상 "expert_discussion"으로 정규화되고("failed"로도
+    이어지지 않는다), 세션 락도 정상 해제되어 후속 요청이 409 없이 처리돼야 한다."""
     session_id = _start_session(client)
     reached_target_event = threading.Event()
     # 라운드 1: 기획/개발이 같은 쟁점(mvp_scope)으로 6회 주고받아야 발언 캡에 도달해
@@ -782,36 +778,21 @@ def test_cancel_during_facilitator_round_transition_then_resume_via_interjection
     cancelled_phase = cancelled_state["phase"]
     assert cancelled_phase == "expert_discussion"
     assert cancelled_phase not in ("planning_question", "failed")
-    messages_before_follow_up = len(cancelled_state["messages"])
 
-    # 세션 락이 실제로 풀렸으므로 곧바로 다음 요청을 보내도 409가 나지 않아야 한다 — 그리고
-    # 그 요청은 반드시 reply_to_interjection(target_speaker_id 지정) 경로로만 재개할 수
-    # 있어야 한다(요청: "취소 직후 사용자가 지정한 위원이 먼저 답변하고 상대 위원이 검토하는
-    # 기존 보장을 유지").
+    # 세션 락이 실제로 풀렸으므로 곧바로 다음 요청을 보내도 409(락 충돌)가 나지 않아야
+    # 한다 — phase가 여전히 라운드 중간(expert_discussion)이라 사용자 답변을 받을 수 있는
+    # phase는 아니므로(REPLYABLE_PHASES 밖) 그래프가 400(error 이벤트)을 반환하는 것이
+    # 정상이다.
     fresh = _FakeStreamState(chunk_size=4)
     monkeypatch.setattr(conv_route, "_build_streaming_backends", lambda sid, m: fresh.build())
     with client.stream(
         "POST",
         f"/ideation-conversation/{session_id}/reply/stream",
-        json={"message": "개발 위원 의견부터 다시 듣고 싶습니다", "target_speaker_id": "dev_expert"},
+        json={"message": "개발 위원 의견부터 다시 듣고 싶습니다"},
     ) as follow_up:
-        assert follow_up.status_code == 200
         follow_up_events = _read_ndjson_events(follow_up)
 
-    assert not any(e.get("type") == "error" for e in follow_up_events)
-    follow_up_state = next(e for e in follow_up_events if e.get("type") == "state")["state"]
-    assert follow_up_state["phase"] != "failed"
-    # 취소 이전 세션 이력에도(무관하게) message_type="interjection"이 이미 있을 수 있으므로
-    # (awaiting_user_decision에서 특정 질문 없이 자유 발언하면 같은 message_type을 쓴다 —
-    # 별개의 기존 동작), 이번 reply_to_interjection 호출이 새로 추가한 메시지만 본다.
-    new_messages = follow_up_state["messages"][messages_before_follow_up:]
-    interjection = next(m for m in new_messages if m["message_type"] == "interjection")
-    following = [
-        m["speaker_id"] for m in new_messages[new_messages.index(interjection) + 1 :]
-        if m["speaker_id"] in ("planning_expert", "dev_expert")
-    ]
-    assert following[0] == "dev_expert"
-    assert "planning_expert" in following[1:]  # 상대 위원이 반드시 뒤이어 검토한다.
+    assert any(e.get("type") == "error" for e in follow_up_events)
 
 
 def test_cancel_on_session_with_no_active_request_is_idempotent(client: TestClient):
@@ -830,50 +811,6 @@ def test_cancel_on_session_with_no_active_request_is_idempotent(client: TestClie
 def test_cancel_unknown_session_returns_404(client: TestClient):
     resp = client.post("/ideation-conversation/NOT-A-REAL-SESSION/cancel", json={})
     assert resp.status_code == 404
-
-
-def test_reply_stream_rejects_invalid_target_speaker_id(client: TestClient):
-    session_id = _start_session(client)
-    resp = client.post(
-        f"/ideation-conversation/{session_id}/reply/stream",
-        json={"message": "질문입니다", "target_speaker_id": "누군가"},
-    )
-    assert resp.status_code == 400
-
-
-def test_reply_stream_with_target_speaker_id_routes_to_interjection(client: TestClient, monkeypatch):
-    """target_speaker_id가 주어지면 reply_to_interjection 경로를 타고, 지정한 위원이 먼저
-    응답한 뒤 상대 위원이 검토해야 한다(요청: "지정 위원이 먼저 답변, 다른 위원이 검토")."""
-    fake = _FakeStreamState(chunk_size=4)
-    monkeypatch.setattr(conv_route, "_build_streaming_backends", lambda session_id, model: fake.build())
-    session_id = _start_session(client)
-
-    with client.stream(
-        "POST",
-        f"/ideation-conversation/{session_id}/reply/stream",
-        json={
-            "message": "대학생 예비 창업자도 목표 사용자에 포함할 수 있나요?",
-            "target_speaker_id": "planning_expert",
-            "opinion_target_speaker_id": "dev_expert",
-            "interrupted_speaker_id": "dev_expert",
-            "active_issue_id": "target_user",
-        },
-    ) as resp:
-        events = _read_ndjson_events(resp)
-
-    state_events = [e for e in events if e.get("type") == "state"]
-    assert state_events
-    messages = state_events[-1]["state"]["messages"]
-    interjection = next(m for m in messages if m["message_type"] == "interjection")
-    assert interjection["structured"]["target_speaker_id"] == "planning_expert"
-    assert interjection["structured"]["opinion_target_speaker_id"] == "dev_expert"
-    assert interjection["structured"]["interrupted_speaker_id"] == "dev_expert"
-    following = [
-        m["speaker_id"] for m in messages[messages.index(interjection) + 1 :]
-        if m["speaker_id"] in ("planning_expert", "dev_expert")
-    ]
-    assert following, "지정 위원 발언이 이어져야 한다"
-    assert following[0] == "planning_expert"
 
 
 if __name__ == "__main__":

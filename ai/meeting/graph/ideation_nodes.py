@@ -16,6 +16,7 @@ from prompts import (
     build_ideation_turn_prompt,
 )
 
+from .ideation_llm_log import log_llm_response
 from .ideation_state import IdeationState
 from .llm import LLMCall, parse_json_response
 
@@ -164,7 +165,9 @@ def _round_context(state: IdeationState) -> dict[str, Any]:
     }
 
 
-def _safe_call_json(llm_call: LLMCall, prompt: str) -> tuple[dict[str, Any] | None, bool]:
+def _safe_call_json(
+    llm_call: LLMCall, prompt: str, node_name: str = "unknown"
+) -> tuple[dict[str, Any] | None, bool]:
     """LLM 호출 + JSON 파싱을 시도하고, 실패하면 한 번 재시도한다.
 
     요청 9번 14항(모델 호출 실패·JSON 파싱 실패 시 폴백)에 따라, 두 번째 시도도 실패하면
@@ -172,12 +175,21 @@ def _safe_call_json(llm_call: LLMCall, prompt: str) -> tuple[dict[str, Any] | No
     끝낼 수 있게 한다(기존 reviewer/chair 노드에는 이 폴백이 없었으나, 회의 도중 사용자
     응답을 기다리는 흐름이 새로 생긴 ideation 모드에서는 실패를 조용히 전파시키지 않는
     것이 더 안전하다는 판단).
-    """
-    for _ in range(2):
+
+    node_name은 선택 인자(기본 "unknown")다 — 호출부 대부분이 이미 존재해 시그니처를
+    바꾸지 않으려 기본값을 두되, ideation_llm_log.log_llm_response가 실패 응답까지
+    포함한 원본을 로컬 로그 파일에 남길 때 어느 노드에서 났는지 구분하는 용도다."""
+    for attempt in range(1, 3):
+        raw_text = llm_call(prompt)
         try:
-            return parse_json_response(llm_call(prompt)), True
+            parsed = parse_json_response(raw_text)
         except (ValueError, KeyError, TypeError):
+            log_llm_response(
+                node_name=node_name, attempt=attempt, ok=False, reason="json_parse_failed", raw_response=raw_text
+            )
             continue
+        log_llm_response(node_name=node_name, attempt=attempt, ok=True, reason=None, raw_response=raw_text)
+        return parsed, True
     return None, False
 
 
@@ -203,7 +215,7 @@ def make_ideation_expert_node(
             retrieved,
             _round_context(state),
         )
-        raw, ok = _safe_call_json(llm_call, prompt)
+        raw, ok = _safe_call_json(llm_call, prompt, node_name=f"expert__{persona_id}")
         if not ok:
             return {"stage": "실패", "failed_node": f"expert__{persona_id}"}
         turn = _normalize_turn(raw, persona_id, state["round"])
@@ -234,7 +246,7 @@ def make_facilitator_node(llm_call: LLMCall) -> Callable[[IdeationState], dict]:
             state["consensus"],
             state["unresolved_issues"],
         )
-        raw, ok = _safe_call_json(llm_call, prompt)
+        raw, ok = _safe_call_json(llm_call, prompt, node_name="facilitator")
         if not ok:
             return {"stage": "실패", "failed_node": "facilitator"}
 
@@ -286,7 +298,7 @@ def make_synthesis_node(llm_call: LLMCall) -> Callable[[IdeationState], dict]:
             state["consensus"],
             state["unresolved_issues"],
         )
-        raw, ok = _safe_call_json(llm_call, prompt)
+        raw, ok = _safe_call_json(llm_call, prompt, node_name="synthesis")
         if not ok:
             return {"stage": "실패", "failed_node": "synthesis"}
         return {"idea_proposal": raw, "stage": "완료"}

@@ -32,7 +32,10 @@ DEFAULT_SEPARATORS: list[str] = [
 # 검색/Planner가 현재 쟁점과 다른 질문을 고르는 문제를 해결한다. 평가표로 확인된 본문만
 # "평가 항목 + 세부 질문 1개" 단위로 분리하며 일반 본문/표 청킹은 기존 규칙을 유지한다.
 # 기존 v2 Chroma 레코드는 자동 변환되지 않으므로 효과를 적용하려면 문서를 재색인해야 한다.
-CHUNKING_VERSION: str = "chunking_v3"
+# v3 -> v4: 신청 서식의 "숫자. 소제목"이 긴 작성 요령과 분리되어 제목만 있는 청크가
+# 생기지 않도록 첫 본문을 제목 청크에 붙인다. 기존 v3 레코드에 개선 효과를 적용하려면
+# 해당 문서를 재색인해야 한다.
+CHUNKING_VERSION: str = "chunking_v4"
 
 # 목차 판정: MVP는 강한 heading 키워드가 있을 때만 확정한다 (과탐 방지 우선)
 TOC_HEADING_KEYWORDS: list[str] = ["목차", "차례", "contents"]
@@ -49,8 +52,9 @@ PSEUDO_HEADING_MAX_TITLE_LENGTH: int = 30
 
 # 목록형 블록 인식: 아래 마커가 반복되면(최소 발생 횟수 이상) 항목 단위로 취급해
 # RecursiveCharacterTextSplitter가 항목 중간을 자르지 않도록 한다.
-# "-"(줄바꿈 뒤 하이픈), "□", "※", "①"~"⑩"(U+2460~U+2469)
-LIST_ITEM_MARKER_PATTERN: str = r"[-□※]|[①-⑩]"
+# "-"(줄바꿈 뒤 하이픈), "□", "※", "①"~"⑩"(U+2460~U+2469),
+# PDF/HWP 서식에서 흔한 불릿("•", "◦", "∙", "·")
+LIST_ITEM_MARKER_PATTERN: str = r"[-□※•◦∙·]|[①-⑩]"
 LIST_ITEM_MIN_MARKER_COUNT: int = 2
 
 # 마지막 청크가 이 길이(문자 수) 미만이면 직전 청크와 병합을 시도한다.

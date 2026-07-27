@@ -44,8 +44,8 @@ from .ideation_conv_nodes import (
 from .ideation_conv_run import (
     continue_ideation_expert_turn,
     finalize_ideation_conversation,
+    generate_application_form_draft,
     reply_ideation_conversation,
-    reply_to_interjection,
     start_ideation_conversation,
 )
 from .ideation_conv_state import (
@@ -105,9 +105,9 @@ __all__ = [
     "initial_conv_state",
     "start_ideation_conversation",
     "reply_ideation_conversation",
-    "reply_to_interjection",
     "continue_ideation_expert_turn",
     "finalize_ideation_conversation",
+    "generate_application_form_draft",
     "IdeationCancelled",
     "IssueRecord",
     "MIN_EXPERT_TURNS_PER_ISSUE",

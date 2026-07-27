@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -277,6 +278,9 @@ def build_ideation_synthesis_prompt(
 IDEATION_CONV_QUESTION_TEMPLATE = "ideation_conv_question.txt"
 IDEATION_CONV_DISCUSSION_TEMPLATE = "ideation_conv_discussion.txt"
 IDEATION_CONV_SYNTHESIS_TEMPLATE = "ideation_conv_synthesis.txt"
+# 가은/Claude(2026-07-27, 요청: "주제 확정 후 신청서 초안 페이지") — synthesis와 별개로,
+# 확정된 idea_proposal을 이번 세션의 실제 신청서 필드로 옮겨 쓰는 전용 템플릿.
+IDEATION_CONV_FORM_DRAFT_TEMPLATE = "ideation_conv_form_draft.txt"
 IDEATION_CONV_SUFFICIENCY_TEMPLATE = "ideation_conv_sufficiency.txt"
 # 용준/Claude(2026-07-21, 요청: "모르겠다" UX 개선): 사용자가 질문에 답하는 대신 전문가
 # 판단에 위임했을 때(answer_type="expert_delegation") 담당 전문가가 제안을 만드는 템플릿.
@@ -286,6 +290,44 @@ IDEATION_CONV_EXPERT_DELEGATION_TEMPLATE = "ideation_conv_expert_delegation.txt"
 # 템플릿(위 IDEATION_CONV_QUESTION_TEMPLATE 등)은 하나도 건드리지 않는다.
 IDEATION_CONV_CANDIDATE_PLANNING_TEMPLATE = "ideation_conv_candidate_planning.txt"
 IDEATION_CONV_CANDIDATE_FEASIBILITY_TEMPLATE = "ideation_conv_candidate_feasibility.txt"
+
+_CANDIDATE_NOVELTY_PLANNING_RULES = """
+
+[참신성 강화 규칙 — IDEATION_NOVELTY_PROMPT_ENABLED]
+1. 문제·평가기준은 공고문 근거와 구분해 다루되, 해결 방식은 기획 전문가의 제안으로 새롭게
+   설계할 수 있습니다. 전문가 제안을 공고문 사실인 것처럼 표현하지 않습니다.
+2. 출력 전 내부적으로 최소 6개의 해결 방향을 발산하고 유사한 방향을 제거한 뒤, 서로 다른
+   innovation_axis를 가진 상위 후보만 출력합니다. 발산 과정은 출력하지 않습니다.
+3. 후보별 innovation_axis는 서로 달라야 합니다. 가능한 축은 절차 제거·자동화, 새로운 참여
+   구조, 데이터의 새로운 활용, 사후 대응에서 사전 예방으로 전환, 새로운 사용자·사용 시점,
+   새로운 인센티브·신뢰 메커니즘입니다.
+4. 단순 정보 제공 앱·챗봇·커뮤니티·신고/민원 플랫폼·추천·대시보드·포인트 제공은 그 자체로
+   차별성이 아닙니다. 이런 형태를 쓰면 기존 방식과 작동 원리가 다른 novel_mechanism을
+   반드시 제시합니다. AI·블록체인·플랫폼 같은 기술 명칭 자체도 차별성으로 취급하지 않습니다.
+5. existing_approach → existing_limitation → novel_mechanism을 구체적으로 연결합니다.
+   novelty_reason에는 왜 이 메커니즘이 단순 기능 추가가 아닌지 설명합니다.
+"""
+
+_CANDIDATE_NOVELTY_FEASIBILITY_RULES = """
+
+[참신성 보존 검토 — IDEATION_NOVELTY_PROMPT_ENABLED]
+1. 각 후보의 novel_mechanism은 검증해야 할 핵심 가설입니다. 구현이 어렵다는 이유로 평범한
+   앱·게시판·대시보드로 제거하지 않습니다.
+2. 원안 구현이 어렵다면 같은 차별성을 검증할 수 있는 더 작은 실험을
+   novelty_preservation에 제안합니다.
+3. novelty_preservation에는 보존할 메커니즘, 축소된 검증 방법, 가장 큰 기술 위험을
+   1~2문장으로 씁니다.
+"""
+
+
+def candidate_novelty_prompt_enabled() -> bool:
+    """참신성 강화 후보 프롬프트 토글. false면 기존 프롬프트를 한 글자도 덧붙이지 않는다."""
+    return os.getenv("IDEATION_NOVELTY_PROMPT_ENABLED", "true").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
 IDEATION_CONV_CANDIDATE_SELECTION_TEMPLATE = "ideation_conv_candidate_selection.txt"
 
 
@@ -457,8 +499,8 @@ def build_ideation_conv_discussion_facilitator_prompt(
     idea_canvas: Any = None,
     latest_user_answer: str | None = None,
     recent_messages: Any = None,
-    required_phase: str | None = None,
-    next_phase_if_confirmed: str | None = None,
+    remaining_form_fields: Any = None,
+    meeting_stage_hint: str = "idea_development",
     context_anchors: Any = None,
 ) -> str:
     """진행자가 전문가 토론을 정리하고 사용자 질문이 꼭 필요한지 판단하는 프롬프트를
@@ -503,8 +545,8 @@ def build_ideation_conv_discussion_facilitator_prompt(
         "<<IDEA_CANVAS_JSON>>": _as_text(idea_canvas if idea_canvas is not None else None),
         "<<LATEST_USER_ANSWER>>": (latest_user_answer or "").strip() or "null",
         "<<RECENT_MESSAGES_JSON>>": _as_text(recent_messages if recent_messages is not None else []),
-        "<<REQUIRED_PHASE>>": required_phase or "problem_definition",
-        "<<NEXT_PHASE_IF_CONFIRMED>>": next_phase_if_confirmed or "target_user",
+        "<<REMAINING_FORM_FIELDS_JSON>>": _as_text(remaining_form_fields if remaining_form_fields else []),
+        "<<MEETING_STAGE_HINT>>": meeting_stage_hint,
         "<<CONTEXT_ANCHORS_JSON>>": _as_text(context_anchors if context_anchors is not None else []),
     }
     for token, value in replacements.items():
@@ -675,6 +717,33 @@ def build_ideation_conv_synthesis_prompt(
     return template
 
 
+def build_ideation_conv_form_draft_prompt(
+    notice_and_criteria: Any,
+    idea_proposal: Any,
+    existing_draft: Any,
+    target_fields: Any,
+) -> str:
+    """주제 확정(idea_proposal 생성) 직후, 사용자가 선택한 신청양식 항목 중 아직 대화로
+    확정되지 않은 필드(target_fields)를 문서체로 채우는 프롬프트를 조립한다.
+
+    existing_draft는 이번 신청서의 전체 필드 현황(참고용 — status="confirmed"인 값은
+    그대로 두고 다시 쓰지 않는다)이고, target_fields는 그 중 실제로 이번에 작성해야 할
+    필드만 추린 부분집합이다(호출부 ideation_conv_run.py::generate_application_form_draft가
+    application_form_draft.remaining_content_fields()로 미리 걸러서 넘긴다)."""
+    card = get_persona_card("ideation_facilitator")
+    template = _read_text(IDEATION_CONV_FORM_DRAFT_TEMPLATE)
+    replacements = {
+        "<<FACILITATOR_BLOCK>>": render_persona_block(card),
+        "<<NOTICE_AND_CRITERIA_JSON>>": _as_text(notice_and_criteria),
+        "<<IDEA_PROPOSAL_JSON>>": _as_text(idea_proposal),
+        "<<EXISTING_DRAFT_JSON>>": _as_text(existing_draft),
+        "<<TARGET_FIELDS_JSON>>": _as_text(target_fields),
+    }
+    for token, value in replacements.items():
+        template = template.replace(token, value)
+    return template
+
+
 # ============================================================================
 # 용준/Claude(2026-07-21): discovery(아이디어 발굴) 모드 프롬프트 빌더 3종.
 # refinement 전용 빌더(build_ideation_conv_question_prompt 등)는 무수정.
@@ -686,16 +755,40 @@ def build_ideation_conv_candidate_planning_prompt(
     retrieved_evidence: Any,
     previous_candidates: Any | None = None,
     regeneration_reason: str | None = None,
+    external_research: Any | None = None,
 ) -> str:
-    """기획 전문가의 "후보 생성" 프롬프트를 조립한다(공모전 분석 + 서로 다른 후보 2~3개)."""
+    """기획 전문가의 "후보 생성" 프롬프트를 조립한다(공모전 분석 + 서로 다른 후보 2~3개).
+
+    용준/Claude(2026-07-27, RAG-007 연결) — external_research(RAG-007, 외부 통계·시장·정책
+    참고자료)는 retrieved_evidence(RAG-006, 프로젝트/공고문 근거)와 별도 토큰으로 주입한다 —
+    같은 목록에 섞으면 두 근거의 신뢰 수준(직접 근거 vs 참고 자료)이 프롬프트에서 구분되지
+    않는다. None/빈 리스트면(use_rag=False 등) 기존과 동일하게 빈 배열 텍스트가 들어간다."""
     card = get_persona_card("planning_expert")
     template = _read_text(IDEATION_CONV_CANDIDATE_PLANNING_TEMPLATE)
+    if candidate_novelty_prompt_enabled():
+        template = template.replace(
+            "[출력 규칙]",
+            f"{_CANDIDATE_NOVELTY_PLANNING_RULES}\n[출력 규칙]",
+            1,
+        ).replace(
+            '      "differentiation": "string",',
+            (
+                '      "differentiation": "string",\n'
+                '      "innovation_axis": "string",\n'
+                '      "existing_approach": "string",\n'
+                '      "existing_limitation": "string",\n'
+                '      "novel_mechanism": "string",\n'
+                '      "novelty_reason": "string",'
+            ),
+            1,
+        )
     replacements = {
         "<<PERSONA_BLOCK>>": render_persona_block(card),
         "<<NOTICE_AND_CRITERIA_JSON>>": _as_text(notice_and_criteria),
         "<<RETRIEVED_EVIDENCE_JSON>>": _as_text(retrieved_evidence),
         "<<PREVIOUS_CANDIDATES_JSON>>": _as_text(previous_candidates if previous_candidates is not None else []),
         "<<REGENERATION_REASON>>": _as_text(regeneration_reason),
+        "<<EXTERNAL_RESEARCH_JSON>>": _as_text(external_research if external_research is not None else []),
     }
     for token, value in replacements.items():
         template = template.replace(token, value)
@@ -706,15 +799,33 @@ def build_ideation_conv_candidate_feasibility_prompt(
     notice_and_criteria: Any,
     candidates: Any,
     retrieved_evidence: Any,
+    external_research: Any | None = None,
 ) -> str:
-    """개발 전문가의 "후보별 실현 가능성 검토" 프롬프트를 조립한다."""
+    """개발 전문가의 "후보별 실현 가능성 검토" 프롬프트를 조립한다.
+
+    용준/Claude(2026-07-27, RAG-007 연결) — external_research는 build_ideation_conv_candidate_planning_prompt와
+    동일한 원칙으로 별도 토큰에 주입한다."""
     card = get_persona_card("dev_expert")
     template = _read_text(IDEATION_CONV_CANDIDATE_FEASIBILITY_TEMPLATE)
+    if candidate_novelty_prompt_enabled():
+        template = template.replace(
+            "[출력 규칙]",
+            f"{_CANDIDATE_NOVELTY_FEASIBILITY_RULES}\n[출력 규칙]",
+            1,
+        ).replace(
+            '      "dev_notes": "string | null"',
+            (
+                '      "dev_notes": "string | null",\n'
+                '      "novelty_preservation": "string"'
+            ),
+            1,
+        )
     replacements = {
         "<<PERSONA_BLOCK>>": render_persona_block(card),
         "<<NOTICE_AND_CRITERIA_JSON>>": _as_text(notice_and_criteria),
         "<<CANDIDATES_JSON>>": _as_text(candidates),
         "<<RETRIEVED_EVIDENCE_JSON>>": _as_text(retrieved_evidence),
+        "<<EXTERNAL_RESEARCH_JSON>>": _as_text(external_research if external_research is not None else []),
     }
     for token, value in replacements.items():
         template = template.replace(token, value)

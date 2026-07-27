@@ -24,6 +24,7 @@ if os.environ.get("RUN_KURE_INTEGRATION") != "1":
 
 from ai.rag.chunking.schemas import Chunk, ChunkingConfig, ChunkingResult, ChunkLocationType, ContentKind, SourceType
 from ai.rag.domain import IndexingContext
+from ai.rag.domain.config import DEFAULT_COLLECTION_NAME
 from ai.rag.embedding.kure_embedder import KUREEmbedder
 from ai.rag.embedding.schemas import EmbeddingConfig
 from ai.rag.retrieval.chroma_store import ChromaVectorStore, create_persistent_client
@@ -82,7 +83,7 @@ class TestRealKUREChromaSearch:
         client = create_persistent_client(path=str(tmp_path / "chroma_data"))
         store = ChromaVectorStore(
             client=client,
-            collection_name="project_documents_kure_v1",
+            collection_name=DEFAULT_COLLECTION_NAME,
             embedding_model=real_embedder.model_name,
             embedding_dimension=real_embedder.embedding_dimension,
             embedding_version="embedding_v1",

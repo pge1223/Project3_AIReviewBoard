@@ -103,6 +103,15 @@ def reset_trace_context(tokens: tuple[Token, Token]) -> None:
     _REQUEST_ID.reset(request_token)
 
 
+def current_session_id() -> str | None:
+    """bind_trace_context가 이번 요청에 바인딩해 둔 session_id(없으면 None).
+
+    가은/Claude(2026-07-27) — ideation_llm_log가 _safe_call_json/
+    _safe_call_structured_json 호출부마다 session_id를 새로 인자로 받지 않고도
+    로그 파일에 세션을 식별해 남길 수 있도록 노출한다."""
+    return _SESSION_ID.get()
+
+
 def _safe_log_value(value: Any) -> Any:
     if isinstance(value, str):
         return sanitize_preview(value)
@@ -153,6 +162,7 @@ def is_late_request_event(event_request_id: str | None, active_request_id: str |
 __all__ = [
     "bind_trace_context",
     "configure_ideation_trace",
+    "current_session_id",
     "is_late_request_event",
     "reset_trace_context",
     "sanitize_preview",

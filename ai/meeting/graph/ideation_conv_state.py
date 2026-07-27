@@ -299,6 +299,11 @@ class IdeationConvState(TypedDict):
     # 진행자 v02가 매 턴 draft_patch로 갱신하는 신청 양식 초안. 원본 양식 항목은 보존하고
     # 별도 상태로 관리하므로 구 프롬프트로 롤백해도 application_form_items 계약은 바뀌지 않는다.
     application_form_draft: list[dict]
+    # 가은/Claude(2026-07-27, 요청: "보완이 필요한 정보 섹션") — generate_application_form_draft()가
+    # 신청서 초안을 쓰면서 입력(idea_proposal/existing_draft)에 없어 본문에 넣지 못한 항목을
+    # 여기에 남긴다. 구버전 저장 state에는 이 키가 없을 수 있으므로 읽는 쪽은 항상
+    # `.get("application_form_supplement_notes", [])`로 접근한다(하위 호환).
+    application_form_supplement_notes: list[str]
     failed_node: str | None
     llm_calls_used: int
     # 용준/Claude(2026-07-20): 같은 쟁점(pending_question)으로 재질문한 횟수. 사용자가
@@ -307,6 +312,20 @@ class IdeationConvState(TypedDict):
     # 무관하게 다음 단계로 강제 진행한다. 재질문이 아니라 다음 단계로 넘어갈 때마다 0으로
     # 리셋된다(쟁점이 바뀌었으므로).
     answer_retry_count: int
+
+    # 용준/Claude(2026-07-27, 요청: "진행자 질문이 무한 반복된다" 버그 수정) — 진행자가
+    # awaiting_user_decision에서 던진 질문(pending_question)에 사용자가 방금 답한 직후,
+    # apply_user_answer가 그 질문 텍스트를 여기 보존한다. discussion_facilitator가 그 다음
+    # 턴에 또 사용자 결정 질문을 만들면 이 값과 의미가 같은지(_looks_like_restatement)
+    # 비교해 "이미 답변받은 질문을 다시 묻는지" 판단하는 데 쓴다. 사용자가 답하지 않은
+    # phase 전환에서는 항상 None으로 되돌아간다(관련 없는 질문과 잘못 비교하지 않도록).
+    last_answered_facilitator_question: str | None
+    # 위 last_answered_facilitator_question과 의미가 같은 질문을 진행자가 연속으로 다시
+    # 만든 횟수. answer_retry_count(전문가 질문 쪽 재질문 상한)와 대칭되는 안전장치 —
+    # discussion_facilitator가 이 값이 상한(_MAX_FACILITATOR_DECISION_REPEAT)에 도달하면
+    # 판정과 무관하게 방금 받은 사용자 답을 그대로 받아들이고 다음 단계로 강제 진행한다.
+    # 새 질문(의미가 다름)을 만들면 0으로 리셋된다.
+    facilitator_decision_repeat_count: int
 
     # 용준/Claude(2026-07-21): discovery(아이디어 발굴) 모드 전용 필드. refinement 세션에서는
     # ideation_mode="refinement" 외에는 전부 초기값(빈 값)에서 바뀌지 않는다 — 요청 2번
@@ -395,30 +414,10 @@ class IdeationConvState(TypedDict):
     # 라운드/토론이 왜 끝났는지 기록한다: consensus_reached/user_input_required/
     # no_new_information/max_turns_reached/user_finalized/interrupted_by_user.
     stop_reason: str | None
-    # "잠시만" 재개(reply_to_interjection)가 다음 그래프 진입을 특정 전문가로 강제 지정할 때만
-    # 채운다 — 해당 노드가 실행되자마자 None으로 리셋되어 다음 라운드에 잔류하지 않는다.
+    # 재인/Claude(2026-07-23, 아바타 페이싱 연동): continue_ideation_expert_turn이 다음 그래프
+    # 진입을 특정 전문가/진행자로 강제 지정할 때 채운다 — 해당 노드가 실행되자마자 None으로
+    # 리셋되어 다음 라운드에 잔류하지 않는다.
     forced_next_speaker: str | None
-
-    # 용준/Claude(2026-07-22, 요청: 지정 위원 질문 후 상대 검토 코드 강제) — reply_to_interjection이
-    # 사용자가 지정한 대상(target_speaker_id 원본값 — "planning_expert"/"dev_expert"/"both")을
-    # 그대로 기록한다. 이 네 필드는 서로 세트로 채워지고(reply_to_interjection이 한 번에
-    # 설정) counterpart_review_completed=True가 되는 순간 다시 함께 리셋된다(다음 인터젝션과
-    # 섞이지 않도록). 구버전 저장 state에는 이 키들이 없을 수 있으므로 읽는 쪽은 항상
-    # `.get(...)`로 접근한다(하위 호환 — 없으면 "보류 중인 상대 검토 없음"으로 취급).
-    interjection_target_speaker_id: str | None
-    # 지정 위원이 인터젝션에 처음 답한 메시지의 message_id — make_conv_discussion_node가
-    # 그 위원의 발언을 만든 직후 채운다(요청: 어느 발언이 "검토 대상"인지 코드가 결정적으로
-    # 추적). 상대 검토가 끝나면 required_counterpart_speaker_id 등과 함께 None으로 리셋된다.
-    interjection_response_message_id: str | None
-    # 반드시 한 번 더 발언해야 하는 반대편 위원("planning_expert"/"dev_expert") —
-    # reply_to_interjection이 지정 위원의 반대편으로 설정한다. _route_next_expert_turn이
-    # 이 값이 남아있는 한(counterpart_review_completed=False) 다른 어떤 라우팅 신호
-    # (issue_resolved/needs_user_input/발언 캡 이외)보다 우선해 이 위원에게 발언을 넘긴다.
-    required_counterpart_speaker_id: str | None
-    # required_counterpart_speaker_id가 실제로 발언을 완료했는지 여부. False인 동안은
-    # facilitator로 이동할 수 없다(요청 6번) — reply_to_interjection이 False로 설정하고,
-    # 그 위원의 discussion 노드 실행이 끝나면 True로 바뀌며 위 세 필드도 함께 리셋된다.
-    counterpart_review_completed: bool
 
     # 용준/Claude(2026-07-22, 요청: "잠시만" 취소 중 phase 오염 수정) — 그래프 내부에서만
     # 의미가 있는 "다음 라우팅 목적지" 신호. discussion_facilitator가 continue_round를
@@ -477,6 +476,21 @@ class IdeationConvState(TypedDict):
     # "세션 내 질문 fingerprint 또는 reason code를 기록"). 구버전 저장 state에는 이 키가
     # 없을 수 있으므로 읽는 쪽은 항상 `.get("asked_decision_fingerprints", [])`로 접근한다.
     asked_decision_fingerprints: list[str]
+
+    # 용준/Claude(2026-07-27, RAG-007 연결) — candidate_planning/candidate_feasibility가
+    # 검색한 외부 통계·시장·정책 참고자료(ai/rag/orchestration/ideation_external_evidence_service.py
+    # 참고). RAG-006 evidence_lookup 결과(ConvMessage.evidence, 프로젝트 문서 근거)와는 완전히
+    # 분리된 필드다 — 두 후보 노드가 각자 검색한 결과를 (source_id, document_id, chunk_id)
+    # 기준으로 중복 없이 누적한다(discussion_rounds처럼 operator.add 리듀서를 쓰지 않고 노드가
+    # 직접 병합해 반환한다 — 두 노드가 같은 요청 안에서 연속 실행되므로 하나의 정확한 값만
+    # 필요하다). use_rag=False거나 검색 결과가 없으면 빈 리스트다. 구버전 저장 state에는 이
+    # 키가 없을 수 있으므로 읽는 쪽은 항상 `.get("external_evidence", [])`로 접근한다.
+    external_evidence: list[dict]
+    # external_evidence 검색의 응답 단위 메타데이터 — used_dataset_search/used_public_api_search
+    # (bool)와 warnings(list[str], 예: 출처 미확인으로 제외된 건수, 도메인 폴백 여부). 구버전
+    # 저장 state에는 이 키가 없을 수 있으므로 읽는 쪽은 항상 `.get("external_evidence_meta", {})`
+    # 로 접근한다.
+    external_evidence_meta: dict
 
 
 def _extract_initial_idea_text(user_idea: dict | str | None) -> str:
@@ -550,9 +564,12 @@ def initial_conv_state(
         idea_canvas=None,
         application_form_items=application_form_items or [],
         application_form_draft=initialize_application_form_draft(application_form_items),
+        application_form_supplement_notes=[],
         failed_node=None,
         llm_calls_used=0,
         answer_retry_count=0,
+        last_answered_facilitator_question=None,
+        facilitator_decision_repeat_count=0,
         ideation_mode=mode,
         initial_idea=initial_idea or None,
         contest_analysis=None,
@@ -579,10 +596,6 @@ def initial_conv_state(
         expert_turn_count=0,
         stop_reason=None,
         forced_next_speaker=None,
-        interjection_target_speaker_id=None,
-        interjection_response_message_id=None,
-        required_counterpart_speaker_id=None,
-        counterpart_review_completed=True,
         next_route=None,
         consecutive_zero_linked_turns=0,
         consecutive_expert_judgment_only_turns=0,
@@ -593,6 +606,8 @@ def initial_conv_state(
         evidence_plan_shadow_history={},
         supplemental_retrieval_issue_ids=[],
         asked_decision_fingerprints=[],
+        external_evidence=[],
+        external_evidence_meta={},
     )
 
 
@@ -617,24 +632,46 @@ def apply_user_answer(previous_state: IdeationConvState, answer_message: ConvMes
         next_phase = "developer_question"
     elif prev_phase == "awaiting_developer_answer":
         next_phase = "expert_discussion"
-    elif prev_phase in {"awaiting_user_decision", "discussion_complete"}:
+    elif prev_phase == "discussion_complete":
         # 요청 8번 "필요한 경우 추가 질문 라운드" — 시스템이 스스로 판단해 다음 라운드로
         # 넘어가는 경우(next_action="continue_round")와 별개로, 사용자가 확정 버튼을
         # 누르지 않고 자유롭게 한 마디 더 남기면 그 발언도 두 전문가의 보완 의견 대상이
         # 된다. round는 새로 늘리지 않는다 — 새 질문 사이클이 시작된 게 아니라 같은
         # 라운드의 대화가 이어지는 것이기 때문이다.
         next_phase = "expert_discussion"
+    elif prev_phase == "awaiting_user_decision":
+        # 2026-07-26 라운드테이블 재설계(진행자 주도 사이클): 이 phase는 진행자가 방금
+        # 선택지/질문을 던지고 사용자 결정을 기다리던 지점이다. 사용자가 답했다는 것은
+        # "이번 사이클의 사용자 참여"가 끝났다는 뜻이므로, 전문가를 다시 거치지 않고
+        # 곧장 진행자에게 돌려준다(전문가는 진행자가 질문을 던지기 전에만 개입한다는
+        # 목표 루프). phase 자체는 그래프 진입점 표(_ENTRY_NODES)와 맞추기 위해 여전히
+        # "expert_discussion"으로 두고, forced_next_speaker로 실제 목적지만 바꾼다 —
+        # ideation_conv_build.py::_route_entry의 _FORCED_SPEAKER_TO_NODE["facilitator"]가
+        # discussion_facilitator로 직접 진입시킨다.
+        next_phase = "expert_discussion"
     else:
         raise ValueError(f"사용자 답변을 받을 수 없는 phase입니다: {prev_phase!r}")
+
+    forced_next_speaker = "facilitator" if prev_phase == "awaiting_user_decision" else None
+    # 용준/Claude(2026-07-27, 진행자 질문 무한 반복 버그 수정): 사용자가 방금 답한 질문이
+    # 진행자가 던진 것(awaiting_user_decision)이었을 때만 그 질문 텍스트를 보존한다 —
+    # discussion_facilitator가 다음 턴에 "이미 답변받은 질문을 다시 묻는지" 비교할 대상이다.
+    # 다른 phase 전환(전문가 질문 답변 등)에서는 관련 없는 이전 값이 남지 않도록 None으로
+    # 되돌린다.
+    last_answered_facilitator_question = (
+        previous_state.get("pending_question") if prev_phase == "awaiting_user_decision" else None
+    )
 
     return IdeationConvState(
         **{
             **previous_state,
             "messages": previous_state["messages"] + [answer_message],
             "phase": next_phase,
+            "forced_next_speaker": forced_next_speaker,
             "pending_question": None,
             "pending_expected_answer_type": None,
             "pending_question_topic": None,
+            "last_answered_facilitator_question": last_answered_facilitator_question,
             # 다음 단계로 실제로 넘어가는 시점이므로 재질문 카운터를 리셋한다(새 쟁점 시작).
             "answer_retry_count": 0,
             # 용준/Claude(2026-07-22, 요청: 반복 감지 카운터는 사용자가 실제로 새 정보를

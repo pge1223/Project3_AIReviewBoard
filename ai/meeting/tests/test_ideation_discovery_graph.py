@@ -26,6 +26,10 @@ from graph.ideation_conv_discovery import make_candidate_selection_node  # noqa:
 from graph.ideation_conv_nodes import make_conv_question_node  # noqa: E402
 from graph.ideation_conv_run import _new_user_message  # noqa: E402
 from graph.ideation_conv_state import apply_user_answer  # noqa: E402
+from prompts import (  # noqa: E402
+    build_ideation_conv_candidate_feasibility_prompt,
+    build_ideation_conv_candidate_planning_prompt,
+)
 
 _REMAINING_TOPICS_RE = re.compile(
     r"\[아직 확인되지 않은 주제\(우선순위 순\) remaining_topics\]\n(.*?)\n\n", re.S
@@ -48,6 +52,31 @@ CANVAS_STUB_RESPONSE = json.dumps(
     },
     ensure_ascii=False,
 )
+
+
+def test_candidate_novelty_prompt_is_enabled_by_default(monkeypatch):
+    monkeypatch.delenv("IDEATION_NOVELTY_PROMPT_ENABLED", raising=False)
+
+    planning = build_ideation_conv_candidate_planning_prompt({}, [], [], None)
+    feasibility = build_ideation_conv_candidate_feasibility_prompt({}, [], [])
+
+    assert "[참신성 강화 규칙" in planning
+    assert '"innovation_axis": "string"' in planning
+    assert '"novel_mechanism": "string"' in planning
+    assert "[참신성 보존 검토" in feasibility
+    assert '"novelty_preservation": "string"' in feasibility
+
+
+def test_candidate_novelty_prompt_can_be_rolled_back_with_env(monkeypatch):
+    monkeypatch.setenv("IDEATION_NOVELTY_PROMPT_ENABLED", "false")
+
+    planning = build_ideation_conv_candidate_planning_prompt({}, [], [], None)
+    feasibility = build_ideation_conv_candidate_feasibility_prompt({}, [], [])
+
+    assert "[참신성 강화 규칙" not in planning
+    assert '"innovation_axis": "string"' not in planning
+    assert "[참신성 보존 검토" not in feasibility
+    assert '"novelty_preservation": "string"' not in feasibility
 
 
 def _selection_context_from_prompt(prompt: str) -> dict:
@@ -947,6 +976,123 @@ def test_combine_does_not_reask_already_selected_candidates():
     assert ctx.get("selection_intent") == "combine"
     assert ctx.get("selected_idea") is not None
     assert len(ctx.get("source_candidates") or []) == 2
+
+
+# 용준/Claude(2026-07-27, RAG-007 연결) — candidate_planning/candidate_feasibility에 주입되는
+# external_evidence_lookup(RAG-007, ai/rag/orchestration/ideation_external_evidence_service.py가
+# backend에서 만드는 콜백) 배선을 그래프 레벨에서 검증한다. ai/meeting/graph는 ai.rag를 몰라야
+#하므로 여기서는 (persona_id, query) -> dict 계약을 지키는 순수 fake만 쓴다(실제 ai.rag
+# 조회 로직 자체는 ai/rag/tests/test_ideation_external_evidence_service.py가 검증한다).
+_EXTERNAL_EVIDENCE_ITEM = {
+    "source_id": "SRC-1",
+    "document_id": "DOC-EXT-1",
+    "chunk_id": "CHUNK-EXT-1",
+    "title": "스마트시티 시장 통계",
+    "publisher": "통계청",
+    "source_url": "https://example.org/stat",
+    "reference_date": "2025-01-01",
+    "quote": "시장 규모는 5조원입니다.",
+}
+
+
+def _fake_external_evidence_lookup(calls_log):
+    def lookup(persona_id: str, query: str) -> dict:
+        calls_log.append((persona_id, query))
+        return {
+            "external_evidence": [dict(_EXTERNAL_EVIDENCE_ITEM)],
+            "used_dataset_search": True,
+            "used_public_api_search": False,
+            "warnings": [],
+        }
+
+    return lookup
+
+
+def test_external_evidence_lookup_is_called_for_planning_and_dev_roles():
+    """요청 4/5번 — candidate_planning은 persona_id="planning_expert", candidate_feasibility는
+    persona_id="dev_expert"로 external_evidence_lookup을 호출해야 한다(role 매핑 자체는
+    ai.rag 쪽 resolve_external_reviewer_role이 담당 — 여기서는 그래프가 올바른 persona_id로
+    콜백을 호출하는지만 검증한다)."""
+    calls: list[tuple[str, str]] = []
+    llm = DiscoveryScriptedLLM()
+    state = start_ideation_conversation(
+        session_id="EXT-EVID-TEST-1",
+        notice_and_criteria=NOTICE_AND_CRITERIA,
+        user_idea={"description": ""},
+        llm_call=llm,
+        external_evidence_lookup=_fake_external_evidence_lookup(calls),
+    )
+    persona_ids = [c[0] for c in calls]
+    assert "planning_expert" in persona_ids
+    assert "dev_expert" in persona_ids
+    assert state["phase"] == "awaiting_candidate_selection"
+
+
+def test_external_evidence_appears_in_prompt_with_url_and_is_exposed_in_state():
+    """요청: 후보 생성 프롬프트에 외부 근거 및 URL 포함 확인 + 응답 state에 external_evidence/
+    retrieval 관련 정보 노출 확인(요청 11번)."""
+    calls: list[tuple[str, str]] = []
+    llm = DiscoveryScriptedLLM()
+    state = start_ideation_conversation(
+        session_id="EXT-EVID-TEST-2",
+        notice_and_criteria=NOTICE_AND_CRITERIA,
+        user_idea={"description": ""},
+        llm_call=llm,
+        external_evidence_lookup=_fake_external_evidence_lookup(calls),
+    )
+    planning_prompts = [p for p in llm.captured_prompts if "[후보 생성 규칙]" in p]
+    assert planning_prompts
+    assert "통계청" in planning_prompts[0]
+    assert "https://example.org/stat" in planning_prompts[0]
+
+    assert state.get("external_evidence")
+    assert state["external_evidence"][0]["source_url"] == "https://example.org/stat"
+    assert state["external_evidence"][0]["publisher"] == "통계청"
+    assert state["external_evidence"][0]["reference_date"] == "2025-01-01"
+    meta = state.get("external_evidence_meta") or {}
+    assert meta.get("used_dataset_search") is True
+    assert meta.get("used_public_api_search") is False
+
+
+def test_no_external_evidence_lookup_proceeds_like_before():
+    """요청 10번 — external_evidence_lookup=None(use_rag=False 등)이면 검색 결과 없이도
+    회의는 기존 흐름 그대로 진행되고, 프롬프트에는 빈 배열만 들어간다(문자열 그대로
+    "[]")."""
+    llm = DiscoveryScriptedLLM()
+    state = start_ideation_conversation(
+        session_id="EXT-EVID-TEST-3",
+        notice_and_criteria=NOTICE_AND_CRITERIA,
+        user_idea={"description": ""},
+        llm_call=llm,
+        external_evidence_lookup=None,
+    )
+    assert state["phase"] == "awaiting_candidate_selection"
+    assert state.get("external_evidence") == []
+    assert state.get("external_evidence_meta") == {
+        "used_dataset_search": False,
+        "used_public_api_search": False,
+        "warnings": [],
+    }
+
+
+def test_external_evidence_lookup_failure_does_not_break_candidate_generation():
+    """요청 10번 — external_evidence_lookup이 예외를 던져도 후보 생성 자체는 실패하지
+    않는다(ai/meeting/graph/ideation_conv_discovery.py::_call_external_evidence_lookup의
+    fail-closed 정책)."""
+
+    def broken_lookup(persona_id: str, query: str) -> dict:
+        raise RuntimeError("external research backend unavailable")
+
+    llm = DiscoveryScriptedLLM()
+    state = start_ideation_conversation(
+        session_id="EXT-EVID-TEST-4",
+        notice_and_criteria=NOTICE_AND_CRITERIA,
+        user_idea={"description": ""},
+        llm_call=llm,
+        external_evidence_lookup=broken_lookup,
+    )
+    assert state["phase"] == "awaiting_candidate_selection"
+    assert state.get("external_evidence") == []
 
 
 if __name__ == "__main__":

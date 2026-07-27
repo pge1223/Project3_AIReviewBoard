@@ -154,7 +154,11 @@ def test_discussion_uses_safe_expert_judgment_instead_of_failing_session(monkeyp
     assert update["expert_turn_count"] == 1
     message = update["messages"][0]
     assert "전문가 판단으로 진행" in message["content"]
-    assert "문제 정의를 구체화" in message["content"]
+    assert "문제 정의 초안" in message["content"]
+    assert "에너지 사용을 최적화하는 AI 서비스" in message["content"]
+    assert "원인:" in message["content"]
+    assert "영향:" in message["content"]
+    assert "구체화하겠습니다" not in message["content"]
     # 두 번 모두 구조화 검증에 실패한 서버 fallback은 검증 가능한 새 논점이 아니다.
     # 같은 쟁점을 상대 위원에게 다시 넘겨 반복시키지 않고 진행자가 잠정 정리한다.
     assert message["structured"]["recommended_next_speaker"] == "ideation_facilitator"

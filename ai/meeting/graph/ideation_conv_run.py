@@ -13,6 +13,9 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+from prompts import build_ideation_conv_form_draft_prompt
+
+from .application_form_draft import apply_application_form_draft_patch, remaining_content_fields
 from .ideation_conv_build import assemble_ideation_conversation_graph
 from .ideation_conv_discovery import MAX_CANDIDATE_REGENERATIONS, is_regenerate_request
 from .ideation_conv_nodes import (
@@ -43,7 +46,7 @@ from .ideation_conv_state import (
     request_finalize,
 )
 from .ideation_trace import sanitize_preview, trace_event
-from .llm import LLMCall
+from .llm import LLMCall, parse_json_response
 
 IdeationConvProgressCallback = Callable[[dict], None]
 
@@ -313,6 +316,7 @@ def start_ideation_conversation(
     ground_claims=None,
     index_target_evidence: IndexTargetEvidenceFn | None = None,
     evidence_planner=None,
+    external_evidence_lookup=None,
     on_progress: IdeationConvProgressCallback | None = None,
     on_snapshot: IdeationConvSnapshotCallback | None = None,
     application_form_items: list[dict] | None = None,
@@ -320,13 +324,17 @@ def start_ideation_conversation(
     """세션을 시작해 기획 전문가의 첫 질문 하나만 만들고 멈춘다(요청 목표 흐름 1~3번).
 
     가은/Claude(2026-07-22, 요청: 신청양식 항목 약한 주입): application_form_items는 순수
-    추가 파라미터다(기본값 None) — 넘기지 않으면 기존 호출부와 완전히 동일하게 동작한다."""
+    추가 파라미터다(기본값 None) — 넘기지 않으면 기존 호출부와 완전히 동일하게 동작한다.
+
+    용준/Claude(2026-07-27, RAG-007 연결): external_evidence_lookup도 순수 추가 파라미터다
+    (기본값 None) — candidate_planning/candidate_feasibility 노드에만 전달된다."""
     graph = assemble_ideation_conversation_graph(
         llm_call,
         evidence_lookup=evidence_lookup,
         ground_claims=ground_claims,
         index_target_evidence=index_target_evidence,
         evidence_planner=evidence_planner,
+        external_evidence_lookup=external_evidence_lookup,
     )
     state = initial_conv_state(
         session_id, notice_and_criteria, user_idea, max_rounds=max_rounds,
@@ -685,6 +693,7 @@ def reply_ideation_conversation(
     ground_claims=None,
     index_target_evidence: IndexTargetEvidenceFn | None = None,
     evidence_planner=None,
+    external_evidence_lookup=None,
     on_progress: IdeationConvProgressCallback | None = None,
     on_snapshot: IdeationConvSnapshotCallback | None = None,
     stop_after_expert_turn: bool = False,
@@ -773,6 +782,7 @@ def reply_ideation_conversation(
             ground_claims=ground_claims,
             index_target_evidence=index_target_evidence,
             evidence_planner=evidence_planner,
+            external_evidence_lookup=external_evidence_lookup,
         )
         return _drive_graph(graph, restart_state, on_progress, on_snapshot, stop_after_expert_turn=stop_after_expert_turn)
 
@@ -829,8 +839,19 @@ def reply_ideation_conversation(
         ground_claims=ground_claims,
         index_target_evidence=index_target_evidence,
         evidence_planner=evidence_planner,
+        external_evidence_lookup=external_evidence_lookup,
     )
-    return _drive_graph(graph, state, on_progress, on_snapshot, stop_after_expert_turn=stop_after_expert_turn)
+    result_state = _drive_graph(graph, state, on_progress, on_snapshot, stop_after_expert_turn=stop_after_expert_turn)
+
+    if result_state.get("forced_next_speaker") is not None:
+        # 2026-07-26 라운드테이블 재설계: apply_user_answer가 awaiting_user_decision 직후
+        # forced_next_speaker="facilitator"를 심어 discussion_facilitator로 바로 진입시킨다
+        # (사용자가 진행자의 질문/선택지에 막 답한 경우, 전문가를 다시 거치지 않기 위함).
+        # discussion_facilitator_node는 이 값을 스스로 리셋하지 않으므로(다른 두 전문가
+        # 노드와 달리 원래 forced 진입 대상이 아니었던 노드라서 — continue_ideation_expert_turn의
+        # 같은 정리 로직 참고) 다음 요청에 잔류하지 않도록 여기서 확실히 지운다.
+        result_state = IdeationConvState(**{**result_state, "forced_next_speaker": None})
+    return result_state
 
 
 def continue_ideation_expert_turn(
@@ -841,6 +862,7 @@ def continue_ideation_expert_turn(
     ground_claims=None,
     index_target_evidence: IndexTargetEvidenceFn | None = None,
     evidence_planner=None,
+    external_evidence_lookup=None,
     on_progress: IdeationConvProgressCallback | None = None,
     on_snapshot: IdeationConvSnapshotCallback | None = None,
 ) -> IdeationConvState:
@@ -869,12 +891,24 @@ def continue_ideation_expert_turn(
     말해야 하는데 요청이 이상하게 감"): _route_next_expert_turn은 "방금 기획/개발위원이
     말한 직후"에만 불리도록 설계된 함수라(그 함수 자체 주석: "정상 흐름에서는 항상 방금
     전문가 발언 직후에만 이 라우터가 불린다"), 아직 이번 라운드에서 위원이 한 번도 안
-    말한 시점(방금 진행자 안건 소개만 끝난 직후)에 그대로 부르면 자기 방어 코드
-    (missing_expert_message)가 "facilitator"를 반환해버려 진행자가 또 진행자를 부르는
-    잘못된 결과가 나온다. 이 경우는 _route_next_expert_turn을 아예 부르지 않고, 그래프의
-    기본 진입 규칙(_route_entry의 기본값 = planning_expert_discussion, ideation_conv_build.py
-    ::_ENTRY_NODES)과 동일하게 "라운드 첫 턴은 항상 기획위원"으로 직접 정한다 — 이것도
-    새 판단 로직이 아니라 이미 있는 그래프 관례를 그대로 따르는 것뿐이다."""
+    말한 시점에 그대로 부르면 자기 방어 코드(missing_expert_message)가 "facilitator"를
+    반환해버려 진행자가 또 진행자를 부르는 잘못된 결과가 나온다. 이 경우는
+    _route_next_expert_turn을 아예 부르지 않는다.
+
+    용준/Claude(2026-07-26, 라운드테이블 재설계 — 실측: "후보 선택 직후 고정 1턴 없이
+    바로 위원이 말함"): 위 문단은 원래 "이 경우는 무조건 기획위원이 먼저 말한다"였다.
+    하지만 candidate_selection이 끝나면 항상 정지하는 _drive_graph의 single_turn 멈춤
+    지점(요청: "선택 확정 + 안건 소개"를 한 박자로 보여주기 위해 진행자 메시지 2개가
+    같은 스냅샷에 있으면 그래프가 discussion_facilitator를 실행하기도 전에 멈춘다) 때문에,
+    이 함수가 프론트의 자동 이어달리기(useEffect 루프, IdeationConversationScreen.jsx)로
+    다음 턴을 이어받을 때 이 지점을 항상 통과한다 — 즉 "이번 라운드에서 위원이 아직 말한
+    적 없음"은 두 가지 서로 다른 상황을 뭉뚱그리고 있었다: (a) 진행자가 방금 새 주제를
+    열어서(continue_round) 위원 차례가 된 경우 — 기획위원이 먼저 말하는 게 맞다, (b) 이
+    세션에서 discussion_facilitator가 아직 한 번도 실제 턴을 낸 적이 없는 경우
+    (candidate_selection이 붙인 정적 요약/안건 메시지뿐, structured 없음) — "고정 1턴"
+    요건(후보 선택 직후 진행자가 전문가 없이 먼저 요약+문제정의를 확인)에 따라 기획위원이
+    아니라 진행자가 먼저 말해야 한다. (a)/(b) 구분 없이 무조건 기획위원으로 보내던 게
+    바로 이 버그였다."""
     if previous_state.get("phase") != "expert_discussion":
         raise ValueError(
             "continue_ideation_expert_turn은 phase가 'expert_discussion'일 때만 호출할 수 "
@@ -883,12 +917,17 @@ def continue_ideation_expert_turn(
 
     messages = previous_state.get("messages") or []
     last_message = messages[-1] if messages else None
-    if last_message is None or last_message.get("speaker_id") not in ("planning_expert", "dev_expert"):
-        # 이번 라운드에서 위원이 아직 한 번도 안 말함 — _route_next_expert_turn을 쓸 수
-        # 없는 케이스(위 설명 참고). 그래프 기본 진입 규칙과 동일하게 기획위원이 먼저 말한다.
+    if last_message is not None and last_message.get("speaker_id") in ("planning_expert", "dev_expert"):
+        next_target = _route_next_expert_turn(previous_state)
+    elif any(m.get("speaker_id") == "ideation_facilitator" and m.get("structured") for m in messages):
+        # (a) 진행자가 이미 실제 턴을 낸 적이 있다 — 방금 새 주제를 연 것이므로 기획위원이
+        # 먼저 말한다(그래프 기본 진입 규칙과 동일한 관례).
         next_target = "planning_expert"
     else:
-        next_target = _route_next_expert_turn(previous_state)
+        # (b) 이 세션에서 진행자가 아직 한 번도 실제 턴을 낸 적이 없다 — "고정 1턴"이
+        # 먼저다. discussion_facilitator 노드 자신이 이 경우를 감지해(is_first_facilitator_turn)
+        # 전문가 없이 사용자에게 바로 묻는다.
+        next_target = "facilitator"
     if next_target not in _FORCED_ENTRY_TARGETS:
         # "failed" — 더 진행할 턴이 없다. 그대로 반환(호출부가 phase 등을 보고 처리).
         return previous_state
@@ -900,6 +939,7 @@ def continue_ideation_expert_turn(
         ground_claims=ground_claims,
         index_target_evidence=index_target_evidence,
         evidence_planner=evidence_planner,
+        external_evidence_lookup=external_evidence_lookup,
     )
     result_state = _drive_graph(graph, state, on_progress, on_snapshot, stop_after_expert_turn=True)
 
@@ -930,141 +970,158 @@ def finalize_ideation_conversation(
     return _drive_graph(graph, state, on_progress, on_snapshot)
 
 
-_TARGET_TO_FORCED_SPEAKER = {"planning_expert": "planning_expert", "dev_expert": "dev_expert"}
-_INTERJECTION_COUNTERPART = {"planning_expert": "dev_expert", "dev_expert": "planning_expert"}
-# expert_discussion 계열 phase(취소 직후에도 canonical state의 phase는 여전히
-# "expert_discussion"이다 — 아직 한 라운드가 끝나지 않았으므로) + 기존 REPLYABLE_PHASES(라운드
-# 사이 자유 질문에도 대상 지정을 허용하는 자연스러운 확장) 양쪽에서 인터럽션을 받는다.
-INTERJECTION_REPLYABLE_PHASES = REPLYABLE_PHASES | {"expert_discussion"}
+# 가은/Claude(2026-07-27, 버그 리포트: "target_fields 26개 세션에서 LLM이 매번 11~15개만
+# 채우고 나머지를 빠뜨림") — 필드 수가 많을수록 "한 번의 JSON 응답에 전부 빠짐없이"라는
+# 요구 자체가 안 지켜지는 빈도가 늘어난다. 한 번에 요청하는 필드 수를 이 상한으로 쪼갠다.
+_FORM_DRAFT_BATCH_SIZE = 10
 
 
-def reply_to_interjection(
+def _chunked(items: list[dict], size: int) -> list[list[dict]]:
+    return [items[i : i + size] for i in range(0, len(items), size)]
+
+
+def _fill_form_draft_batch(
+    *,
+    llm_call: LLMCall,
+    notice_and_criteria: Any,
+    idea_proposal: Any,
+    working_draft: list[dict],
+    batch: list[dict],
+    session_id: str | None,
+) -> tuple[list[dict], int, list[str], int]:
+    """batch(최대 _FORM_DRAFT_BATCH_SIZE개 필드)를 채운다. 요청 제안 2번("전부 아니면 실패
+    대신 채워진 필드는 그대로 적용하고 누락분만 재시도") 그대로 — _safe_call_structured_json은
+    검증 실패 시 raw 자체를 버리므로(all-or-nothing 계약) 여기서는 쓰지 않고, 채워진 필드는
+    즉시 적용한 뒤 다음 시도에서 남은 필드만 다시 요청한다. 반환값은
+    (updated_working_draft, applied_count, supplement_notes, attempts_used)."""
+    remaining = list(batch)
+    applied_count = 0
+    supplement_notes: list[str] = []
+    attempts_used = 0
+
+    for attempt in range(2):  # 최초 1회 + 누락분 재시도 1회(요청 10번과 동일한 상한 정책)
+        if not remaining:
+            break
+        remaining_ids = {str(row.get("field_id")) for row in remaining}
+        prompt = build_ideation_conv_form_draft_prompt(
+            notice_and_criteria, idea_proposal, working_draft, remaining
+        )
+        attempts_used += 1
+        try:
+            raw = parse_json_response(llm_call(prompt))
+        except (ValueError, KeyError, TypeError):
+            trace_event(
+                "IDEATION_FORM_DRAFT_BATCH_PARSE_FAILED",
+                level=30,
+                session_id=session_id,
+                attempt=attempt + 1,
+                batch_field_count=len(remaining),
+            )
+            continue
+
+        patch = raw.get("draft_patch") if isinstance(raw, dict) else None
+        if isinstance(patch, list):
+            working_draft, applied = apply_application_form_draft_patch(
+                working_draft, patch, confirmable_field_ids=remaining_ids
+            )
+            applied_ids = {row["field_id"] for row in applied}
+            for row in working_draft:
+                if row.get("field_id") in applied_ids:
+                    row["status"] = "confirmed"
+            applied_count += len(applied)
+            remaining = [row for row in remaining if str(row.get("field_id")) not in applied_ids]
+        if isinstance(raw, dict):
+            supplement_notes.extend(
+                note.strip()
+                for note in (raw.get("needs_supplementation") or [])
+                if isinstance(note, str) and note.strip()
+            )
+        trace_event(
+            "IDEATION_FORM_DRAFT_BATCH_PROGRESS",
+            session_id=session_id,
+            attempt=attempt + 1,
+            requested_field_count=len(remaining_ids),
+            still_missing_field_count=len(remaining),
+        )
+
+    return working_draft, applied_count, supplement_notes, attempts_used
+
+
+def generate_application_form_draft(
     *,
     previous_state: IdeationConvState,
-    user_message: str,
-    target_speaker_id: str,
     llm_call: LLMCall,
-    opinion_target_speaker_id: str | None = None,
-    interrupted_speaker_id: str | None = None,
-    evidence_lookup=None,
-    ground_claims=None,
-    index_target_evidence: IndexTargetEvidenceFn | None = None,
-    evidence_planner=None,
-    on_progress: IdeationConvProgressCallback | None = None,
-    on_snapshot: IdeationConvSnapshotCallback | None = None,
 ) -> IdeationConvState:
-    """용준/Claude(2026-07-22, 요청: "잠시만" 재개 — 지정 위원 우선 응답): 사용자가 "잠시만"
-    으로 진행 중이던 발언을 취소한 뒤(또는 라운드 사이 자유롭게) 특정 위원을 지정해 질문했을
-    때 호출된다. reply_ideation_conversation과 분리한 이유: phase 게이트가 다르고
-    (expert_discussion 자체도 허용해야 한다), "지정 위원이 먼저 답하고 상대가 반드시
-    검토한다"를 보장하려면 진입 노드를 강제해야 하기 때문이다(forced_next_speaker).
+    """가은/Claude(2026-07-27, 요청: "주제 확정하고 아래에 신청서 초안 버튼 하나 만들어서
+    페이지로 하나 띄워주자") — 주제가 확정된(phase="finalized") 세션에서, 사용자가 회의 중
+    선택한 신청양식 항목(application_form_items) 중 아직 대화로 확정되지 않은 필드를
+    idea_proposal(방금 만든 종합 결과)을 근거로 문서체로 채운다.
 
-    target_speaker_id="both"면 active_issue_id가 가리키는 쟁점의 가장 최근 발언자 반대편이
-    먼저 답한다(마지막이 planning_expert였다면 dev_expert 먼저) — 찾을 수 없으면 기본값
-    planning_expert가 먼저 답한다. 지정 위원 응답 이후 라우팅은 기존
-    _route_next_expert_turn을 그대로 타므로(recommended_next_speaker가 상대 위원이면 자동으로
-    상대가 검토), "지정 위원 답변 → 상대 검토"가 그래프 구조 변경 없이 보장된다."""
-    if previous_state["phase"] not in INTERJECTION_REPLYABLE_PHASES:
+    가은/Claude(2026-07-27, 버그 리포트 반영) — target_fields가 많은 세션(예: 26개)에서
+    한 번의 JSON 응답에 전부 채우라고 요구하면 매 시도 다른 필드 조합이 빠지는 문제가
+    있었다. _FORM_DRAFT_BATCH_SIZE 단위로 나눠 호출하고, 배치 안에서도 채워진 필드는 그대로
+    적용한 뒤 누락분만 재시도한다(제안 1·2번 모두 반영) — 그래도 못 채운 필드는 status가
+    "empty"로 남을 뿐 요청 전체를 실패시키지 않는다. remaining_content_fields()가 매번
+    현재 draft에서 다시 계산하므로, 사용자가 버튼을 다시 누르면 그때 남은 필드만 대상이 된다.
+
+    LangGraph 노드가 아니라 독립 함수다 — 그래프 라운드 진행과 무관한 1회성 후처리라
+    ideation_conv_build.py의 그래프 구조(다른 담당자가 계속 손대는 중인 라운드테이블
+    재설계)를 건드리지 않는다. status="confirmed"인 필드는 remaining_content_fields()가
+    애초에 target_fields에서 제외하므로 이 함수가 그 값을 덮어쓸 방법이 없다."""
+    if previous_state["phase"] != "finalized":
         raise ValueError(
-            f"이 phase에서는 위원 지정 질문을 받을 수 없습니다: {previous_state['phase']!r}."
+            f"신청서 초안은 주제가 확정된 뒤에만 만들 수 있습니다: phase={previous_state['phase']!r}"
         )
-    if target_speaker_id not in ("planning_expert", "dev_expert", "both"):
-        raise ValueError(f"target_speaker_id가 올바르지 않습니다: {target_speaker_id!r}")
-    opinion_target_speaker_id = opinion_target_speaker_id or target_speaker_id
-    if opinion_target_speaker_id not in ("planning_expert", "dev_expert", "both"):
-        raise ValueError(
-            f"opinion_target_speaker_id가 올바르지 않습니다: {opinion_target_speaker_id!r}"
+    if not previous_state.get("application_form_items"):
+        raise ValueError("이 세션에는 선택된 신청 양식 항목이 없습니다.")
+
+    current_draft = previous_state.get("application_form_draft") or []
+    target_fields = remaining_content_fields(current_draft)
+    if not target_fields:
+        # 이미 대화 중 전부 확정됐다 — 새로 만들 것 없이 현재 상태 그대로 반환.
+        return previous_state
+
+    session_id = previous_state.get("session_id")
+    working_draft = current_draft
+    used = previous_state.get("llm_calls_used", 0)
+    total_applied = 0
+    supplement_notes: list[str] = []
+
+    for batch in _chunked(target_fields, _FORM_DRAFT_BATCH_SIZE):
+        working_draft, applied_count, batch_notes, attempts_used = _fill_form_draft_batch(
+            llm_call=llm_call,
+            notice_and_criteria=previous_state["notice_and_criteria"],
+            idea_proposal=previous_state.get("idea_proposal"),
+            working_draft=working_draft,
+            batch=batch,
+            session_id=session_id,
         )
-    if interrupted_speaker_id not in (None, "planning_expert", "dev_expert"):
-        raise ValueError(f"interrupted_speaker_id가 올바르지 않습니다: {interrupted_speaker_id!r}")
+        used += attempts_used
+        total_applied += applied_count
+        supplement_notes.extend(batch_notes)
 
-    if target_speaker_id == "both":
-        last_expert_message = None
-        for msg in reversed(previous_state["messages"]):
-            if msg.get("speaker_id") in ("planning_expert", "dev_expert"):
-                last_expert_message = msg
-                break
-        if last_expert_message and last_expert_message["speaker_id"] == "planning_expert":
-            forced_speaker = "dev_expert"
-        else:
-            forced_speaker = "planning_expert"
-    else:
-        forced_speaker = _TARGET_TO_FORCED_SPEAKER[target_speaker_id]
-
-    opinion_speakers = (
-        {"planning_expert", "dev_expert"}
-        if opinion_target_speaker_id == "both"
-        else {opinion_target_speaker_id}
-    )
-    # 완료되지 않은 중단 발언은 메시지로 저장하지 않으므로 과거의 같은 위원 발언을 잘못
-    # 연결하지 않는다. 나머지 선택 대상은 가장 최근 완료 발언을 명시적으로 참조한다.
-    referenced_message_ids: list[str] = []
-    for speaker_id in opinion_speakers:
-        if speaker_id == interrupted_speaker_id:
-            continue
-        referenced = next(
-            (
-                message
-                for message in reversed(previous_state["messages"])
-                if message.get("speaker_id") == speaker_id
-            ),
-            None,
+    if total_applied == 0:
+        trace_event(
+            "IDEATION_FORM_DRAFT_GENERATION_FAILED",
+            level=30,
+            session_id=session_id,
+            target_field_count=len(target_fields),
         )
-        if referenced and referenced.get("message_id"):
-            referenced_message_ids.append(referenced["message_id"])
+        raise RuntimeError("신청서 초안 생성에 실패했습니다. 다시 시도해 주세요.")
 
-    interjection_message = ConvMessage(
-        message_id=f"MSG-{uuid.uuid4().hex[:10]}",
-        speaker_id="user",
-        speaker_name="사용자",
-        role="사용자",
-        round=previous_state["round"],
-        message_type="interjection",
-        content=user_message,
-        referenced_message_ids=referenced_message_ids,
-        evidence=[],
-        created_at=datetime.now(timezone.utc).isoformat(),
-        structured={
-            "target_speaker_id": target_speaker_id,
-            "opinion_target_speaker_id": opinion_target_speaker_id,
-            "interrupted_speaker_id": interrupted_speaker_id,
-            "active_issue_id": previous_state.get("active_issue_id"),
-        },
+    trace_event(
+        "IDEATION_FORM_DRAFT_GENERATED",
+        session_id=session_id,
+        target_field_count=len(target_fields),
+        applied_field_count=total_applied,
+        supplement_note_count=len(supplement_notes),
     )
-    # 용준/Claude(2026-07-22, 요청: 사용자 답변을 session target evidence로 반영) — "잠시만"
-    # 인터젝션도 구체적인 개입이면 색인 대상이다(reply_ideation_conversation과 동일한 분류
-    # 규칙 재사용). 아래 _drive_graph보다 먼저 실행되므로 인덱싱 완료 후에만 다음 전문가
-    # 검색이 시작된다(요청 9번).
-    _index_user_answer(
-        state=previous_state,
-        answer_message=interjection_message,
-        raw_answer_text=user_message,
-        index_target_evidence=index_target_evidence,
-    )
-
-    state = IdeationConvState(
+    return IdeationConvState(
         **{
             **previous_state,
-            "phase": "expert_discussion",
-            "messages": previous_state["messages"] + [interjection_message],
-            "forced_next_speaker": forced_speaker,
-            "pending_question": None,
-            "pending_question_topic": None,
-            # 용준/Claude(2026-07-22, 요청: 지정 위원 질문 후 상대 검토 코드 강제) — forced_speaker가
-            # 답하고 나면 반드시 반대편(_INTERJECTION_COUNTERPART)이 한 번 더 검토해야 하고,
-            # 그 전까지는 _route_next_expert_turn이 facilitator로 이동하지 못한다(그래프
-            # 라우팅이 아니라 이 네 필드가 강제한다 — 요청 상태 필드 그대로).
-            "interjection_target_speaker_id": target_speaker_id,
-            "interjection_response_message_id": None,
-            "required_counterpart_speaker_id": _INTERJECTION_COUNTERPART[forced_speaker],
-            "counterpart_review_completed": False,
+            "application_form_draft": working_draft,
+            "application_form_supplement_notes": supplement_notes,
+            "llm_calls_used": used,
         }
     )
-    graph = assemble_ideation_conversation_graph(
-        llm_call,
-        evidence_lookup=evidence_lookup,
-        ground_claims=ground_claims,
-        index_target_evidence=index_target_evidence,
-        evidence_planner=evidence_planner,
-    )
-    return _drive_graph(graph, state, on_progress, on_snapshot)
+

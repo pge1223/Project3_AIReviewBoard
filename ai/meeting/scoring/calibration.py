@@ -146,22 +146,31 @@ def _needs_method_evidence(criterion: dict[str, Any]) -> bool:
 
 
 def _criterion_kind(criterion: dict[str, Any]) -> str | None:
-    label = _normalize(
+    # 항목명·ID는 rubric 3중 검증으로 공고문 원문에 고정되지만 description은 LLM 요약이라
+    # 프로젝트마다 재추출될 때 표현이 흔들린다. description까지 섞어 kind를 정하면 같은
+    # 파일·같은 코드여도 프로젝트에 따라 상한 신호가 달라지므로(2026-07-27 실측: 동일 문서
+    # 세트의 점수 궤적이 재테스트에서 뒤집힌 원인), 검증된 항목명으로 먼저 판별하고
+    # 항목명만으로 알 수 없을 때만 description을 참고한다.
+    name_label = _normalize(
+        f'{criterion.get("criterion_id", "")} {criterion.get("criterion_name", "")}'
+    )
+    full_label = _normalize(
         " ".join(
             str(criterion.get(key, ""))
             for key in ("criterion_id", "criterion_name", "description")
         )
     )
-    if any(hint in label for hint in _DATA_HINTS):
-        return "data"
-    if any(hint in label for hint in _AI_HINTS):
-        return "ai"
-    if any(hint in label for hint in _FEASIBILITY_HINTS):
-        return "feasibility"
-    if any(hint in label for hint in _CREATIVITY_HINTS):
-        return "creativity"
-    if any(hint in label for hint in _EFFECT_HINTS):
-        return "effect"
+    for label in (name_label, full_label):
+        if any(hint in label for hint in _DATA_HINTS):
+            return "data"
+        if any(hint in label for hint in _AI_HINTS):
+            return "ai"
+        if any(hint in label for hint in _FEASIBILITY_HINTS):
+            return "feasibility"
+        if any(hint in label for hint in _CREATIVITY_HINTS):
+            return "creativity"
+        if any(hint in label for hint in _EFFECT_HINTS):
+            return "effect"
     return None
 
 
@@ -299,6 +308,12 @@ def _has_concrete_method(text: str, kind: str | None) -> bool:
             "파이프라인",
             "개월차",
             "단계(",
+            # 단계별 마일스톤·완료 기준이 명시된 추진 일정도 구현 실체다(2026-07-27 실측:
+            # 수행보고서 v1.3의 일정표가 S4에 걸려 최고 문서가 MULTI 25% 상한을 맞던 오발동
+            # 해소). '단계별로 추진' 같은 막연한 표현은 넣지 않는다 — 완료·검증 기준을
+            # 동반하는 표현만 실체로 인정한다.
+            "마일스톤",
+            "완료 기준",
         )
         terms = feasibility_terms
     else:
