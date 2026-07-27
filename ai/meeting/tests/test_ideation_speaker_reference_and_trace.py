@@ -10,6 +10,7 @@ MEETING_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(MEETING_DIR))
 
 from graph.ideation_conv_nodes import (  # noqa: E402
+    _repair_dev_role_perspective,
     _validate_discussion_response,
     validate_spoken_text_speaker_reference,
 )
@@ -174,6 +175,72 @@ def test_problem_issue_allows_implementation_term_when_problem_is_concrete():
     assert reason is None
 
 
+def test_dev_expert_cannot_repeat_planning_view_without_technical_perspective():
+    raw = _valid_user_response(
+        "지역 주민과 공공기관 관계자를 목표 사용자로 설정하고 참여 상황을 구체화해야 합니다."
+    )
+    raw["active_issue_id"] = "target_user"
+    reason = _validate_discussion_response(
+        raw,
+        current_speaker_id="dev_expert",
+        expected_issue_id="target_user",
+        expected_issue_title="목표 사용자",
+    )
+    assert reason == "dev_expert_technical_perspective_missing"
+
+
+def test_dev_expert_target_user_view_must_add_a_concrete_technical_constraint():
+    raw = _valid_user_response(
+        "주민이 모바일과 키오스크를 함께 사용하므로 접근성 있는 입력 방식과 기관별 인증 권한을 설계해야 합니다."
+    )
+    raw["active_issue_id"] = "target_user"
+    reason = _validate_discussion_response(
+        raw,
+        current_speaker_id="dev_expert",
+        expected_issue_id="target_user",
+        expected_issue_title="목표 사용자",
+    )
+    assert reason is None
+
+
+def test_dev_expert_missing_perspective_is_repaired_before_service_validation():
+    raw = _valid_user_response(
+        "지역 주민과 공공기관 관계자를 목표 사용자로 설정하고 참여 상황을 구체화해야 합니다."
+    )
+    raw["active_issue_id"] = "target_user"
+
+    _repair_dev_role_perspective(raw, "target_user")
+
+    assert "기기" in raw["spoken_text"]
+    assert "인증 권한" in raw["spoken_text"]
+    assert _validate_discussion_response(
+        raw,
+        current_speaker_id="dev_expert",
+        expected_issue_id="target_user",
+        expected_issue_title="목표 사용자",
+    ) is None
+
+
+def test_dev_expert_mvp_view_requires_an_implementation_component():
+    raw = _valid_user_response("MVP는 핵심 기능을 우선 구현하는 방향으로 범위를 좁혀야 합니다.")
+    raw["active_issue_id"] = "mvp"
+    reason = _validate_discussion_response(
+        raw,
+        current_speaker_id="dev_expert",
+        expected_issue_id="mvp",
+        expected_issue_title="MVP 범위",
+    )
+    assert reason == "dev_expert_technical_perspective_missing"
+
+    raw["spoken_text"] = "MVP는 백엔드 API와 단일 저장소로 의견 수집·조회 흐름부터 구현합니다."
+    assert _validate_discussion_response(
+        raw,
+        current_speaker_id="dev_expert",
+        expected_issue_id="mvp",
+        expected_issue_title="MVP 범위",
+    ) is None
+
+
 def test_claim_type_must_match_selected_evidence_document_role():
     raw = _valid_user_response("아이디어에는 실시간 센서 수집 기능이 포함됩니다.")
     raw["claims"] = [
@@ -260,6 +327,25 @@ def test_negative_evaluation_passes_when_explicitly_typed_as_expert_judgment():
     assert reason is None
 
 
+def test_official_document_evidence_must_be_used_when_selected():
+    raw = _valid_user_response("초안에는 시민 피해와 기존 대응의 한계를 구체적으로 반영합니다.")
+    raw["claims"] = [
+        {
+            "claim_id": "claim_1",
+            "text": "시민 피해와 기존 대응의 한계를 구체적으로 반영한다.",
+            "claim_type": "expert_judgment",
+            "evidence_refs": [],
+        }
+    ]
+    reason = _validate_discussion_response(
+        raw,
+        expected_issue_id="problem",
+        require_issue_content_focus=False,
+        evidence_claim_types_by_ref={"E1": "document_fact", "E2": "user_provided_fact"},
+    )
+    assert reason == "official_document_evidence_not_used"
+
+
 def test_discussion_prompt_contains_code_verified_current_speaker_and_target():
     prompt = build_ideation_conv_discussion_prompt(
         "planning_expert",
@@ -282,6 +368,10 @@ def test_discussion_prompt_contains_code_verified_current_speaker_and_target():
     assert '"message_id": "MSG-DEV-1"' in prompt
     assert "자신의 역할을 제3자로" in prompt
     assert "부르지 않는다" in prompt
+    assert "문서 근거" in prompt
+    assert "전문가 판단" in prompt
+    assert "초안 반영" in prompt
+    assert "확인 필요 정보" in prompt
 
 
 def test_trace_is_off_by_default(caplog):

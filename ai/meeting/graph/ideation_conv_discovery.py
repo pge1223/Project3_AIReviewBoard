@@ -152,10 +152,9 @@ _REQUIRED_CANDIDATE_FIELDS = (
     "contest_fit",
 )
 _REQUIRED_IDEA_FIELDS = ("title", "problem", "target_user", "solution")
-
 _SELECTION_QUESTION = (
-    "제안된 후보 중 발전시키고 싶은 아이디어를 선택해 주세요. 번호나 제목을 입력하거나, "
-    "'다시 추천', '전문가 추천'처럼 답할 수 있습니다."
+    "제안된 후보 중 발전시키고 싶은 아이디어를 선택해 주세요. "
+    "번호나 제목을 입력하거나, '다시 추천', '전문가 추천'처럼 답할 수 있습니다."
 )
 
 _REGENERATE_KEYWORDS = (

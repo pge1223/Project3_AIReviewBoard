@@ -447,7 +447,7 @@ def test_reply_to_developer_question_runs_both_experts_in_order():
 # ---------------------------------------------------------------------------
 
 
-def test_continue_round_auto_advances_to_next_discussion_round_without_stopping():
+def test_facilitator_asks_user_when_research_cannot_resolve_the_question():
     """용준/Claude(2026-07-21, 요청: 전문가 라운드테이블 전환) — 개발 위원이
     next_action="continue_round"를 반환하면(그리고 아직 max_rounds에 도달하지 않았으면)
     같은 그래프 호출 안에서 곧바로 다음 라운드의 기획 위원 최초 의견까지 자동 생성된다
@@ -456,10 +456,11 @@ def test_continue_round_auto_advances_to_next_discussion_round_without_stopping(
     llm = ScriptedLLM(dev_next_action="continue_round")
     state = _start(llm, max_rounds=3)
 
-    assert state["phase"] == "discussion_complete"
-    assert state["round"] == 4
-    assert len(state["discussion_rounds"]) == 4
-    assert not any(m["message_type"] == "question" for m in state["messages"])
+    assert state["phase"] == "awaiting_user_decision"
+    assert state["round"] == 1
+    assert len(state["discussion_rounds"]) == 1
+    assert state["pending_question"]
+    assert state["messages"][-1]["structured"]["needs_user_decision"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -1108,7 +1109,7 @@ def test_discussion_node_rejects_blank_judgment_instead_of_producing_empty_card(
     message = update["messages"][0]
     assert update.get("phase") != "failed"
     assert message["content"]
-    assert "문제 정의를 구체화" in message["structured"]["judgment"]
+    assert "문제 정의 초안" in message["structured"]["judgment"]
 
 
 # ---------------------------------------------------------------------------
@@ -1630,7 +1631,7 @@ def test_facilitator_message_always_present_and_summarizes_not_repeats():
     assert state["discussion_rounds"][-1]["facilitator_summary"] == summary["structured"]["facilitator_summary"]
 
 
-def test_facilitator_does_not_change_phase_decided_by_dev_review():
+def test_facilitator_question_gate_takes_precedence_after_dev_review():
     """discussion_facilitator는 dev_expert_discussion(review)이 이미 정한 phase(next_action)를
     바꾸지 않는다 — continue_round면 같은 요청 안에서 곧바로 다음 라운드 discussion으로
     자동 이어지는지(1:1 인터뷰 질문으로 돌아가지 않는지) 확인한다. dev_next_action이 항상
@@ -1639,13 +1640,14 @@ def test_facilitator_does_not_change_phase_decided_by_dev_review():
     llm = _DebateScriptedLLM(dev_stance="보완", dev_next_action="continue_round")
     state = _run_to_discussion(llm, max_rounds=3)
 
-    assert state["phase"] == "discussion_complete"
-    assert state["round"] == 4
-    assert len(state["discussion_rounds"]) == 4
-    assert not any(m["message_type"] == "question" for m in state["messages"])
+    assert state["phase"] == "awaiting_user_decision"
+    assert state["round"] == 1
+    assert len(state["discussion_rounds"]) == 1
+    assert state["pending_question"]
+    assert state["messages"][-1]["structured"]["needs_user_decision"] is True
     facilitator_indices = [i for i, m in enumerate(state["messages"]) if m["speaker_id"] == "ideation_facilitator"]
     # 오프닝 안건 제시 메시지(1) + 라운드별 정리(4) = 5.
-    assert len(facilitator_indices) == 5
+    assert len(facilitator_indices) == 2
 
 
 def test_dev_review_references_planning_message_id():

@@ -33,7 +33,7 @@ from typing import Any, Optional
 from ai.rag.evidence_linking.config import EvidenceLinkingConfig
 from ai.rag.evidence_linking.relevance import calculate_relevance_score, extract_keywords, is_relevant_candidate
 
-POLICY_VERSION = "ideation-planner-v10"
+POLICY_VERSION = "ideation-planner-v11"
 
 # 이 값 미만이면 "이번 쟁점의 실제 질의문과 무관하다"고 보고 제외한다 — calculate_relevance_score는
 # 0~1 근사치이고, claim_grounding의 EvidenceLinkingConfig.min_relevance_score(0.1, 사후 검증용
@@ -47,45 +47,6 @@ MIN_CRITERIA_ISSUE_RELEVANCE_SCORE: float = 0.25
 # 역할별로 selected_evidence에 담을 최대 개수(공통 정책 — 요청 9번: "역할이 다르더라도 동일
 # target을 보는 것은 정상"이므로 role별로 독립적으로 계산한다).
 _ROLE_MAX_SELECTION: dict[str, int] = {"target": 1, "criteria": 1}
-
-# planning_expert가 criteria를 채택하려면 issue 제목이 이 키워드 중 하나와 직접 관련돼야
-# 한다(요청 9번: "criteria가 단순히 검색됐다는 이유로 선택하지 않는다"). dev_expert도 동일한
-# 원칙의 별도 키워드 집합을 쓴다. 이 목록은 결정적 정책이며 하나의 임의 가중합으로 숨기지
-# 않는다 — role_policy_pass 탈락 사유로 그대로 로그에 남는다.
-_PLANNING_CRITERIA_ISSUE_KEYWORDS = (
-    "문제",
-    "대상 사용자",
-    "사용자 가치",
-    "고객 가치",
-    "핵심 가치",
-    "차별",
-    "공모전",
-    "심사",
-    "적합성",
-    "사업성",
-    "계획",
-    "목표",
-    "KPI",
-    "데이터",
-    "통합",
-    "AI 역할",
-    "운영",
-    "사회적 가치",
-    "지속 가능",
-    "거버넌스",
-)
-_DEV_CRITERIA_ISSUE_KEYWORDS = (
-    "문제 정의",
-    "실현 가능",
-    "기술",
-    "데이터",
-    "안전",
-    "적용성",
-    "mvp",
-    "MVP",
-    "성능",
-    "보안",
-)
 
 _CLAIM_TYPE_BY_ROLE: dict[str, str] = {"target": "user_provided_fact", "criteria": "document_fact"}
 
@@ -225,16 +186,13 @@ def _is_meta_instruction_quote(item: dict, quote: str) -> bool:
 
 
 def _role_allows_criteria_for_issue(persona_id: str, issue_title: str) -> bool:
-    """공통 정책(요청 9번) — criteria는 현재 issue와 역할별로 직접 관련될 때만 채택 후보가
-    된다. 매핑에 없는 persona_id(진행자 등)는 이 planner 자체를 호출하지 않으므로 여기서는
-    다루지 않는다."""
-    if persona_id == "planning_expert":
-        keywords = _PLANNING_CRITERIA_ISSUE_KEYWORDS
-    elif persona_id == "dev_expert":
-        keywords = _DEV_CRITERIA_ISSUE_KEYWORDS
-    else:
-        return False
-    return any(keyword in issue_title for keyword in keywords)
+    """두 전문가 모두 현재 쟁점에 맞는 공식 문서 근거를 검토할 수 있게 한다.
+
+    예전 화자별 제목 키워드 화이트리스트는 신청서 작성 요령이 검색돼도 개발 의원의 사용자
+    가치 발언 등에서 먼저 탈락시키는 문제가 있었다. 실제 관련성은 아래의 쟁점 점수와
+    quote 단위 ``_quote_issue_focus``가 판단하므로 여기서는 전문가 여부만 확인한다.
+    """
+    return persona_id in {"planning_expert", "dev_expert"} and bool(issue_title.strip())
 
 
 def resolve_retrieval_score(item: dict) -> tuple[Optional[float], Optional[str]]:
@@ -336,11 +294,10 @@ def evaluate_evidence_eligibility(
         if document_role == "criteria"
         else MIN_ISSUE_RELEVANCE_SCORE
     )
-    # v3 평가표 청크는 "항목 + 질문 1개"라 짧아서 어휘 비율 기반 점수가 0.25보다 낮을 수
-    # 있다. 400자 이하의 criteria 세부 문항이 쟁점 marker/금지 marker 검사를 직접 통과하면
-    # 이를 별도 신호로 인정한다. 대형 범용 청크에는 적용하지 않아 기존 과대 매칭을 막는다.
+    # 평가표·신청서 청크는 제목과 여러 작성 문항이 묶여 길어질 수 있다. 청크 전체 점수가
+    # 낮더라도 내부의 개별 문항이 현재 쟁점과 직접 맞으면 별도 관련성 신호로 인정한다.
     direct_issue_focus_pass = False
-    if document_role == "criteria" and len(text) <= 400:
+    if document_role == "criteria":
         # 하나의 criteria 청크에 제목과 여러 세부 문항이 함께 있을 수 있다. 청크 전체에
         # 다른 쟁점의 금지어가 하나 있다는 이유로 현재 쟁점과 정확히 맞는 세부 문항까지
         # 버리지 않고, 실제 quote 후보 중 하나가 직접 통과하는지를 본다.
@@ -725,6 +682,9 @@ def validate_evidence_plan(
         if not evidence.get("selection_reason_code"):
             errors.append(f"missing_selection_reason:{ref}")
 
+    if plan.get("official_document_evidence_required") and role_counts.get("criteria", 0) == 0:
+        errors.append("missing_required_official_document_evidence")
+
     return {"valid": not errors, "errors": errors}
 
 
@@ -782,7 +742,7 @@ def build_evidence_plan(
 
     history_chunk_ids = {h.get("chunk_id") for h in (shadow_history or []) if h.get("chunk_id")}
 
-    quote_candidates: list[tuple[dict, dict, tuple[str, int, int], float]] = []
+    quote_candidates: list[tuple[dict, dict, tuple[str, int, int], float, str | None]] = []
     for item, evaluation in eligible:
         content = item.get("text") or item.get("quote") or ""
         extraction = extract_planner_quote(
@@ -814,7 +774,8 @@ def build_evidence_plan(
         item, evaluation, _, quote_focus_score, _field_label = pair
         reused = item.get("chunk_id") in history_chunk_ids
         return (
-            0 if item.get("document_role") == "target" else 1,
+            # 공식 문서 요구사항을 먼저 고정하고 선택 아이디어는 비교용 보조 근거로 쓴다.
+            0 if item.get("document_role") == "criteria" else 1,
             1 if reused else 0,
             -quote_focus_score,
             -evaluation["issue_relevance_score"],
@@ -862,6 +823,12 @@ def build_evidence_plan(
         "issue": issue,
         "eligible_evidence_count": len(eligible),
         "grounded_claim_required": True,
+        "official_document_evidence_required": any(
+            item.get("document_role") == "criteria" for item, *_ in quote_candidates
+        ),
+        "official_document_evidence_selected": any(
+            item.get("document_role") == "criteria" for item in selected
+        ),
         "expert_judgment_required": False,
         "selected_evidence": selected,
         "empty_plan_reason": None,

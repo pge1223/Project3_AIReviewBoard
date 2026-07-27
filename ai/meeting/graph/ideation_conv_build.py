@@ -196,14 +196,18 @@ def assemble_ideation_conversation_graph(
         ground_claims=ground_claims,
         evidence_planner=evidence_planner,
     )
-    discussion_facilitator_node = make_discussion_facilitator_node(llm_call)
+    discussion_facilitator_node = make_discussion_facilitator_node(
+        llm_call,
+        evidence_lookup=evidence_lookup,
+        external_evidence_lookup=external_evidence_lookup,
+    )
     canvas_update_node = make_canvas_update_node(llm_call)
     synthesis_node = make_conv_synthesis_node(llm_call)
 
     # 용준/Claude(2026-07-21): discovery(아이디어 발굴) 모드 노드 3종.
     # 용준/Claude(2026-07-27, RAG-007 연결) — external_evidence_lookup은 candidate_planning/
-    # candidate_feasibility에만 주입한다(요청 4번). 다른 노드(질문/토론/synthesis)는 이
-    # 파라미터를 받지 않는다 — discovery 후보 생성에만 외부 통계·정책 참고자료가 필요하다.
+    # candidate_feasibility와 진행자의 사용자 질문 전 근거 게이트에 주입한다. 진행자는
+    # 내부 문서로 답할 수 없을 때만 외부 통계·정책 자료를 조회한다.
     candidate_planning_node = make_candidate_planning_node(llm_call, evidence_lookup, external_evidence_lookup)
     candidate_feasibility_node = make_candidate_feasibility_node(llm_call, evidence_lookup, external_evidence_lookup)
     candidate_selection_node = make_candidate_selection_node(

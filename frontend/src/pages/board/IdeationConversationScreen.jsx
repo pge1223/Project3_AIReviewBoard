@@ -117,7 +117,27 @@ function StreamingCursorStyle() {
   return (
     <style>{`
       @keyframes rb-ideation-cursor-blink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
+      @keyframes rb-ideation-preparing-dot {
+        0%, 60%, 100% { opacity:.28; transform:translateY(0); }
+        30% { opacity:1; transform:translateY(-4px); }
+      }
       .rb-ideation-cursor { display: inline-block; width: 2px; margin-left: 1px; background: currentColor; animation: rb-ideation-cursor-blink 1s step-start infinite; }
+      .rb-ideation-preparing{
+        margin:auto; min-height:180px; width:100%; display:flex; flex-direction:column;
+        align-items:center; justify-content:center; text-align:center; color:#625d72;
+      }
+      .rb-ideation-preparing-icon{
+        width:48px; height:48px; margin-bottom:14px; border-radius:16px;
+        display:grid; place-items:center; color:#6847d9; background:#f0ebff;
+        box-shadow:0 8px 24px rgba(104,71,217,.12);
+      }
+      .rb-ideation-preparing-dots{ display:inline-flex; gap:5px; margin-left:5px; vertical-align:2px; }
+      .rb-ideation-preparing-dots span{
+        width:5px; height:5px; border-radius:50%; background:#6847d9;
+        animation:rb-ideation-preparing-dot 1.2s ease-in-out infinite;
+      }
+      .rb-ideation-preparing-dots span:nth-child(2){ animation-delay:.16s; }
+      .rb-ideation-preparing-dots span:nth-child(3){ animation-delay:.32s; }
       .rb-root .badge.blue{ background: rgba(59,130,246,0.12); color: #2f6fd6; }
       .rb-ideation-layout .badge{ font-size:12.5px; font-weight:600; padding:4px 10px; }
       .rb-ideation-layout .badge.green{ color:#087557; background:#dcf7ee; }
@@ -1165,6 +1185,25 @@ export function IdeationScreen({
   // 우선하고 streamState 쪽의 같은 id는 제거한다. interruptionMarkers는 메시지가 아니라
   // 렌더링용 마커라 여기(교차 참조용 allMessages)에는 안 넣는다.
   const visibleMessages = dedupeMessagesById([...canonicalMessages, ...streamState.messages])
+  const hasVisibleConversation = [
+    ...canonicalMessages,
+    ...(optimisticUserMessage ? [optimisticUserMessage] : []),
+    ...streamState.messages,
+  ].some((message) => (message?.displayedContent ?? message?.content ?? '').trim())
+  // 첫 API 응답을 기다리는 동안뿐 아니라, canonical 메시지는 도착했지만 아바타 재생
+  // 순서 때문에 아직 첫 발언이 공개되지 않은 순간에도 빈 흰 박스를 보여주지 않는다.
+  const showMeetingPreparing = !hasVisibleConversation
+    && !phaseFailure
+    && !error
+    && (
+      starting
+      || sending
+      || rawMessages.length > canonicalMessages.length
+      || (!!ideationConv && phase !== 'finalized' && phase !== 'failed')
+    )
+  const meetingPreparingDetail = startPhaseLabel
+    || streamState.phaseLabel
+    || '공모전 자료와 최신 근거를 검토하고 있어요'
   const latestVisibleMessageId = [
     ...canonicalMessages,
     ...(optimisticUserMessage ? [optimisticUserMessage] : []),
@@ -1608,7 +1647,25 @@ export function IdeationScreen({
             padding: 16,
           }}
         >
-          {starting && !ideationConv && (
+          {showMeetingPreparing && (
+            <div className="rb-ideation-preparing" role="status" aria-live="polite">
+              <div className="rb-ideation-preparing-icon" aria-hidden="true">
+                <Sparkles size={23} />
+              </div>
+              <div style={{ fontSize: 16, fontWeight: 750, color: 'var(--text-0)' }}>
+                회의 준비 중
+                <span className="rb-ideation-preparing-dots">
+                  <span />
+                  <span />
+                  <span />
+                </span>
+              </div>
+              <div style={{ marginTop: 8, fontSize: 13.5, lineHeight: 1.55, color: 'var(--text-2)' }}>
+                {meetingPreparingDetail}
+              </div>
+            </div>
+          )}
+          {starting && !ideationConv && !showMeetingPreparing && (
             <p className="rb-ideation-notice">
               {startPhaseLabel ? `${startPhaseLabel}...` : '공모전 분석을 바탕으로 아이디어 후보를 만들고 있어요...'}
             </p>
@@ -1652,7 +1709,7 @@ export function IdeationScreen({
               isLatest={m.message_id === latestVisibleMessageId}
             />
           ))}
-          {sending && streamState.messages.length === 0 && (
+          {sending && streamState.messages.length === 0 && !showMeetingPreparing && (
             <p className="rb-ideation-notice">
               {streamState.phaseLabel || `${statusLabelFor({ phase, starting, sending, finalizing })}...`}
             </p>
@@ -1870,26 +1927,11 @@ export function IdeationScreen({
             </div>
           )}
         </div>
-      </div>
-
-      <div className="rb-ideation-canvas-col">
-        <MergeAnalysisPanel
-          mergeAnalysis={ideationConv?.merge_analysis}
-          sourceCandidates={ideationConv?.source_candidates}
-          userSelectionMessage={ideationConv?.user_selection_message}
-        />
-
-        {/* 가은/Claude(2026-07-27, 요청: "AI 아이디어 회의 페이지에 신청서 작성항목 패널
-            없애줘") — 회의 중 오른쪽 패널에 노출하던 ApplicationFormPanel을 제거했다.
-            신청서 초안은 이제 주제 확정 후 별도 페이지(ApplicationFormDraftScreen,
-            stage="form_draft")에서만 보여준다 — ApplicationFormPanel 자체는 그 화면에서
-            계속 재사용하므로 컴포넌트/import는 그대로 둔다. */}
-        <IdeaCanvasPanel ideationConv={ideationConv} analysis={announcementAnalysis} />
 
         {ideationConv && (ideationConv.consensus?.length > 0 || ideationConv.unresolved_issues?.length > 0) && (
-          <div className="card glass" style={{ marginBottom: 12, padding: 14 }}>
+          <div className="card glass" style={{ marginTop: 12, padding: 14 }}>
             {ideationConv.consensus?.length > 0 && (
-              <div style={{ marginBottom: 10 }}>
+              <div style={{ marginBottom: ideationConv.unresolved_issues?.length > 0 ? 10 : 0 }}>
                 <div style={{ fontSize: 15, fontWeight: 700, color: '#514a61', marginBottom: 4 }}>합의 사항</div>
                 <ul style={{ margin: 0, paddingLeft: 18, fontSize: 15.5, fontWeight: 500, color: 'var(--text-0)', lineHeight: 1.7 }}>
                   {ideationConv.consensus.map((c, i) => <li key={i}>{humanizeExpertIdentifiers(c)}</li>)}
@@ -1906,6 +1948,21 @@ export function IdeationScreen({
             )}
           </div>
         )}
+      </div>
+
+      <div className="rb-ideation-canvas-col">
+        <MergeAnalysisPanel
+          mergeAnalysis={ideationConv?.merge_analysis}
+          sourceCandidates={ideationConv?.source_candidates}
+          userSelectionMessage={ideationConv?.user_selection_message}
+        />
+
+        {/* 가은/Claude(2026-07-27, 요청: "AI 아이디어 회의 페이지에 신청서 작성항목 패널
+            없애줘") — 회의 중 오른쪽 패널에 노출하던 ApplicationFormPanel을 제거했다.
+            신청서 초안은 이제 주제 확정 후 별도 페이지(ApplicationFormDraftScreen,
+            stage="form_draft")에서만 보여준다 — ApplicationFormPanel 자체는 그 화면에서
+            계속 재사용하므로 컴포넌트/import는 그대로 둔다. */}
+        <IdeaCanvasPanel ideationConv={ideationConv} analysis={announcementAnalysis} />
 
       </div>
     </div>

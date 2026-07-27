@@ -588,7 +588,8 @@ def test_active_turn_without_llm_claims_is_replaced_by_grounded_evidence_anchor(
     assert first["structured"]["evidence_first_fallback"] is True
     assert first["linked_evidence_refs"] == ["CHUNK-TARGET-1"]
     assert first["grounded_claim_count"] == 1
-    assert "근거 자료에는" in first["content"]
+    assert "선택 아이디어에는" in first["content"]
+    assert "초안에는" in first["content"]
 
 
 def test_criteria_and_target_evidence_both_link_when_selected():

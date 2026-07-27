@@ -108,14 +108,15 @@ class TestEvaluateEvidenceEligibility:
         assert result["eligible"] is False
         assert "unsupported_document_role" in result["exclusion_reasons"]
 
-    def test_criteria_excluded_when_issue_not_relevant(self):
+    def test_criteria_excluded_by_content_relevance_not_speaker_whitelist(self):
         item = _criteria_item()
         irrelevant_issue = {"issue_id": "mvp", "title": "MVP 범위", "query": "MVP 범위 핵심 기능"}
         result = evaluate_evidence_eligibility(
             item, persona_id="planning_expert", effective_issue=irrelevant_issue, runtime_scope={}
         )
         assert result["eligible"] is False
-        assert "criteria_not_relevant_to_issue" in result["exclusion_reasons"]
+        assert result["role_policy_pass"] is True
+        assert "below_issue_relevance" in result["exclusion_reasons"]
 
     def test_criteria_allowed_when_issue_relevant_for_dev(self):
         item = _criteria_item(text="본 사업은 기술 실현 가능성과 데이터 확보 방안을 중점 평가합니다.")
@@ -451,6 +452,16 @@ class TestValidateEvidencePlan:
         assert result["valid"] is False
         assert any(e.startswith("claim_type_mismatch:") for e in result["errors"])
 
+    def test_required_official_document_cannot_be_omitted(self):
+        item = _target_item()
+        plan = {
+            "official_document_evidence_required": True,
+            "selected_evidence": [self._valid_selected(item)],
+        }
+        result = validate_evidence_plan(plan, retrieved_evidence=[item], runtime_scope={})
+        assert result["valid"] is False
+        assert "missing_required_official_document_evidence" in result["errors"]
+
 
 class TestBuildEvidencePlan:
     def test_no_retrieved_evidence_returns_empty_plan(self):
@@ -476,6 +487,54 @@ class TestBuildEvidencePlan:
         assert roles["target"]["claim_type"] == "user_provided_fact"
         assert roles["criteria"]["claim_type"] == "document_fact"
         assert len(plan["selected_evidence"]) == 2
+
+    def test_dev_expert_also_selects_relevant_application_form_evidence(self):
+        target = _target_item(text="대상 사용자는 공공 서비스를 이용하는 일반 시민입니다.")
+        criteria = _criteria_item(
+            text="<작성 요령> 목표 사용자의 구체적인 상황과 요구를 제시하십시오."
+        )
+        issue = {
+            "issue_id": "target_user",
+            "title": "목표 사용자",
+            "query": "목표 사용자 시민의 상황과 요구",
+        }
+
+        plan = build_evidence_plan(
+            persona_id="dev_expert",
+            effective_issue=issue,
+            retrieved_evidence=[target, criteria],
+            runtime_scope={},
+            shadow_history=[],
+        )
+
+        assert plan["validation"]["valid"] is True
+        assert [item["document_role"] for item in plan["selected_evidence"]] == ["criteria", "target"]
+        assert plan["selected_evidence"][0]["claim_type"] == "document_fact"
+
+    def test_long_application_form_chunk_can_supply_issue_focused_quote(self):
+        criteria = _criteria_item(
+            text=(
+                "공모 신청서 안내와 공통 설명입니다. " * 30
+                + "\n<작성 요령> AI 모델과 알고리즘의 적용 방식 및 검증 계획을 구체적으로 작성하십시오."
+            )
+        )
+        issue = {
+            "issue_id": "ai_role",
+            "title": "AI 활용 방식",
+            "query": "AI 모델 알고리즘 적용 방식 검증 계획",
+        }
+
+        plan = build_evidence_plan(
+            persona_id="dev_expert",
+            effective_issue=issue,
+            retrieved_evidence=[criteria],
+            runtime_scope={},
+            shadow_history=[],
+        )
+
+        assert plan["validation"]["valid"] is True
+        assert plan["selected_evidence"][0]["document_role"] == "criteria"
+        assert "AI 모델과 알고리즘" in plan["selected_evidence"][0]["quote"]
 
     def test_topic_prefixed_target_user_selects_structured_target_field_over_kpi_criteria(self):
         target = _target_item(
@@ -534,7 +593,7 @@ class TestBuildEvidencePlan:
         assert plan["empty_plan_reason"] is None
         assert plan["selected_evidence"][0]["quote"] == "도시 교통 관리 기관"
 
-    def test_topic_prefixed_core_value_selects_expected_effect_target_before_criteria(self):
+    def test_topic_prefixed_core_value_selects_official_criteria_before_target(self):
         target = _target_item(
             text=(
                 "제목:\n스마트 교통 관리 시스템\n\n"
@@ -559,9 +618,11 @@ class TestBuildEvidencePlan:
         )
 
         assert plan["empty_plan_reason"] is None
-        assert plan["selected_evidence"][0]["document_role"] == "target"
-        assert plan["selected_evidence"][0]["quote"] == "교통 혼잡을 줄이고 시민의 이동 편의성을 증가시킵니다."
-        assert plan["selected_evidence"][0]["field_label"] == "기대 효과"
+        assert [item["document_role"] for item in plan["selected_evidence"]] == ["criteria", "target"]
+        assert plan["selected_evidence"][1]["quote"] == "교통 혼잡을 줄이고 시민의 이동 편의성을 증가시킵니다."
+        assert plan["selected_evidence"][1]["field_label"] == "기대 효과"
+        assert plan["official_document_evidence_required"] is True
+        assert plan["official_document_evidence_selected"] is True
 
     def test_role_max_one_each_even_with_multiple_candidates(self):
         items = [
@@ -579,7 +640,7 @@ class TestBuildEvidencePlan:
         target_selected = [e for e in plan["selected_evidence"] if e["document_role"] == "target"]
         assert len(target_selected) == 1
 
-    def test_role_policy_excluded_all_when_only_irrelevant_criteria(self):
+    def test_irrelevant_criteria_is_excluded_by_issue_relevance(self):
         irrelevant_issue = {"issue_id": "roadmap", "title": "확장 로드맵", "query": "확장 로드맵 향후 계획"}
         items = [_criteria_item(text="평가 기준은 차별성과 고객 가치, 실현 가능성을 중점적으로 심사합니다.")]
         plan = build_evidence_plan(
@@ -589,7 +650,7 @@ class TestBuildEvidencePlan:
             runtime_scope={},
             shadow_history=[],
         )
-        assert plan["empty_plan_reason"] == "role_policy_excluded_all"
+        assert plan["empty_plan_reason"] == "no_issue_relevant_evidence"
         assert plan["selected_evidence"] == []
 
     def test_reused_in_same_issue_flagged_from_shadow_history(self):
@@ -628,7 +689,7 @@ class TestBuildEvidencePlan:
             shadow_history=[],
         )
         assert plan["plan_id"].startswith("EP-")
-        assert plan["policy_version"] == "ideation-planner-v10"
+        assert plan["policy_version"] == "ideation-planner-v11"
 
     def test_result_announcement_quote_is_never_selected_for_contest_fit(self):
         issue = {

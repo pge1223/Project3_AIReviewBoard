@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
 import time
@@ -72,6 +73,7 @@ ClaimGroundingFn = Callable[[str, Any, list[dict]], dict]
 # 위치 인자 순서에 의존할 legacy 호출자가 없기 때문이다. Phase 1에서는 이 결과가 prompt/
 # claims/grounding/routing 어디에도 쓰이지 않고 trace 로그로만 기록된다.
 EvidencePlanningFn = Callable[..., dict]
+ExternalEvidenceLookupFn = Callable[[str, str], dict]
 
 # 같은 speaker/issue 조합("persona_id:issue_id")별로 보관하는 shadow 선택 이력 최대 개수 —
 # 무제한 누적을 막는다(요청: 최소 정보만 유지).
@@ -420,10 +422,13 @@ def _safe_discussion_fallback(
         },
         "dev_expert": {
             "problem": "구현으로 넘어가기 전에 문제를 관측할 수 있는 데이터와 측정 지표부터 정의하겠습니다.",
+            "target_user": "대상 사용자의 기기·접근 채널·인증/권한·입력 방식이 구현에 주는 제약을 먼저 확인하겠습니다.",
+            "core_value": "사용자 가치가 실제로 발생했는지 응답 시간·정확도·자동화 범위와 실패 조건으로 검증하겠습니다.",
             "data": "공공 데이터와 자체 수집 데이터를 구분하고 정확도·갱신 주기·수집 비용을 먼저 검증하겠습니다.",
             "ai_role": "AI가 담당할 판단과 규칙 기반으로 처리할 기능을 분리해 기술 위험을 줄이겠습니다.",
-            "differentiation": "차별 기능에 필요한 데이터와 구현 난도를 확인해 실제 개발 가능한 범위로 좁히겠습니다.",
-            "mvp": "핵심 데이터 흐름 하나를 기준으로 수집·분석·알림까지의 최소 기능을 먼저 검증하겠습니다.",
+            "differentiation": "차별 기능에 필요한 데이터·연동 API·처리 방식과 구현 난도를 확인하겠습니다.",
+            "mvp": "백엔드 API·저장소·핵심 처리 흐름 하나를 기준으로 MVP 구성을 제한하겠습니다.",
+            "roadmap": "배포·모니터링·데이터 확장 순서를 나누고 단계별 기술 조건을 명시하겠습니다.",
         },
     }.get(persona_id, {})
     guidance = role_guidance.get(
@@ -549,8 +554,9 @@ def _quote_josa(quote: str) -> str:
 def _evidence_anchor_response(raw: dict, retrieved: list[dict], persona_id: str) -> dict | None:
     """LLM 응답이 근거를 하나도 연결하지 못했을 때 선택 근거 자체로 안전한 발언을 만든다.
 
-    근거 quote를 그대로 claim text로 사용하므로 새로운 문서 사실을 만들지 않는다. target
-    근거를 criteria보다 우선해 아이디어 자체에 대한 논의가 평가표 일반론보다 앞서게 한다.
+    근거 quote를 그대로 claim text로 사용하므로 새로운 문서 사실을 만들지 않는다. 공식
+    문서(criteria)가 있으면 이를 우선해 신청서·공고 요구사항이 빠지지 않게 하고, 없을 때만
+    선택 아이디어(target)를 사용한다.
 
     용준/Claude(2026-07-27, 실측 버그 수정: "기획 위원과 개발 위원이 완전히 같은 문장을
     말함") — 이 함수는 quote/issue_title만으로 결정되는 순수 템플릿이라, 두 위원이 같은
@@ -572,26 +578,52 @@ def _evidence_anchor_response(raw: dict, retrieved: list[dict], persona_id: str)
         return None
     evidence = sorted(
         candidates,
-        key=lambda item: (0 if item.get("document_role") == "target" else 1),
+        key=lambda item: (0 if item.get("document_role") == "criteria" else 1),
     )[0]
     quote = str(evidence.get("quote") or evidence.get("text")).strip()
     ref = evidence["ref"]
     claim_type = evidence.get("claim_type")
     if claim_type not in ("document_fact", "user_provided_fact"):
         claim_type = "user_provided_fact" if evidence.get("document_role") == "target" else "document_fact"
+    issue_id = raw.get("active_issue_id") or ""
     issue_title = raw.get("active_issue_title") or "현재 쟁점"
     role_label = _EXPERT_ROLE_LABELS.get(persona_id, "위원")
-    judgment = f"{role_label} 관점에서, {issue_title}에서는 이 근거가 요구하거나 설명하는 내용을 구체화해야 합니다."
-    spoken_text = f'근거 자료에는 “{quote}”{_quote_josa(quote)} 제시되어 있습니다. {judgment}'
+    if persona_id == "dev_expert":
+        technical_suggestions = {
+            "problem": "문제를 관측할 입력 데이터와 로그, 측정 지표를 먼저 정의합니다.",
+            "target_user": "사용 기기·접근 채널·인증/권한 조건을 구현 제약으로 명시합니다.",
+            "core_value": "응답 시간·정확도·자동화 범위와 실패 조건을 검증 지표로 둡니다.",
+            "differentiation": "차별 기능을 가능하게 할 데이터·연동 API·처리 방식의 차이를 명시합니다.",
+            "mvp": "백엔드 API·저장소·핵심 처리 흐름 하나로 MVP 구성을 제한합니다.",
+            "data": "수집 API·데이터 스키마·갱신 주기·품질 검증 파이프라인을 구체화합니다.",
+            "ai_role": "규칙 기반 처리와 모델/RAG가 맡을 판단을 분리하고 평가 데이터를 정의합니다.",
+            "roadmap": "배포·모니터링·데이터 확장 순서와 단계별 기술 조건을 명시합니다.",
+        }
+        judgment = f"{role_label} 관점에서 {issue_title}은 문서 요구를 기술적으로 검증할 조건이 필요합니다."
+        suggestion = technical_suggestions.get(
+            issue_id,
+            "필요 데이터·시스템 구성·기술 위험을 구분해 검증 가능한 구현안을 제시합니다.",
+        )
+    else:
+        judgment = f"{role_label} 관점에서 {issue_title}은 이 문서 요구와 선택 아이디어를 연결해 판단해야 합니다."
+        suggestion = "초안에는 적용 대상·실행 방법·기대효과를 현재 쟁점에 맞춰 구체적으로 반영합니다."
+    unconfirmed = "문서에서 확인되지 않은 수치와 실행 조건"
+    quote_preview = quote if len(quote) <= 90 else f"{quote[:87].rstrip()}…"
+    source_label = "공식 문서" if evidence.get("document_role") == "criteria" else "선택 아이디어"
+    spoken_text = (
+        f'{source_label}에는 “{quote_preview}”{_quote_josa(quote_preview)} 제시돼 있습니다. '
+        f"따라서 '{issue_title}' 쟁점은 이 근거와 선택 아이디어를 연결해 판단합니다. "
+        f"{suggestion} {unconfirmed}은 미확정으로 남깁니다."
+    )
     return {
         **raw,
         "judgment": judgment,
         "reason": quote,
-        "suggestion": judgment,
+        "suggestion": suggestion,
         "interim_conclusion": judgment,
         "spoken_text": spoken_text[:_MAX_SPOKEN_TEXT_CHARS],
         "confirmed": [quote],
-        "unconfirmed": [],
+        "unconfirmed": [unconfirmed],
         "claims": [
             {
                 "claim_id": "evidence_anchor_fact",
@@ -607,7 +639,7 @@ def _evidence_anchor_response(raw: dict, retrieved: list[dict], persona_id: str)
             },
         ],
         "new_information": [quote],
-        "proposal": None,
+        "proposal": suggestion,
         "changed_position": False,
         "needs_counterpart_response": False,
         "recommended_next_speaker": "ideation_facilitator",
@@ -1323,6 +1355,10 @@ def _discussion_retry_note(reason: str) -> str:
         "document_fact_missing_evidence": "document_fact에는 실제 retrieved_evidence의 ref를 넣으세요.",
         "user_provided_fact_missing_target_evidence": "user_provided_fact에는 실제 target 근거 ref를 넣으세요.",
         "expert_judgment_must_not_cite_evidence": "expert_judgment의 evidence_refs는 빈 배열로 두세요.",
+        "official_document_evidence_not_used": (
+            "검색 근거 중 document_fact 타입인 공고문·평가기준·신청서 양식 ref를 최소 한 개 "
+            "claims에 인용하고, 그 요구사항을 spoken_text의 첫 문장에 반영하세요."
+        ),
         "spoken_text_role_name_opener": (
             "spoken_text를 \"기획 전문가가 언급한\", \"개발 전문가의 의견대로\" 같은 역할명 재언급으로 "
             "시작하지 말고, 상대 주장의 핵심 내용에 바로 반응하는 문장으로 다시 쓰세요."
@@ -1330,6 +1366,11 @@ def _discussion_retry_note(reason: str) -> str:
         "spoken_text_generic_hedge_sentence": (
             "\"명확한 목표 설정이 필요합니다\"처럼 구체적 명사·조건 없이도 항상 성립하는 상투어 문장을 "
             "빼고, 실제 동의·반론·수정안(구체적 대상·조건·수치)을 spoken_text에 직접 쓰세요."
+        ),
+        "dev_expert_technical_perspective_missing": (
+            "기획 위원의 사용자·가치 설명을 반복하지 마세요. 현재 쟁점을 벗어나지 않는 범위에서 "
+            "개발 관점의 데이터·측정 방법·기술 제약·구현 구성요소·실패 조건 중 최소 하나와 "
+            "그것이 판단에 미치는 영향을 spoken_text에 구체적으로 추가하세요."
         ),
     }.get(reason, "검증 실패 사유를 수정하되 기존 JSON 스키마와 현재 쟁점을 그대로 유지하세요.")
     return (
@@ -1424,6 +1465,90 @@ def _spoken_text_issue_validation_reason(
     return None
 
 
+_DEV_ROLE_SIGNALS_BY_ISSUE: dict[str, tuple[str, ...]] = {
+    "problem": ("데이터", "로그", "센서", "측정", "관측", "입력", "오류", "실패 조건", "검증", "지표"),
+    "target_user": (
+        "기기", "디바이스", "채널", "앱", "웹", "모바일", "키오스크", "접근성",
+        "인증", "권한", "입력", "인터페이스", "네트워크",
+    ),
+    "core_value": (
+        "처리 시간", "응답 시간", "정확도", "자동화", "지연", "실패 조건", "품질", "측정", "지표",
+    ),
+    "differentiation": (
+        "데이터", "API", "연동", "RAG", "검색", "모델", "알고리즘", "실시간",
+        "배치", "자동화", "아키텍처", "인프라",
+    ),
+    "mvp": (
+        "API", "백엔드", "프론트", "DB", "데이터베이스", "저장소", "모델",
+        "RAG", "배치", "실시간", "인증", "배포", "파이프라인",
+    ),
+    "data": (
+        "수집", "정제", "스키마", "DB", "데이터베이스", "저장소", "갱신",
+        "품질", "파이프라인", "API", "배치", "실시간",
+    ),
+    "ai_role": (
+        "모델", "LLM", "RAG", "임베딩", "벡터", "프롬프트", "추론",
+        "규칙 기반", "파인튜닝", "정확도", "평가 데이터",
+    ),
+    "roadmap": (
+        "API", "백엔드", "DB", "저장소", "모델", "RAG", "배치", "실시간",
+        "인증", "배포", "모니터링", "확장", "마이그레이션",
+    ),
+}
+_DEV_GENERAL_ROLE_SIGNALS = tuple(
+    dict.fromkeys(
+        signal
+        for signals in _DEV_ROLE_SIGNALS_BY_ISSUE.values()
+        for signal in signals
+    )
+)
+_DEV_ROLE_FALLBACK_SENTENCES: dict[str, str] = {
+    "problem": "개발 관점에서는 이 문제를 관측할 입력 데이터와 로그, 측정 지표를 함께 정의해야 합니다.",
+    "target_user": "구현 시에는 대상 사용자의 기기·접근 채널·인증 권한과 입력 방식의 제약을 확인해야 합니다.",
+    "core_value": "이 가치는 응답 시간·정확도·자동화 범위와 실패 조건을 기술 지표로 검증해야 합니다.",
+    "differentiation": "기술적 차별성은 사용하는 데이터·연동 API·검색/RAG 또는 처리 방식의 차이로 구체화해야 합니다.",
+    "mvp": "MVP는 백엔드 API·저장소·핵심 처리 흐름 하나를 기준으로 구현 범위를 제한하는 것이 적절합니다.",
+    "data": "데이터는 수집 API·스키마·저장소·갱신 주기와 품질 검증 파이프라인까지 함께 설계해야 합니다.",
+    "ai_role": "AI 역할은 규칙 기반 처리와 모델/RAG가 담당할 판단을 분리하고 평가 데이터로 검증해야 합니다.",
+    "roadmap": "기술 로드맵은 배포·모니터링·데이터 확장 순서와 단계별 전환 조건을 포함해야 합니다.",
+}
+
+
+def _dev_role_perspective_validation_reason(spoken_text: str, issue_id: str | None) -> str | None:
+    """개발 위원 발언이 기획 문장의 재진술이 아니라 기술 관점을 실제로 추가했는지 확인한다."""
+    normalized = (spoken_text or "").lower()
+    signals = _DEV_ROLE_SIGNALS_BY_ISSUE.get(issue_id or "", _DEV_GENERAL_ROLE_SIGNALS)
+    if any(signal.lower() in normalized for signal in signals):
+        return None
+    return "dev_expert_technical_perspective_missing"
+
+
+def _repair_dev_role_perspective(raw: dict, issue_id: str | None) -> None:
+    """개발 관점이 빠진 발언에 쟁점별 기술 검토 문장을 보강해 역할 중복을 화면까지 차단한다."""
+    if _dev_role_perspective_validation_reason(raw.get("spoken_text", ""), issue_id) is None:
+        return
+    addition = _DEV_ROLE_FALLBACK_SENTENCES.get(
+        issue_id or "",
+        "개발 관점에서는 필요한 데이터·시스템 구성·기술 위험과 검증 방법을 구분해 제안해야 합니다.",
+    )
+    current = str(raw.get("spoken_text") or "").strip()
+    available = max(0, _MAX_SPOKEN_TEXT_CHARS - len(addition) - 1)
+    raw["spoken_text"] = f"{current[:available].rstrip()} {addition}".strip()
+    new_information = raw.get("new_information")
+    if not isinstance(new_information, list):
+        new_information = []
+    if addition not in new_information:
+        new_information.append(addition)
+    raw["new_information"] = new_information
+    if _blank(raw.get("suggestion")):
+        raw["suggestion"] = addition
+    trace_event(
+        "IDEATION_DEV_ROLE_PERSPECTIVE_REPAIRED",
+        issue=issue_id,
+        addition=sanitize_preview(addition),
+    )
+
+
 def _validate_discussion_response(
     raw: dict,
     discussion_stage: str = "initial_position",
@@ -1475,9 +1600,35 @@ def _validate_discussion_response(
         )
         if issue_problem:
             return issue_problem
+    if current_speaker_id == "dev_expert":
+        role_problem = _dev_role_perspective_validation_reason(
+            raw.get("spoken_text", ""),
+            expected_issue_id or generated_issue_id,
+        )
+        if role_problem:
+            return role_problem
     if evidence_claim_types_by_ref is not None:
         has_target_evidence = "user_provided_fact" in evidence_claim_types_by_ref.values()
+        official_evidence_refs = {
+            ref
+            for ref, claim_type in evidence_claim_types_by_ref.items()
+            if claim_type == "document_fact"
+        }
         claims = [claim for claim in (raw.get("claims") or []) if isinstance(claim, dict)]
+        has_official_document_claim = any(
+            claim.get("claim_type") == "document_fact"
+            and bool(
+                official_evidence_refs
+                & {
+                    ref
+                    for ref in (claim.get("evidence_refs") or [])
+                    if isinstance(ref, str)
+                }
+            )
+            for claim in claims
+        )
+        if official_evidence_refs and not has_official_document_claim:
+            return "official_document_evidence_not_used"
         has_evidence_fact_claim = any(
             claim.get("claim_type") in ("document_fact", "user_provided_fact")
             for claim in claims
@@ -3349,6 +3500,21 @@ def _build_evidence_plan_notice(mode: str, plan: dict | None) -> str:
             if isinstance(item, dict) and isinstance(item.get("ref"), str) and item.get("ref")
         ]
         allowed_refs_text = ", ".join(allowed_refs) if allowed_refs else "없음"
+        official_refs = [
+            item.get("ref")
+            for item in plan.get("selected_evidence") or []
+            if isinstance(item, dict)
+            and item.get("document_role") == "criteria"
+            and isinstance(item.get("ref"), str)
+            and item.get("ref")
+        ]
+        official_requirement = (
+            f"공고문·평가기준·신청서 양식에 해당하는 공식 문서 ref "
+            f"[{', '.join(official_refs)}] 중 최소 한 개를 document_fact claim으로 반드시 "
+            f"인용하고, spoken_text의 첫 문장에서 그 문서 요구사항을 자연스럽게 설명하세요. "
+            if official_refs
+            else ""
+        )
         return (
             f'이번 발언은 아래 [검색 근거]에 나열된 항목만 문서 근거로 인용할 수 있습니다 — '
             f"이 목록에 없는 근거를 지어내거나 가정하지 마세요. 이번 발언이 다뤄야 할 쟁점은 "
@@ -3358,7 +3524,10 @@ def _build_evidence_plan_notice(mode: str, plan: dict | None) -> str:
             f"evidence_refs에는 이번 [검색 근거] 목록에 실제로 표시된 ref만 사용할 수 있습니다. "
             f"최소 한 개의 document_fact 또는 user_provided_fact claim이 위 ref 중 하나를 "
             f"인용해야 하며, 전문가 판단은 그 근거를 적용한 별도 expert_judgment claim으로 "
-            f"구분하세요. "
+            f"구분하세요. {official_requirement}"
+            f"화면에 보이는 spoken_text는 문서 근거 → 전문가 판단 → 신청서 초안에 반영할 "
+            f"구체적 문장 또는 결정 → 추가 확인 정보 순서로 작성하세요. 확인할 정보가 없으면 "
+            f"마지막 요소는 생략할 수 있지만 나머지 세 요소는 순서를 지키세요. "
             f"대화 맥락의 과거 발언에서 보았던 E번호나 chunk_id는 현재 턴의 근거가 아니므로 "
             f"절대 재사용하지 마세요."
         )
@@ -3924,7 +4093,6 @@ def make_conv_discussion_node(
                 else {}
             ),
             evidence_plan_notice=evidence_plan_notice,
-            # 가은/Claude(2026-07-22, 요청: 신청양식 항목 약한 주입) — 순수 추가 인자.
             application_form_items=state.get("application_form_items") or None,
         )
         evidence_claim_types_by_ref = {
@@ -3938,6 +4106,11 @@ def make_conv_discussion_node(
             _repair_evaluative_expert_judgment_claim(raw, evidence_claim_types_by_ref)
             # 가은/Claude(2026-07-26) — 재시도 전에 결정론적으로 고칠 수 있는 필드부터 보정한다.
             _repair_active_issue_id(raw, expected_issue_id, effective_issue.get("title"))
+            if persona_id == "dev_expert":
+                _repair_dev_role_perspective(
+                    raw,
+                    expected_issue_id or raw.get("active_issue_id"),
+                )
             _repair_missing_new_information(raw)
             _repair_discussion_claim_evidence_fields(raw, evidence_claim_types_by_ref)
             return _validate_discussion_response(
@@ -3951,7 +4124,10 @@ def make_conv_discussion_node(
                 evidence_claim_types_by_ref=evidence_claim_types_by_ref,
             )
 
-        if evidence_mode == "valid_empty" and ground_claims is not None:
+        if (
+            evidence_mode == "valid_empty"
+            and ground_claims is not None
+        ):
             # Evidence-first 계약: Planner가 적격 근거 없음(valid empty)을 확정한 상태에서
             # LLM의 자유로운 전문가 의견을 생성하지 않는다. 제어 메시지만 남겨 진행자가
             # 다음 쟁점으로 이동하게 하며, 불필요한 API 호출도 사용하지 않는다.
@@ -4815,7 +4991,140 @@ def _strip_inline_choice_enumeration(content: str) -> str:
     return content[: first.start()].rstrip()
 
 
-def make_discussion_facilitator_node(llm_call: LLMCall) -> Callable[[IdeationConvState], dict]:
+_FACILITATOR_FACT_SIGNAL_RE = re.compile(
+    r"\d|%|통계|조사|보고서|현황|증가|감소|평균|소요|민원|불편|지연|비효율|부담|"
+    r"오류|반복|시간|비용|사례|법령|정책|규정"
+)
+_FACILITATOR_FORM_INSTRUCTION_RE = re.compile(
+    r"작성\s*요령|작성하(?:십시오|세요)|기재하(?:십시오|세요)|제시하(?:십시오|세요)|"
+    r"설명하(?:십시오|세요)|평가\s*기준|심사\s*기준"
+)
+
+
+def _facilitator_research_query(state: IdeationConvState, issue_title: str) -> str:
+    """진행자가 사용자에게 사실 질문을 하기 전에 사용할 좁은 검색어를 만든다."""
+    selected = state.get("selected_idea") or state.get("user_idea") or {}
+    if isinstance(selected, dict):
+        idea_text = " ".join(
+            str(selected.get(key) or "").strip()
+            for key in ("title", "problem", "target_user", "core_value", "solution", "description")
+        ).strip()
+    else:
+        idea_text = str(selected or "").strip()
+    missing = " ".join(str(item).strip() for item in state.get("last_missing_information") or [] if str(item).strip())
+    return " | ".join(
+        part
+        for part in (
+            idea_text,
+            f"현재 쟁점: {issue_title}",
+            missing,
+            "현황 통계 조사 보고서 사례 정책",
+        )
+        if part
+    )
+
+
+def _is_substantive_facilitator_internal_evidence(item: dict) -> bool:
+    """빈 신청서의 작성 지시가 아니라 질문에 답할 수 있는 내부 사실 근거인지 판정한다."""
+    if item.get("document_role") != "criteria":
+        return False
+    text = str(item.get("quote") or item.get("text") or "").strip()
+    if not text or not _FACILITATOR_FACT_SIGNAL_RE.search(text):
+        return False
+    if _FACILITATOR_FORM_INSTRUCTION_RE.search(text) and not re.search(
+        r"\d|%|통계|조사|보고서|현황|증가|감소|평균|소요|민원|사례|법령|정책|규정",
+        text,
+    ):
+        return False
+    return True
+
+
+def _call_facilitator_external_evidence(
+    external_evidence_lookup: ExternalEvidenceLookupFn | None,
+    query: str,
+    *,
+    persona_id: str = "planning_expert",
+) -> dict[str, Any]:
+    if external_evidence_lookup is None:
+        return {
+            "external_evidence": [],
+            "used_dataset_search": False,
+            "used_public_api_search": False,
+            "warnings": [],
+        }
+    try:
+        result = external_evidence_lookup(persona_id, query)
+    except Exception:
+        return {
+            "external_evidence": [],
+            "used_dataset_search": False,
+            "used_public_api_search": False,
+            "warnings": ["진행자 외부 근거 검색에 실패했습니다."],
+        }
+    return result if isinstance(result, dict) else {
+        "external_evidence": [],
+        "used_dataset_search": False,
+        "used_public_api_search": False,
+        "warnings": [],
+    }
+
+
+def _facilitator_evidence_key(source_type: str, item: dict) -> str:
+    if source_type == "internal":
+        return f"internal:{item.get('document_id')}:{item.get('chunk_id')}"
+    return f"external:{item.get('source_id')}:{item.get('document_id')}:{item.get('chunk_id')}"
+
+
+def _used_facilitator_research_keys(messages: list[ConvMessage]) -> set[str]:
+    used: set[str] = set()
+    for message in messages:
+        if message.get("speaker_id") != "ideation_facilitator":
+            continue
+        structured = message.get("structured") or {}
+        for key in structured.get("pre_question_research_keys") or []:
+            if isinstance(key, str) and key:
+                used.add(key)
+    return used
+
+
+def _facilitator_grounded_content(
+    source_type: str,
+    item: dict,
+    issue_title: str,
+) -> str:
+    text = str(item.get("quote") or item.get("text") or "").strip()
+    quote = text if len(text) <= 150 else f"{text[:147].rstrip()}…"
+    if source_type == "external":
+        source = str(item.get("title") or item.get("publisher") or "외부 참고자료").strip()
+    else:
+        source = str(item.get("document_name") or "내부 문서").strip()
+    return (
+        f"'{source}'에서는 “{quote}”라고 제시합니다. "
+        f"이 근거를 바탕으로 '{issue_title}' 쟁점의 임시 결론을 잡고, "
+        "다음 전문가 발언에서 신청서 초안에 반영할 문장과 조건을 구체화하겠습니다."
+    )
+
+
+def _merge_facilitator_external_evidence(state: IdeationConvState, new_items: list[dict]) -> list[dict]:
+    merged = list(state.get("external_evidence") or [])
+    seen = {
+        (item.get("source_id"), item.get("document_id"), item.get("chunk_id"))
+        for item in merged
+        if isinstance(item, dict)
+    }
+    for item in new_items:
+        key = (item.get("source_id"), item.get("document_id"), item.get("chunk_id"))
+        if key not in seen:
+            seen.add(key)
+            merged.append(item)
+    return merged
+
+
+def make_discussion_facilitator_node(
+    llm_call: LLMCall,
+    evidence_lookup: EvidenceLookup | None = None,
+    external_evidence_lookup: ExternalEvidenceLookupFn | None = None,
+) -> Callable[[IdeationConvState], dict]:
     """용준/Claude(2026-07-22, 요청: 동적 전문가 회의로 개편): 예전에는 기획/개발이 각각
     정확히 1회씩 말한 "매 라운드 끝"에 무조건 실행됐지만, 이제 _route_next_expert_turn이
     쟁점·반론·발언 캡에 따라 실제로 라운드가 끝났다고 판단했을 때만 실행된다(전문가가
@@ -5033,6 +5342,85 @@ def make_discussion_facilitator_node(llm_call: LLMCall) -> Callable[[IdeationCon
         else:
             decided_next_action = "continue_round"
 
+        # 진행자가 자료로 확인할 수 있는 사실을 사용자에게 되묻지 않도록, 질문을 화면에
+        # 내보내기 전에 내부 문서 RAG → 외부 통계·정책 RAG 순서로 한 번씩 조회한다.
+        # 예산·대상 지역처럼 gated_decision_required로 판정된 진짜 사용자 선택은 자료가
+        # 대신 결정할 수 없으므로 이 자동 보강 대상에서 제외한다.
+        research_issue_id = next_active_issue_id or state.get("active_issue_id")
+        research_issue = next(
+            (issue for issue in open_issues if issue.get("issue_id") == research_issue_id),
+            None,
+        )
+        research_issue_title = (
+            (research_issue or {}).get("title")
+            or next_active_issue_title
+            or research_issue_id
+            or "현재 쟁점"
+        )
+        pre_question_source: str | None = None
+        pre_question_item: dict | None = None
+        pre_question_internal_evidence: list[dict] = []
+        pre_question_external_result: dict[str, Any] = {
+            "external_evidence": [],
+            "used_dataset_search": False,
+            "used_public_api_search": False,
+            "warnings": [],
+        }
+        research_query = ""
+        if decided_next_action == "await_user_decision" and not gated_decision_required:
+            research_query = _facilitator_research_query(state, str(research_issue_title))
+            used_research_keys = _used_facilitator_research_keys(state.get("messages") or [])
+            internal_results = call_evidence_lookup(
+                evidence_lookup,
+                "planning_expert",
+                research_query,
+                runtime_scope=_runtime_scope_for(state),
+            )
+            substantive_internal = [
+                item
+                for item in internal_results
+                if isinstance(item, dict)
+                and _is_substantive_facilitator_internal_evidence(item)
+                and _facilitator_evidence_key("internal", item) not in used_research_keys
+            ]
+            trace_event(
+                "IDEATION_FACILITATOR_INTERNAL_RESEARCH",
+                session_id=state.get("session_id"),
+                issue=research_issue_id,
+                result_count=len(internal_results),
+                substantive_result_count=len(substantive_internal),
+                query=sanitize_preview(research_query, limit=180),
+            )
+            if substantive_internal:
+                pre_question_source = "internal"
+                pre_question_item = substantive_internal[0]
+                pre_question_internal_evidence = [pre_question_item]
+            else:
+                pre_question_external_result = _call_facilitator_external_evidence(
+                    external_evidence_lookup,
+                    research_query,
+                )
+                external_candidates = [
+                    item
+                    for item in pre_question_external_result.get("external_evidence") or []
+                    if isinstance(item, dict)
+                    and str(item.get("quote") or "").strip()
+                    and _facilitator_evidence_key("external", item) not in used_research_keys
+                ]
+                trace_event(
+                    "IDEATION_FACILITATOR_EXTERNAL_RESEARCH",
+                    session_id=state.get("session_id"),
+                    issue=research_issue_id,
+                    result_count=len(pre_question_external_result.get("external_evidence") or []),
+                    substantive_result_count=len(external_candidates),
+                    query=sanitize_preview(research_query, limit=180),
+                )
+                if external_candidates:
+                    pre_question_source = "external"
+                    pre_question_item = external_candidates[0]
+
+        # 가은/Claude(2026-07-24, dev 병합) — 진행자 v02(신청 양식 작성 코치) 컨텍스트 계산.
+        # 위 게이트 로직(dev, 쟁점 로테이션 축)과는 독립적인 축이라 함께 둔다.
         facilitator_context = _isolate_discussion_evidence_context(conversation_context_for(state))
         context_anchors = _facilitator_context_anchors(
             state.get("selected_idea"),
@@ -5048,7 +5436,7 @@ def make_discussion_facilitator_node(llm_call: LLMCall) -> Callable[[IdeationCon
             issue=state.get("active_issue_id"),
             speaker="ideation_facilitator",
             speaker_name="진행자",
-            evidence_count=0,
+            evidence_count=1 if pre_question_item else 0,
         )
 
         prompt = build_ideation_conv_discussion_facilitator_prompt(
@@ -5071,6 +5459,16 @@ def make_discussion_facilitator_node(llm_call: LLMCall) -> Callable[[IdeationCon
             recent_messages=facilitator_context.get("recent_messages") or [],
             context_anchors=context_anchors,
         )
+        if pre_question_item is not None:
+            prompt += (
+                "\n\n[사용자 질문 전 근거 보강 — 시스템 지시]\n"
+                "사용자에게 사실이나 현황을 되묻기 전에 검색으로 확인된 근거입니다. "
+                "이 근거로 현재 쟁점의 임시 결론을 세울 수 있으므로 needs_user_decision은 "
+                "false, user_question은 null로 두세요. spoken_text는 근거 → 임시 결론 → "
+                "다음 전문가가 신청서 초안에 반영할 내용 순서로 작성하고 질문으로 끝내지 마세요.\n"
+                f"source_type={pre_question_source}\n"
+                f"evidence={json.dumps(pre_question_item, ensure_ascii=False, default=str)}"
+            )
         raw, ok, attempts = _safe_call_structured_json(
             llm_call, prompt, _validate_facilitator_response, "discussion_facilitator"
         )
@@ -5088,6 +5486,33 @@ def make_discussion_facilitator_node(llm_call: LLMCall) -> Callable[[IdeationCon
         needs_user_decision = bool(raw.get("needs_user_decision"))
         user_question = raw.get("user_question") if needs_user_decision else None
         facilitator_question_suppressed = False
+        pre_question_research_resolved = pre_question_item is not None
+        if pre_question_research_resolved:
+            # LLM이 기존 계약을 따라 질문을 반환해도 검색 게이트의 결정이 최종적이다.
+            # 근거 원문을 포함한 결정론적 문장으로 화면 내용을 고정해, 막연한 질문이나 근거
+            # 없는 요약이 다시 노출되지 않게 한다.
+            grounded_content = _facilitator_grounded_content(
+                str(pre_question_source),
+                pre_question_item,
+                str(research_issue_title),
+            )
+            summary_text = grounded_content
+            raw["spoken_text"] = grounded_content
+            needs_user_decision = False
+            user_question = None
+            decided_next_action = (
+                "continue_round"
+                if round_number < max_rounds
+                else "complete_discussion"
+            )
+            trace_event(
+                "IDEATION_FACILITATOR_QUESTION_RESOLVED_BY_RESEARCH",
+                session_id=state.get("session_id"),
+                issue=research_issue_id,
+                source_type=pre_question_source,
+                evidence_key=_facilitator_evidence_key(str(pre_question_source), pre_question_item),
+                next_action=decided_next_action,
+            )
         # 2026-07-26 실측(사용자 리포트: "위원 턴이 도돌이된다") — _is_actionable_user_
         # decision_question은 _USER_DECISION_MARKERS(예산/일정/MVP 범위 등 좁은 키워드
         # 목록)에 없는 질문을 전부 억누른다. 이 검사는 원래 "진행자가 스스로 판단해 자발적
@@ -5285,7 +5710,7 @@ def make_discussion_facilitator_node(llm_call: LLMCall) -> Callable[[IdeationCon
             message_type="summary",
             content=content,
             referenced_message_ids=[],
-            evidence=[],
+            evidence=pre_question_internal_evidence,
             structured={
                 "facilitator_summary": summary_text,
                 "agreements": agreements,
@@ -5303,6 +5728,14 @@ def make_discussion_facilitator_node(llm_call: LLMCall) -> Callable[[IdeationCon
                 "next_action": raw.get("next_action"),
                 "safe_fallback": bool(raw.get("safe_fallback")),
                 "safe_fallback_reason": raw.get("safe_fallback_reason"),
+                "pre_question_research_source": pre_question_source,
+                "pre_question_research_query": research_query or None,
+                "pre_question_research_keys": (
+                    [_facilitator_evidence_key(str(pre_question_source), pre_question_item)]
+                    if pre_question_item is not None
+                    else []
+                ),
+                "pre_question_research_resolved": pre_question_research_resolved,
             },
             message_id=message_id,
         )
@@ -5359,6 +5792,28 @@ def make_discussion_facilitator_node(llm_call: LLMCall) -> Callable[[IdeationCon
             "facilitator_decision_repeat_count": facilitator_decision_repeat_count,
             "stop_reason": stop_reason,
         }
+        if pre_question_source == "external":
+            new_external_items = [
+                item
+                for item in pre_question_external_result.get("external_evidence") or []
+                if isinstance(item, dict)
+            ]
+            update["external_evidence"] = _merge_facilitator_external_evidence(
+                state,
+                new_external_items,
+            )
+            previous_meta = state.get("external_evidence_meta") or {}
+            warnings = list(previous_meta.get("warnings") or [])
+            for warning in pre_question_external_result.get("warnings") or []:
+                if warning not in warnings:
+                    warnings.append(warning)
+            update["external_evidence_meta"] = {
+                "used_dataset_search": bool(previous_meta.get("used_dataset_search"))
+                or bool(pre_question_external_result.get("used_dataset_search")),
+                "used_public_api_search": bool(previous_meta.get("used_public_api_search"))
+                or bool(pre_question_external_result.get("used_public_api_search")),
+                "warnings": warnings,
+            }
         if parked_issue_id:
             # 발언 상한으로 강제 종료한 쟁점은 다음 라운드에 다시 등장하지 않는다 —
             # open_issues/resolved_issues와 active_issue_id를 함께 갱신해야 다음 라운드가

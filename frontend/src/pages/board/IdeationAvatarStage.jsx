@@ -172,11 +172,6 @@ function AvatarTileFrame({ speakerId, videoRefs, speaking, statusText, style }) 
           </span>
         )}
       </div>
-      {statusText && !hasError && (
-        <div style={{ marginTop: 6, minHeight: 18 }}>
-          <span style={{ fontSize: 14, fontWeight: 500, color: '#625d72' }}>{statusText}</span>
-        </div>
-      )}
     </div>
   )
 }
