@@ -559,6 +559,13 @@ def _process_text_unit(
             piece_ranges_with_metadata.append((content, start, start + len(content), {}))
 
     if not evaluation_ranges:
+        piece_ranges_with_metadata = _attach_leading_heading_to_body(
+            unit,
+            unit_text,
+            offsets,
+            piece_ranges_with_metadata,
+            config.chunk_size,
+        )
         merged_ranges = _merge_small_tail_piece(
             [(content, start, end) for content, start, end, _ in piece_ranges_with_metadata],
             unit_text,
@@ -598,6 +605,84 @@ def _process_text_unit(
         results.append((content, source_block_orders, source_block_ids, local_positions, extra_metadata))
 
     return results, warnings
+
+
+def _attach_leading_heading_to_body(
+    unit: _LogicalUnit,
+    unit_text: str,
+    offsets: list[tuple[int, int, int, UnifiedBlock]],
+    piece_ranges: list[tuple[str, int, int, dict]],
+    chunk_size: int,
+) -> list[tuple[str, int, int, dict]]:
+    """
+    별도 블록인 section 제목이 첫 본문과 분리된 경우 첫 청크 범위를 본문 쪽으로 늘린다.
+
+    신청 서식은 보통 ``3. 소제목`` / ``<작성 요령>`` / 불릿 목록 순서다. 제목과 긴 목록
+    사이의 문단 경계에서 splitter가 먼저 잘라 버리면 제목(또는 제목+작성 요령 레이블)만
+    첫 청크에 남는다. 첫 불릿의 실제 텍스트까지 첫 청크에 포함시키고, 뒤 청크의 시작을
+    같은 지점으로 당겨 중복도 만들지 않는다.
+    """
+    if len(offsets) < 2 or len(piece_ranges) < 2:
+        return piece_ranges
+
+    first_block = offsets[0][3]
+    has_leading_heading = (
+        unit.heading_block is first_block
+        or (
+            unit.heading_block is None
+            and unit.heading_text_override is not None
+            and extract_whole_line_heading_title(first_block.content) is not None
+        )
+    )
+    if not has_leading_heading:
+        return piece_ranges
+
+    body_start = offsets[1][0]
+    required_body_pos = body_start
+    first_marker = next(
+        (match for match in _LIST_ITEM_BOUNDARY_RE.finditer(unit_text) if match.start() >= body_start),
+        None,
+    )
+    if first_marker is not None:
+        required_body_pos = first_marker.end()
+
+    while required_body_pos < len(unit_text) and unit_text[required_body_pos].isspace():
+        required_body_pos += 1
+    if required_body_pos >= len(unit_text):
+        return piece_ranges
+
+    _, first_start, first_end, first_metadata = piece_ranges[0]
+    if first_start > 0 or first_end > required_body_pos:
+        return piece_ranges
+
+    max_end = min(len(unit_text), chunk_size)
+    if max_end <= required_body_pos:
+        return piece_ranges
+
+    # 가능한 한 문장/줄 경계에서 자르되, 최소한 첫 본문(목록이면 첫 불릿 텍스트)은 포함한다.
+    cut = max_end
+    boundary_candidates: list[int] = []
+    for separator in ("\n\n", "\n", ". ", "! ", "? ", "。", "！", "？", " "):
+        position = unit_text.rfind(separator, required_body_pos + 1, max_end + 1)
+        if position >= 0:
+            boundary_candidates.append(position + len(separator.rstrip()))
+    if boundary_candidates:
+        cut = max(boundary_candidates)
+
+    first_content = unit_text[:cut].strip()
+    if not first_content or len(first_content) > chunk_size:
+        return piece_ranges
+
+    adjusted: list[tuple[str, int, int, dict]] = [(first_content, 0, cut, first_metadata)]
+    for content, start, end, metadata in piece_ranges[1:]:
+        if end <= cut:
+            continue
+        if start < cut:
+            content = unit_text[cut:end].strip()
+            start = cut
+        if content:
+            adjusted.append((content, start, end, metadata))
+    return adjusted
 
 
 def _split_list_like_text(

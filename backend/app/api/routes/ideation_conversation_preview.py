@@ -64,7 +64,6 @@ from graph import (  # noqa: E402
     is_late_request_event,
     reset_trace_context,
     reply_ideation_conversation,
-    reply_to_interjection,
     sanitize_preview,
     start_ideation_conversation,
     trace_event,
@@ -888,14 +887,6 @@ class StartRequest(BaseModel):
 class ReplyRequest(BaseModel):
     message: str
     model: str = Field(default="")
-    # 용준/Claude(2026-07-22, 요청: "잠시만" 버튼 — 질문 대상 선택): 선택 필드다(기존
-    # /reply, /reply/stream 호출과 하위 호환) — 값이 있으면 지정 위원이 먼저 답하는
-    # reply_to_interjection 경로로 라우팅한다(아래 reply_conversation_stream 참고).
-    target_speaker_id: Optional[str] = None
-    # 사용자가 누구의 발언에 반응하는지와 누가 먼저 답할지는 의미가 다르므로 별도 보존한다.
-    opinion_target_speaker_id: Optional[str] = None
-    interrupted_speaker_id: Optional[str] = None
-    interrupted_request_id: Optional[str] = None
     active_issue_id: Optional[str] = None
     # 재인/Claude(2026-07-23, 아바타 페이싱 연동 — 실측: "진행자 2번·기획 1번·개발 1번이
     # 2초 간격으로 그냥 다 나왔다"): true면 이 reply가 새 라운드의 첫 위원 발언을 만들
@@ -1096,39 +1087,16 @@ async def reply_conversation_stream(
     스레드가 sink()로 큐에 넣는 이벤트를 이 async 제너레이터가 꺼내 그대로 클라이언트에게
     전달하는 "생산자(스레드)-소비자(이벤트 루프)" 패턴을 쓴다.
 
-    용준/Claude(2026-07-22, 요청: "잠시만" 실제 취소 + 지정 위원 우선 응답): 세션마다
-    이번 요청의 request_id/cancel_event를 등록하고(POST /cancel이 이 값을 보고 신호를
-    보낸다), on_snapshot 콜백으로 그래프 노드가 완료될 때마다 세션 state를 증분 저장한다 —
-    그래야 도중에 취소돼도 이미 완료된 발언은 canonical state에 남고, 취소된(미완성) 발언만
-    빠진다. request.target_speaker_id가 있으면(사용자가 "잠시만"으로 특정 위원을 지정해
-    질문한 경우) reply_ideation_conversation 대신 reply_to_interjection으로 라우팅한다."""
+    용준/Claude(2026-07-22, 요청: "잠시만" 실제 취소): 세션마다 이번 요청의
+    request_id/cancel_event를 등록하고(POST /cancel이 이 값을 보고 신호를 보낸다),
+    on_snapshot 콜백으로 그래프 노드가 완료될 때마다 세션 state를 증분 저장한다 — 그래야
+    도중에 취소돼도 이미 완료된 발언은 canonical state에 남고, 취소된(미완성) 발언만
+    빠진다."""
     _require_preview_enabled()
     _require_streaming_enabled()
     user_email = get_current_user(authorization)
     await _restore_session_record(session_id, user_email)
     message = _clamp_text(request.message, "message")
-    target_speaker_id = request.target_speaker_id
-    if target_speaker_id is not None and target_speaker_id not in ("planning_expert", "dev_expert", "both"):
-        raise HTTPException(status_code=400, detail="target_speaker_id는 planning_expert/dev_expert/both 중 하나여야 합니다.")
-    opinion_target_speaker_id = request.opinion_target_speaker_id
-    if opinion_target_speaker_id is not None and opinion_target_speaker_id not in (
-        "planning_expert",
-        "dev_expert",
-        "both",
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail="opinion_target_speaker_id는 planning_expert/dev_expert/both 중 하나여야 합니다.",
-        )
-    interrupted_speaker_id = request.interrupted_speaker_id
-    if interrupted_speaker_id is not None and interrupted_speaker_id not in (
-        "planning_expert",
-        "dev_expert",
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail="interrupted_speaker_id는 planning_expert/dev_expert 중 하나여야 합니다.",
-        )
 
     try:
         record = _acquire_session_record_or_404(session_id)
@@ -1152,9 +1120,9 @@ async def reply_conversation_stream(
         event_queue.put(event)
 
     # 용준/Claude(2026-07-22, RAG 근거 유실 수정 2탄): /start에서 저장해둔 record.use_rag/
-    # project_id로 evidence_lookup을 다시 만든다 — 예전에는 아래 reply_to_interjection/
-    # reply_ideation_conversation 호출에 evidence_lookup을 아예 넘기지 않아 첫 턴 이후
-    # 모든 스트리밍 턴이 RAG 검색 없이 진행됐다.
+    # project_id로 evidence_lookup을 다시 만든다 — 예전에는 아래 reply_ideation_conversation
+    # 호출에 evidence_lookup을 아예 넘기지 않아 첫 턴 이후 모든 스트리밍 턴이 RAG 검색
+    # 없이 진행됐다.
     evidence_lookup = _evidence_lookup_for(
         record.use_rag,
         record.project_id,
@@ -1183,59 +1151,30 @@ async def reply_conversation_stream(
             trace_event(
                 "IDEATION_REQUEST_STARTED",
                 mode="stream",
-                target_speaker=target_speaker_id,
-                opinion_target_speaker=opinion_target_speaker_id,
-                interrupted_speaker=interrupted_speaker_id,
                 user_message=sanitize_preview(message),
             )
-            is_user_interjection = target_speaker_id is not None or previous_state.get("phase") in (
+            if previous_state.get("phase") in (
                 "expert_discussion",
                 "awaiting_user_decision",
                 "discussion_complete",
-            )
-            if is_user_interjection:
+            ):
                 trace_event(
                     "IDEATION_USER_INTERJECTION",
-                    target_speaker=target_speaker_id,
-                    opinion_target_speaker=opinion_target_speaker_id,
-                    interrupted_speaker=interrupted_speaker_id,
                     issue=previous_state.get("active_issue_id"),
-                    interrupted_request_id=None,
                     content_length=len(message),
                     user_message=sanitize_preview(message),
                 )
-            if target_speaker_id is not None:
-                trace_event(
-                    "IDEATION_RESUME_STARTED",
-                    resume_target_speaker=target_speaker_id,
-                    phase=previous_state.get("phase"),
-                    next_route=previous_state.get("next_route"),
-                )
-                state = reply_to_interjection(
-                    previous_state=previous_state,
-                    user_message=message,
-                    target_speaker_id=target_speaker_id,
-                    opinion_target_speaker_id=opinion_target_speaker_id or target_speaker_id,
-                    interrupted_speaker_id=interrupted_speaker_id,
-                    llm_call=llm_call,
-                    evidence_lookup=evidence_lookup,
-                    ground_claims=ground_claims,
-                    index_target_evidence=index_target_evidence,
-                    evidence_planner=evidence_planner,
-                    external_evidence_lookup=external_evidence_lookup,
-                )
-            else:
-                state = reply_ideation_conversation(
-                    previous_state=previous_state,
-                    user_message=message,
-                    llm_call=llm_call,
-                    evidence_lookup=evidence_lookup,
-                    ground_claims=ground_claims,
-                    index_target_evidence=index_target_evidence,
-                    evidence_planner=evidence_planner,
-                    external_evidence_lookup=external_evidence_lookup,
-                    stop_after_expert_turn=request.single_turn,
-                )
+            state = reply_ideation_conversation(
+                previous_state=previous_state,
+                user_message=message,
+                llm_call=llm_call,
+                evidence_lookup=evidence_lookup,
+                ground_claims=ground_claims,
+                index_target_evidence=index_target_evidence,
+                evidence_planner=evidence_planner,
+                external_evidence_lookup=external_evidence_lookup,
+                stop_after_expert_turn=request.single_turn,
+            )
             _store.update(session_id, state)
             _persist_from_worker(record, persistence_loop)
             sink({"type": "state", "state": _serialize_state(state)})

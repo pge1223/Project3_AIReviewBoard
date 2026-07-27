@@ -137,10 +137,19 @@ export function isAdministrativeFormField(fieldName) {
 // 맞춰 .badge.blue를 IdeationConversationScreen.jsx의 페이지 스코프 <style>에 추가했다 —
 // Shell(ReviewBoardPrototype.jsx, 공용 파일)은 건드리지 않는다.
 export const SPEAKER_META = {
-  planning_expert: { label: '기획 위원', badgeClass: 'purple', align: 'left' },
-  dev_expert: { label: '개발 위원', badgeClass: 'blue', align: 'left' },
+  planning_expert: { label: '기획 의원', badgeClass: 'purple', align: 'left' },
+  dev_expert: { label: '개발 의원', badgeClass: 'blue', align: 'left' },
   ideation_facilitator: { label: '진행자', badgeClass: 'green', align: 'left' },
   user: { label: '사용자', badgeClass: 'grey', align: 'right' },
+}
+
+// API/상태 스키마의 speaker_id는 내부 계약이므로 바꾸지 않는다. 다만 LLM이 합의 사항이나
+// 최종 판단 본문에 ID를 그대로 쓴 경우에도 사용자 화면에는 역할명만 보이도록 변환한다.
+export function humanizeExpertIdentifiers(value) {
+  if (typeof value !== 'string') return value
+  return value
+    .replace(/\bplanning_expert\b/g, '기획 의원')
+    .replace(/\bdev_expert\b/g, '개발 의원')
 }
 
 export function speakerMetaFor(message) {
@@ -175,8 +184,8 @@ const PHASE_LABEL_KO = {
   awaiting_candidate_selection: '후보 선택 대기',
   candidate_selection: '후보 선택 대기',
   expert_discussion: '전문가 회의 진행 중',
-  awaiting_planning_answer: '기획 위원 답변 대기',
-  awaiting_developer_answer: '개발 위원 답변 대기',
+  awaiting_planning_answer: '기획 의원 답변 대기',
+  awaiting_developer_answer: '개발 의원 답변 대기',
   waiting_user_input: '사용자 의견 대기',
   awaiting_user_decision: '위원 논의 완료 · 의견은 선택 사항',
   discussion_complete: '위원 논의 완료',
@@ -208,9 +217,9 @@ export function nextActionGuideFor(phase) {
     case 'awaiting_candidate_selection':
       return '후보를 선택하거나("1번"), 결합("1번과 2번 결합"), 다시 추천을 요청해야 다음 단계로 진행할 수 있어요.'
     case 'awaiting_planning_answer':
-      return '기획 위원의 질문에 답변해야 개발 위원의 질문으로 넘어갈 수 있어요.'
+      return '기획 의원의 질문에 답변해야 개발 의원의 질문으로 넘어갈 수 있어요.'
     case 'awaiting_developer_answer':
-      return '개발 위원의 질문에 답변해야 두 위원의 의견을 볼 수 있어요.'
+      return '개발 의원의 질문에 답변해야 두 의원의 의견을 볼 수 있어요.'
     case 'awaiting_user_decision':
       return '위원들의 논의가 한 라운드 끝났어요. 답할 의무는 없어요 — 의견이 있으면 남기고, 없으면 바로 확정할 수 있어요.'
     default:

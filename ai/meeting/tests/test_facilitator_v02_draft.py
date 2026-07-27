@@ -259,8 +259,6 @@ def test_form_phase_label_no_longer_gates_dev_expert_participation():
         "expert_turn_count": 1,
         "open_issues": [{"issue_id": "issue-1", "turns": 1}],
         "active_issue_id": "issue-1",
-        "required_counterpart_speaker_id": None,
-        "counterpart_review_completed": True,
     }
 
     assert _route_next_expert_turn(state) == "dev_expert"

@@ -476,7 +476,7 @@ def _resolve_selection(
         # 신호는 next_route로 분리한다(ideation_conv_build.py::_route_after_candidate_selection
         # 참고) — 이전에는 phase="planning_question"을 그 신호로 재사용했는데, candidate_
         # selection 직후 곧바로 실행되는 다음 노드 도중 취소되면 이 "잠깐"의 phase가 그대로
-        # 세션에 저장돼 이후 reply_to_interjection이 재개 불가능한 phase로 오인해 거부했다.
+        # 세션에 저장돼 이후 재개 시점에 재개 불가능한 phase로 오인해 거부했다.
         "phase": "expert_discussion",
         "next_route": "to_refinement",
         "selection_intent": source,

@@ -313,6 +313,20 @@ class IdeationConvState(TypedDict):
     # 리셋된다(쟁점이 바뀌었으므로).
     answer_retry_count: int
 
+    # 용준/Claude(2026-07-27, 요청: "진행자 질문이 무한 반복된다" 버그 수정) — 진행자가
+    # awaiting_user_decision에서 던진 질문(pending_question)에 사용자가 방금 답한 직후,
+    # apply_user_answer가 그 질문 텍스트를 여기 보존한다. discussion_facilitator가 그 다음
+    # 턴에 또 사용자 결정 질문을 만들면 이 값과 의미가 같은지(_looks_like_restatement)
+    # 비교해 "이미 답변받은 질문을 다시 묻는지" 판단하는 데 쓴다. 사용자가 답하지 않은
+    # phase 전환에서는 항상 None으로 되돌아간다(관련 없는 질문과 잘못 비교하지 않도록).
+    last_answered_facilitator_question: str | None
+    # 위 last_answered_facilitator_question과 의미가 같은 질문을 진행자가 연속으로 다시
+    # 만든 횟수. answer_retry_count(전문가 질문 쪽 재질문 상한)와 대칭되는 안전장치 —
+    # discussion_facilitator가 이 값이 상한(_MAX_FACILITATOR_DECISION_REPEAT)에 도달하면
+    # 판정과 무관하게 방금 받은 사용자 답을 그대로 받아들이고 다음 단계로 강제 진행한다.
+    # 새 질문(의미가 다름)을 만들면 0으로 리셋된다.
+    facilitator_decision_repeat_count: int
+
     # 용준/Claude(2026-07-21): discovery(아이디어 발굴) 모드 전용 필드. refinement 세션에서는
     # ideation_mode="refinement" 외에는 전부 초기값(빈 값)에서 바뀌지 않는다 — 요청 2번
     # "모드 판단을 여러 노드에서 반복하지 말고 시작 시 결정한 ideation_mode를 그래프 전체에서
@@ -400,30 +414,10 @@ class IdeationConvState(TypedDict):
     # 라운드/토론이 왜 끝났는지 기록한다: consensus_reached/user_input_required/
     # no_new_information/max_turns_reached/user_finalized/interrupted_by_user.
     stop_reason: str | None
-    # "잠시만" 재개(reply_to_interjection)가 다음 그래프 진입을 특정 전문가로 강제 지정할 때만
-    # 채운다 — 해당 노드가 실행되자마자 None으로 리셋되어 다음 라운드에 잔류하지 않는다.
+    # 재인/Claude(2026-07-23, 아바타 페이싱 연동): continue_ideation_expert_turn이 다음 그래프
+    # 진입을 특정 전문가/진행자로 강제 지정할 때 채운다 — 해당 노드가 실행되자마자 None으로
+    # 리셋되어 다음 라운드에 잔류하지 않는다.
     forced_next_speaker: str | None
-
-    # 용준/Claude(2026-07-22, 요청: 지정 위원 질문 후 상대 검토 코드 강제) — reply_to_interjection이
-    # 사용자가 지정한 대상(target_speaker_id 원본값 — "planning_expert"/"dev_expert"/"both")을
-    # 그대로 기록한다. 이 네 필드는 서로 세트로 채워지고(reply_to_interjection이 한 번에
-    # 설정) counterpart_review_completed=True가 되는 순간 다시 함께 리셋된다(다음 인터젝션과
-    # 섞이지 않도록). 구버전 저장 state에는 이 키들이 없을 수 있으므로 읽는 쪽은 항상
-    # `.get(...)`로 접근한다(하위 호환 — 없으면 "보류 중인 상대 검토 없음"으로 취급).
-    interjection_target_speaker_id: str | None
-    # 지정 위원이 인터젝션에 처음 답한 메시지의 message_id — make_conv_discussion_node가
-    # 그 위원의 발언을 만든 직후 채운다(요청: 어느 발언이 "검토 대상"인지 코드가 결정적으로
-    # 추적). 상대 검토가 끝나면 required_counterpart_speaker_id 등과 함께 None으로 리셋된다.
-    interjection_response_message_id: str | None
-    # 반드시 한 번 더 발언해야 하는 반대편 위원("planning_expert"/"dev_expert") —
-    # reply_to_interjection이 지정 위원의 반대편으로 설정한다. _route_next_expert_turn이
-    # 이 값이 남아있는 한(counterpart_review_completed=False) 다른 어떤 라우팅 신호
-    # (issue_resolved/needs_user_input/발언 캡 이외)보다 우선해 이 위원에게 발언을 넘긴다.
-    required_counterpart_speaker_id: str | None
-    # required_counterpart_speaker_id가 실제로 발언을 완료했는지 여부. False인 동안은
-    # facilitator로 이동할 수 없다(요청 6번) — reply_to_interjection이 False로 설정하고,
-    # 그 위원의 discussion 노드 실행이 끝나면 True로 바뀌며 위 세 필드도 함께 리셋된다.
-    counterpart_review_completed: bool
 
     # 용준/Claude(2026-07-22, 요청: "잠시만" 취소 중 phase 오염 수정) — 그래프 내부에서만
     # 의미가 있는 "다음 라우팅 목적지" 신호. discussion_facilitator가 continue_round를
@@ -574,6 +568,8 @@ def initial_conv_state(
         failed_node=None,
         llm_calls_used=0,
         answer_retry_count=0,
+        last_answered_facilitator_question=None,
+        facilitator_decision_repeat_count=0,
         ideation_mode=mode,
         initial_idea=initial_idea or None,
         contest_analysis=None,
@@ -600,10 +596,6 @@ def initial_conv_state(
         expert_turn_count=0,
         stop_reason=None,
         forced_next_speaker=None,
-        interjection_target_speaker_id=None,
-        interjection_response_message_id=None,
-        required_counterpart_speaker_id=None,
-        counterpart_review_completed=True,
         next_route=None,
         consecutive_zero_linked_turns=0,
         consecutive_expert_judgment_only_turns=0,
@@ -661,6 +653,14 @@ def apply_user_answer(previous_state: IdeationConvState, answer_message: ConvMes
         raise ValueError(f"사용자 답변을 받을 수 없는 phase입니다: {prev_phase!r}")
 
     forced_next_speaker = "facilitator" if prev_phase == "awaiting_user_decision" else None
+    # 용준/Claude(2026-07-27, 진행자 질문 무한 반복 버그 수정): 사용자가 방금 답한 질문이
+    # 진행자가 던진 것(awaiting_user_decision)이었을 때만 그 질문 텍스트를 보존한다 —
+    # discussion_facilitator가 다음 턴에 "이미 답변받은 질문을 다시 묻는지" 비교할 대상이다.
+    # 다른 phase 전환(전문가 질문 답변 등)에서는 관련 없는 이전 값이 남지 않도록 None으로
+    # 되돌린다.
+    last_answered_facilitator_question = (
+        previous_state.get("pending_question") if prev_phase == "awaiting_user_decision" else None
+    )
 
     return IdeationConvState(
         **{
@@ -671,6 +671,7 @@ def apply_user_answer(previous_state: IdeationConvState, answer_message: ConvMes
             "pending_question": None,
             "pending_expected_answer_type": None,
             "pending_question_topic": None,
+            "last_answered_facilitator_question": last_answered_facilitator_question,
             # 다음 단계로 실제로 넘어가는 시점이므로 재질문 카운터를 리셋한다(새 쟁점 시작).
             "answer_retry_count": 0,
             # 용준/Claude(2026-07-22, 요청: 반복 감지 카운터는 사용자가 실제로 새 정보를
