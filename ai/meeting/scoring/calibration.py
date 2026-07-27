@@ -146,14 +146,13 @@ def _needs_method_evidence(criterion: dict[str, Any]) -> bool:
 
 
 def _criterion_kind(criterion: dict[str, Any]) -> str | None:
-    # 항목명·ID는 rubric 3중 검증으로 공고문 원문에 고정되지만 description은 LLM 요약이라
-    # 프로젝트마다 재추출될 때 표현이 흔들린다. description까지 섞어 kind를 정하면 같은
-    # 파일·같은 코드여도 프로젝트에 따라 상한 신호가 달라지므로(2026-07-27 실측: 동일 문서
-    # 세트의 점수 궤적이 재테스트에서 뒤집힌 원인), 검증된 항목명으로 먼저 판별하고
-    # 항목명만으로 알 수 없을 때만 description을 참고한다.
-    name_label = _normalize(
-        f'{criterion.get("criterion_id", "")} {criterion.get("criterion_name", "")}'
-    )
+    # criterion_name은 rubric 3중 검증으로 공고문 원문에 고정되지만, criterion_id(영문
+    # snake_case)와 description은 LLM이 추출 때마다 새로 지어내는 값이라 프로젝트마다
+    # 표현이 흔들린다. 이 둘을 섞어 kind를 정하면 같은 파일·같은 코드여도 프로젝트에 따라
+    # 상한 신호가 달라지므로(2026-07-27 실측: 동일 문서 세트의 점수 궤적이 재테스트에서
+    # 뒤집힘 — id에 'ai_'가 섞이는 것만으로도 kind가 바뀜), **원문 검증된 항목명만으로**
+    # 먼저 판별하고, 항목명으로 알 수 없을 때만 id·description을 참고한다.
+    name_label = _normalize(str(criterion.get("criterion_name", "")))
     full_label = _normalize(
         " ".join(
             str(criterion.get(key, ""))
