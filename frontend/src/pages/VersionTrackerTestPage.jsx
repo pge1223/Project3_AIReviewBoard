@@ -427,7 +427,7 @@ function WhyFeedbackFlow({ f, crit, rubricInfo, citations, statusColor, noticeNa
   // 가장 완전한(긴) 인용만 남긴다 — 같은 문장이 3번씩 보이던 문제의 일반 해법.
   const normQ = (s) => (s || '').replace(/\s+/g, '')
   const pool = []
-  if (f.ref?.quote) pool.push({ quote: f.ref.quote, page: f.ref.page ?? null, source: '', fromRef: true })
+  if (f.ref?.quote) pool.push({ quote: f.ref.quote, page: f.ref.page ?? null, source: '' })
   for (const q of (citations || []).filter((q) => q.role === 'submission')) pool.push(q)
   const seenQ = new Set()
   const deduped = pool.filter((a, i) => {
@@ -440,12 +440,14 @@ function WhyFeedbackFlow({ f, crit, rubricInfo, citations, statusColor, noticeNa
   })
   // 지적-근거 정합(경이 확인 2026-07-27): 제출 문서 인용은 "항목 단위"로 모이기 때문에, 이
   // 지적과 무관한 문단이 붙을 수 있다(예: '법적 제약' 지적 밑에 '구현 서비스 혁신성' 문단).
-  // 지적의 핵심 주제 토큰이 하나도 없는 인용은 이 지적의 근거로 보여주지 않는다 — 지적 전용
-  // 검증 인용(f.ref)은 항상 유지. 걸러서 하나도 안 남으면 "내용 부재"로 정직하게 표기(그
-  // 부재 자체가 지적의 사유인 경우가 대부분).
+  // 지적의 핵심 주제 토큰이 하나도 없는 인용은 이 지적의 근거로 보여주지 않는다. 지적 전용
+  // 검증 인용(f.ref)도 동일하게 검사한다(경이 확인 2026-07-27) — 위원 LLM이 다른 항목의
+  // 문장을 지적에 붙이는 사례 실측('법적 제약·예산' 지적에 '수치 목표' 문장). 원문 게이트는
+  // 존재만 검증하지 주제는 못 거르므로 여기서 거른다. 걸러서 하나도 안 남으면 "내용 부재"로
+  // 정직하게 표기(그 부재 자체가 지적의 사유인 경우가 대부분).
   const issueTopics = issueTopicTokens(f.text)
   const subs = issueTopics.size
-    ? deduped.filter((q) => q.fromRef || [...issueTopics].some((t) => normQ(`${q.section || ''}${q.quote}`).includes(t)))
+    ? deduped.filter((q) => [...issueTopics].some((t) => normQ(`${q.section || ''}${q.quote}`).includes(t)))
     : deduped
   // 보조 자료(그 외 공고 자료) 인용 — STEP 2 접힘 탭에서 표시. 중심 자료(공고문) 원문 청크
   // 인용은 배점표가 한 줄로 풀린 표 덤프·심사 절차 안내 같은 노이즈라 보여주지 않는다
@@ -974,10 +976,23 @@ const _ISSUE_TOPIC_STOP = new Set([
 ])
 const issueTopicTokens = (s) => {
   const out = new Set()
+  // 벗긴 결과가 2자 미만이 되는 제거는 하지 않는다 — '제도'의 '도'까지 조사로 벗겨
+  // 주제 토큰 자체가 사라지는 과잉 제거 방지.
+  const strip = (w, re) => {
+    const m = w.match(re)
+    return m && w.length - m[0].length >= 2 ? w.slice(0, w.length - m[0].length) : w
+  }
   for (let w of stripIssueCitation(s).split(/[^\p{L}\p{N}]+/u)) {
-    w = w.replace(/(에서|으로|이나|이라|하다|되다|하여|되어|했다|됐다|하고)$/u, '')
-    w = w.replace(/(은|는|이|가|을|를|에|의|도|와|과|만|로|들)$/u, '')
-    w = w.replace(/(적|성|인|된|한|함|됨)$/u, '')
+    // 접미가 겹쳐 붙은 형태는 변화가 없을 때까지 반복해서 벗긴다(경이 확인 2026-07-27) —
+    // 1회만 벗기면 '구체적인'이 '구체적'에서 멈춰 불용어('구체')에 못 닿고, 무관한 지적과
+    // 인용이 '구체적' 같은 일반어로 이어지는 오매칭이 생긴다(실측: '법적 제약·예산' 지적에
+    // '수치 목표' 인용이 통과).
+    for (let prev = ''; prev !== w; ) {
+      prev = w
+      w = strip(w, /(에서|으로|이나|이라|하다|되다|하여|되어|했다|됐다|하고)$/u)
+      w = strip(w, /(은|는|이|가|을|를|에|의|도|와|과|만|로|들)$/u)
+      w = strip(w, /(적|성|인|된|한|함|됨)$/u)
+    }
     if (w.length >= 2 && !_ISSUE_TOPIC_STOP.has(w)) out.add(w)
   }
   return out
