@@ -16,7 +16,7 @@ import { useNavigate } from 'react-router-dom'
 import {
   ArrowLeft, TrendingUp, TrendingDown, CheckCircle2, AlertCircle, Plus,
   Lightbulb, Compass, Cpu, FlaskConical,
-  AlertTriangle, Zap, ChevronDown, FileText,
+  AlertTriangle, Zap, ChevronDown, FileText, Info,
 } from 'lucide-react'
 import { getMyProfile } from '../api/profileApi'
 import { getProjectReport, getProjectComparison, analyzeProject, getAnalyzeProgress } from '../api/projectApi'
@@ -1244,8 +1244,6 @@ function AiFeedbackPanel({ findings, format, missingVersion }) {
 // 제외된 항목(사유) ③ 가점 요소(항상 제외)를 한 표로 보여준다. "왜 이렇게 채점할 수밖에
 // 없었는지"를 리포트 안에서 설명하는 역할.
 function ScoringSchemeCard({ rubric, open, onToggle }) {
-  // 총점 참고용 안내 — 상단 배너 대신 헤더 ⚠️ 아이콘 클릭 팝업으로 제공 (경이 요청 2026-07-26)
-  const [noticeOpen, setNoticeOpen] = useState(false)
   if (!rubric) return null
   const criteria = rubric.criteria || []
   const excluded = rubric.excluded_criteria || []
@@ -1265,33 +1263,12 @@ function ScoringSchemeCard({ rubric, open, onToggle }) {
         style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', background: 'none', border: 'none', cursor: 'pointer', padding: '14px 0', textAlign: 'left' }}>
         <span style={{ fontSize: 14.5, fontWeight: 800, color: '#1c1a2e' }}>점수 체계표</span>
         {extracted ? (
-          <>
-            <span style={{ fontSize: 11.5, color: '#918d9f' }}>측정 가능 항목만 채점</span>
-            <span role="button" tabIndex={0} aria-label="총점 참고용 안내"
-              onClick={(e) => { e.stopPropagation(); setNoticeOpen((v) => !v) }}
-              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); setNoticeOpen((v) => !v) } }}
-              style={{ display: 'inline-flex', alignItems: 'center', padding: '2px 4px', borderRadius: 6, flex: 1 }}>
-              <AlertTriangle size={15} style={{ color: '#b8830b', flexShrink: 0 }} />
-            </span>
-          </>
+          <span style={{ fontSize: 11.5, color: '#918d9f', flex: 1 }}>측정 가능 항목만 채점</span>
         ) : (
           <span style={{ fontSize: 11.5, color: '#e0603d', fontWeight: 700, flex: 1 }}>⚠️ 공고문 기준이 아님 — 기본 템플릿으로 채점됨 (만점 {rubric.total_max_score}점)</span>
         )}
         <ChevronDown size={16} style={{ color: '#918d9f', transition: 'transform 0.2s', transform: open ? 'rotate(180deg)' : 'none', flexShrink: 0 }} />
       </button>
-      {/* ⚠️ 클릭 팝업 — 총점 참고용 안내 (기존 상단 배너를 이 팝업으로 이동, 경이 요청 2026-07-26) */}
-      {extracted && noticeOpen && (
-        <div className="vt-fade" style={{ position: 'absolute', top: 46, left: 110, right: 0, zIndex: 60, background: '#fff', border: '1px solid rgba(184,131,11,0.35)', borderLeft: '4px solid #b8830b', borderRadius: 12, boxShadow: '0 14px 34px rgba(28,26,46,0.16)', padding: '12px 16px', display: 'flex', alignItems: 'flex-start', gap: 10 }}>
-          <AlertTriangle size={16} style={{ color: '#b8830b', flexShrink: 0, marginTop: 2 }} />
-          <div style={{ fontSize: 12.5, lineHeight: 1.7, color: '#5b5770' }}>
-            <b style={{ color: '#8a6508' }}>제시된 총점은 참고용입니다.</b>{' '}
-            공고문 평가 항목 중 <b>문서 내용으로 측정 가능한 항목만</b> 근거를 들어 채점하며,
-            정성 판단이 필요한 <b>주관적 항목</b>과 공모전마다 기준이 달라지는 <b>가점 요소</b>는
-            총점에서 제외됩니다. 항목별 채점·제외 사유는 아래 <b>점수 체계표</b>에서 확인할 수
-            있으며, 실제 심사 결과와는 다를 수 있습니다.
-          </div>
-        </div>
-      )}
       {!extracted && (
         <div style={{ margin: '0 0 12px', padding: '10px 14px', borderRadius: 10, background: 'rgba(224,96,61,0.08)', border: '1px solid rgba(224,96,61,0.3)', fontSize: 12.5, lineHeight: 1.65, color: '#8a4a30' }}>
           공고문에서 <b>평가기준·배점을 추출하지 못해</b> 서비스 기본 템플릿으로 채점되었습니다. 이 표와 총점은 <b>공고문 기준이 아니므로 참고하지 마세요.</b>{' '}
@@ -1353,6 +1330,7 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
   // 상세(탭 영역)는 처음에 숨기고, 점수 추이의 버전 점(v1.0…)을 클릭해야 열린다.
   const [detailOpen, setDetailOpen] = useState(false)
   const [schemeOpen, setSchemeOpen] = useState(false) // 점수 체계표 접기/펼치기
+  const [noticeOpen, setNoticeOpen] = useState(false) // 총점 참고용 안내 — 총점 옆 ⓘ 클릭 팝업
   const [statusFilter, setStatusFilter] = useState('all') // 전체/신규/보완필요(남음)/해결 필터
   const detailRef = useRef(null)
   const [profileKey, setProfileKey] = useState('nonmajor')
@@ -1432,6 +1410,8 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
   }, [versionPayload, report])
   const usingReal = Boolean(realVersions)
   const ALL = usingReal ? realVersions : ALL_VERSIONS
+  // 총점 참고용 안내(ⓘ)는 공고문에서 실제 추출한 rubric으로 채점했을 때만 의미가 있다
+  const noticeAvailable = usingReal && report?.rubric?.extracted_from_notice === true
   const realGuides = useMemo(() => {
     if (!usingReal) return null
     const m = new Map()
@@ -1717,17 +1697,40 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
                 </div>
               </div>
             </div>
-            <div style={{ textAlign: 'center', minWidth: 140, padding: '4px 8px' }}>
-              <div className="mono" style={{ fontSize: 11, color: '#918d9f', marginBottom: 6, fontWeight: 600 }}>{selected.version} 총점</div>
+            <div style={{ textAlign: 'center', minWidth: 140, padding: '4px 8px', position: 'relative' }}>
+              <div className="mono" style={{ fontSize: 11, color: '#918d9f', marginBottom: 6, fontWeight: 600, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
+                {selected.version} 총점
+                {noticeAvailable && (
+                  <span role="button" tabIndex={0} aria-label="총점 참고용 안내"
+                    onClick={() => setNoticeOpen((v) => !v)}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setNoticeOpen((v) => !v) } }}
+                    style={{ display: 'inline-flex', alignItems: 'center', cursor: 'pointer', padding: 2, borderRadius: 6 }}>
+                    <Info size={14} style={{ color: '#b8830b', flexShrink: 0 }} />
+                  </span>
+                )}
+              </div>
               <div className="mono" style={{ fontSize: 46, fontWeight: 800, lineHeight: 1, marginBottom: 10, color: '#1c1a2e' }}>
                 {heroScore}<span style={{ fontSize: 15, color: '#918d9f' }}>/{selected.max_total ?? 100}</span>
               </div>
               {totalDelta != null ? <DeltaPill value={totalDelta} size="lg" /> : <span className="badge amber mono">출발점</span>}
+              {/* ⓘ 클릭 팝업 — 총점 참고용 안내 (점수 체계표 헤더에서 총점 옆으로 이동) */}
+              {noticeAvailable && noticeOpen && (
+                <div className="vt-fade" style={{ position: 'absolute', top: 26, right: 0, zIndex: 60, width: 'min(430px, 78vw)', textAlign: 'left', background: '#fff', border: '1px solid rgba(184,131,11,0.35)', borderLeft: '4px solid #b8830b', borderRadius: 12, boxShadow: '0 14px 34px rgba(28,26,46,0.16)', padding: '12px 16px', display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                  <Info size={16} style={{ color: '#b8830b', flexShrink: 0, marginTop: 2 }} />
+                  <div style={{ fontSize: 12.5, lineHeight: 1.7, color: '#5b5770' }}>
+                    <b style={{ color: '#8a6508' }}>제시된 총점은 참고용입니다.</b>{' '}
+                    공고문 평가 항목 중 <b>문서 내용으로 측정 가능한 항목만</b> 근거를 들어 채점하며,
+                    정성 판단이 필요한 <b>주관적 항목</b>과 공모전마다 기준이 달라지는 <b>가점 요소</b>는
+                    총점에서 제외됩니다. 항목별 채점·제외 사유는 아래 <b>점수 체계표</b>에서 확인할 수
+                    있으며, 실제 심사 결과와는 다를 수 있습니다.
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>
 
-        {/* 점수 체계표(접힘 탭 — 클릭해서 펼침, 총점 참고용 안내는 헤더 ⚠️ 팝업) — 실데이터 모드에서만 */}
+        {/* 점수 체계표(접힘 탭 — 클릭해서 펼침, 총점 참고용 안내는 히어로 총점 옆 ⓘ 팝업) — 실데이터 모드에서만 */}
         {usingReal && report?.rubric && (
           <ScoringSchemeCard rubric={report.rubric} open={schemeOpen} onToggle={() => setSchemeOpen((v) => !v)} />
         )}
