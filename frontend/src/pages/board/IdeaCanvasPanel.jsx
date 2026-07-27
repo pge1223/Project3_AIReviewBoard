@@ -65,6 +65,20 @@ function listOf(value, max) {
 // 항목마다 부문명을 반복해서 보여주는 대신 부문별로 묶어 부문 라벨을 한 번만 보여주고
 // 그 아래 기준명만 나열한다(2단 그리드로 배치하면 자연히 부문별로 한 칸씩 차지한다).
 // 구분자가 없는 항목은 전부 하나의 "부문 없음" 묶음으로 합쳐 기존처럼 라벨 없이 보여준다.
+//
+// 용준/Claude(2026-07-27, 요청: "점수 표시 가독성 개선") — 기준명 끝의 ": 15점" 같은 배점
+// 표기를 문장 끝에 그대로 붙이면 눈에 잘 안 띄어서, 배점만 따로 뽑아 "(15점)" 형태로
+// 옮긴다. 부문에 항목이 하나뿐이면(실제 데이터가 대부분 이 경우) 부문 라벨 옆
+// "목표 부합성(15점)"으로 보여주고, 항목이 여러 개면 각 항목 끝에 "(15점)"으로 붙인다
+// (부문 전체 배점이 아니라 항목별 배점이라 부문 라벨로 합쳐 보여줄 수 없기 때문).
+const TRAILING_SCORE_RE = /[:：]\s*([0-9]+(?:\.[0-9]+)?점)\s*$/
+
+function splitTrailingScore(label) {
+  const match = label.match(TRAILING_SCORE_RE)
+  if (!match) return { text: label, score: null }
+  return { text: label.slice(0, match.index).trim(), score: match[1] }
+}
+
 function groupByCategory(value) {
   if (!Array.isArray(value)) return []
   const items = value.filter((v) => typeof v === 'string' && v.trim())
@@ -79,7 +93,7 @@ function groupByCategory(value) {
       groupIndexByKey.set(key, groups.length)
       groups.push({ category, labels: [] })
     }
-    groups[groupIndexByKey.get(key)].labels.push(label)
+    groups[groupIndexByKey.get(key)].labels.push(splitTrailingScore(label))
   }
   return groups
 }
@@ -151,18 +165,33 @@ export default function IdeaCanvasPanel({ ideationConv, analysis }) {
       >
         {criteriaGroups.length > 0 && (
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2px 14px' }}>
-            {criteriaGroups.map((group, gi) => (
-              <div key={gi}>
-                {group.category && (
-                  <div style={{ fontSize: 14, fontWeight: 600, color: '#514a61', marginBottom: 3 }}>
-                    {group.category}
-                  </div>
-                )}
-                <ul style={{ margin: 0, paddingLeft: 16, lineHeight: 1.6 }}>
-                  {group.labels.map((label, li) => <li key={li}>{label}</li>)}
-                </ul>
-              </div>
-            ))}
+            {criteriaGroups.map((group, gi) => {
+              // 항목이 하나뿐이면 그 배점을 부문 라벨 옆에 붙인다 — 여러 개면 부문 전체
+              // 배점이 아니라 항목별 배점이라 합쳐 보여줄 수 없으므로 항목마다 따로 붙인다.
+              const soleScore = group.labels.length === 1 ? group.labels[0].score : null
+              return (
+                <div key={gi}>
+                  {group.category && (
+                    <div style={{ fontSize: 14, fontWeight: 600, color: '#514a61', marginBottom: 3 }}>
+                      {group.category}
+                      {soleScore && (
+                        <span style={{ color: 'var(--purple)' }}>({soleScore})</span>
+                      )}
+                    </div>
+                  )}
+                  <ul style={{ margin: 0, paddingLeft: 16, lineHeight: 1.6 }}>
+                    {group.labels.map(({ text, score }, li) => (
+                      <li key={li}>
+                        {text}
+                        {score && !soleScore && (
+                          <span style={{ color: 'var(--purple)' }}> ({score})</span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )
+            })}
           </div>
         )}
         {contestFit && (

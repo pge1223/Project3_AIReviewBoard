@@ -158,16 +158,16 @@ def test_config_validation():
 
 
 # ---------------------------------------------------------------------------
-# CHUNKING_VERSION (v3): 평가 항목·세부 질문 단위 분리까지 포함한 현재 버전.
+# CHUNKING_VERSION (v4): 서식 소제목-첫 본문 결합까지 포함한 현재 버전.
 # ---------------------------------------------------------------------------
 
-def test_new_chunks_are_tagged_with_chunking_v3():
+def test_new_chunks_are_tagged_with_chunking_v4():
     blocks = [_doc_block("법령규정을 학습", order=0), _doc_block("하여, 이에 대한 질의응답", order=1)]
     extraction = _extraction(blocks, file_type=FileType.PDF)
     result = chunk_document(extraction, _file_context(file_type="pdf"))
 
-    assert result.chunking_version == "chunking_v3"
-    assert all(c.chunking_version == "chunking_v3" for c in result.chunks)
+    assert result.chunking_version == "chunking_v4"
+    assert all(c.chunking_version == "chunking_v4" for c in result.chunks)
 
 
 def test_same_document_v1_and_v2_config_produce_different_chunk_ids():
@@ -673,6 +673,41 @@ def test_long_hyphen_list_block_is_not_cut_mid_sentence_and_no_tiny_tail():
         assert chunk.char_count >= chunker_module.TAIL_CHUNK_MIN_CHARS or len(result.chunks) == 1
 
     assert all(c.section_title == "기타 유의사항" for c in result.chunks)
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "3. 시스템 아키텍처 및 인프라 구성 적정성",
+        "4. AI 모델·알고리즘 적정성",
+    ],
+)
+def test_form_section_heading_is_attached_to_first_guidance_bullet(title):
+    """신청 서식의 숫자형 소제목이 <작성 요령> 또는 첫 불릿과 떨어진 청크가 되지 않아야 한다."""
+    body = (
+        "<작성 요령>\n"
+        "• 시스템 구성 요소와 역할, 연계 방식을 구체적으로 작성합니다. "
+        + ("확장성과 안정성을 설명합니다. " * 8)
+        + "\n"
+        "• 클라우드 인프라의 보안 및 운영 대책을 구체적으로 작성합니다. "
+        + ("운영 방안을 설명합니다. " * 6)
+    )
+    blocks = [
+        _doc_block(title, order=0, location_number=6),
+        _doc_block(body, order=1, location_number=6),
+    ]
+    extraction = _extraction(blocks, file_type=FileType.PDF)
+    config = ChunkingConfig(chunk_size=180, chunk_overlap=20)
+
+    result = chunk_document(extraction, _file_context(file_type="pdf"), config)
+
+    first = result.chunks[0]
+    assert first.content.startswith(title)
+    assert "<작성 요령>" in first.content
+    assert "• 시스템 구성 요소" in first.content
+    assert first.source_block_orders == [0, 1]
+    assert all(chunk.section_title == title.removeprefix(title.split(" ", 1)[0] + " ") for chunk in result.chunks)
+    assert not any(chunk.content.strip() in {title, f"{title}\n\n<작성 요령>"} for chunk in result.chunks)
 
 
 def test_all_indexable_chunks_respect_chunk_size_with_mixed_content():

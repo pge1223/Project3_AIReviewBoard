@@ -11,6 +11,7 @@ requests.Session 기반으로 URL을 안전하게 가져오는 저수준 유틸�
 """
 
 import ipaddress
+import logging
 import socket
 import zipfile
 from pathlib import Path
@@ -32,6 +33,8 @@ from ai.rag.loaders.exceptions import (
     TooManyRedirectsError,
     DownloadSizeLimitExceededError,
 )
+
+logger = logging.getLogger(__name__)
 
 _ALLOWED_SCHEMES = ("http", "https")
 _REDIRECT_STATUS_CODES = (301, 302, 303, 307, 308)
@@ -154,8 +157,10 @@ def open_stream(
                 headers=headers,
             )
         except requests.Timeout as exc:
+            logger.warning("[open_stream] 요청 시간 초과: url=%s cause=%s: %s", current_url, type(exc).__name__, exc)
             raise UrlFetchError(f"요청 시간이 초과되었습니다: {current_url}") from exc
         except requests.RequestException as exc:
+            logger.warning("[open_stream] 요청 실패: url=%s cause=%s: %s", current_url, type(exc).__name__, exc)
             raise UrlFetchError(f"요청에 실패했습니다: {current_url}") from exc
 
         if response.status_code in _REDIRECT_STATUS_CODES:

@@ -558,11 +558,33 @@ def _evidence_unavailable_discussion_response(
     }
 
 
-def _evidence_anchor_response(raw: dict, retrieved: list[dict]) -> dict | None:
+def _quote_josa(quote: str) -> str:
+    """용준/Claude(2026-07-27, 실측 버그 수정: "시민"라고 → "시민"이라고) — quote의 마지막
+    글자가 받침 있는 음절이면 "이라고", 받침 없으면(모음으로 끝나거나 한글이 아니면)
+    "라고"를 반환한다. 한글 완성형 코드 범위(가~힣)의 (코드값 - 0xAC00) % 28 == 0 이면
+    받침이 없다는 유니코드 조합 규칙을 그대로 이용한다."""
+    trimmed = quote.strip()
+    if not trimmed:
+        return "라고"
+    last_char = trimmed[-1]
+    code = ord(last_char)
+    if 0xAC00 <= code <= 0xD7A3 and (code - 0xAC00) % 28 != 0:
+        return "이라고"
+    return "라고"
+
+
+def _evidence_anchor_response(raw: dict, retrieved: list[dict], persona_id: str) -> dict | None:
     """LLM 응답이 근거를 하나도 연결하지 못했을 때 선택 근거 자체로 안전한 발언을 만든다.
 
     근거 quote를 그대로 claim text로 사용하므로 새로운 문서 사실을 만들지 않는다. target
     근거를 criteria보다 우선해 아이디어 자체에 대한 논의가 평가표 일반론보다 앞서게 한다.
+
+    용준/Claude(2026-07-27, 실측 버그 수정: "기획 위원과 개발 위원이 완전히 같은 문장을
+    말함") — 이 함수는 quote/issue_title만으로 결정되는 순수 템플릿이라, 두 위원이 같은
+    쟁점에서 나란히 이 폴백에 걸리면(둘 다 근거 연결에 실패) 화자 구분 없이 글자 그대로
+    같은 문장이 나갔다. persona_id로 화자 역할 라벨을 judgment 문장에 넣어, 같은 근거를
+    인용하더라도 "누구 관점에서"가 달라 두 발언이 항상 구분되게 한다(새 문서 사실을
+    지어내지 않는다는 이 함수의 원래 제약은 그대로 유지 — quote 자체는 손대지 않는다).
     """
     candidates = [
         item
@@ -585,8 +607,9 @@ def _evidence_anchor_response(raw: dict, retrieved: list[dict]) -> dict | None:
     if claim_type not in ("document_fact", "user_provided_fact"):
         claim_type = "user_provided_fact" if evidence.get("document_role") == "target" else "document_fact"
     issue_title = raw.get("active_issue_title") or "현재 쟁점"
-    judgment = f"{issue_title}에서는 이 근거가 요구하거나 설명하는 내용을 구체화해야 합니다."
-    spoken_text = f'근거 자료에는 “{quote}”라고 제시되어 있습니다. {judgment}'
+    role_label = _EXPERT_ROLE_LABELS.get(persona_id, "위원")
+    judgment = f"{role_label} 관점에서, {issue_title}에서는 이 근거가 요구하거나 설명하는 내용을 구체화해야 합니다."
+    spoken_text = f'근거 자료에는 “{quote}”{_quote_josa(quote)} 제시되어 있습니다. {judgment}'
     return {
         **raw,
         "judgment": judgment,
@@ -701,7 +724,7 @@ def _ground_and_finalize_claims(
         raw["spoken_text"] = _safe_fallback_spoken_text(grounding)
 
     if require_linked_evidence and retrieved and grounding["linked_evidence_count"] == 0:
-        anchored_raw = _evidence_anchor_response(raw, retrieved)
+        anchored_raw = _evidence_anchor_response(raw, retrieved, persona_id)
         if anchored_raw is not None:
             anchored_grounding = ground_claims_fn(
                 persona_id,
@@ -1661,12 +1684,20 @@ def _compose_form_facilitator_text(
     user_question: str,
     choices: Any,
 ) -> str:
-    """진행자 v02의 사용자 노출 발화를 네 필수 요소가 빠지지 않도록 3줄로 조립한다."""
+    """진행자 v02의 사용자 노출 발화를 조립한다.
+
+    confirmed_content="아직 없음"은 내부 상태값으로만 유지하고 화면·TTS 본문에서는
+    생략한다. 실제로 확정된 내용이 생긴 뒤에는 기존처럼 발화에 포함한다.
+    """
     choice_labels = _choice_labels(choices)
     choice_text = f" 선택지: {' / '.join(choice_labels)}" if choice_labels else ""
+    confirmed_text = (
+        f" 지금까지 확정된 내용: {confirmed_content}"
+        if confirmed_content and confirmed_content != "아직 없음"
+        else ""
+    )
     return (
-        f"지금 작성 중인 신청 양식 항목은 '{field_name}'입니다. "
-        f"지금까지 확정된 내용: {confirmed_content}\n"
+        f"지금 작성 중인 신청 양식 항목은 '{field_name}'입니다.{confirmed_text}\n"
         f"{decision_reason}\n"
         f"{user_question}{choice_text}"
     )
@@ -2241,39 +2272,12 @@ def _slugify_issue_title(title: str) -> str:
     return normalized.lower() or "unknown_issue"
 
 
-def _active_user_interjection(state: IdeationConvState) -> ConvMessage | None:
-    """지정 위원 응답/상대 검토가 끝나기 전까지 가장 최근 사용자 개입을 반환한다."""
-    interjection_in_progress = bool(
-        state.get("interjection_target_speaker_id")
-        or state.get("required_counterpart_speaker_id")
-    )
-    if not interjection_in_progress:
-        return None
-    for message in reversed(state.get("messages") or []):
-        if message.get("speaker_id") == "user" and message.get("message_type") == "interjection":
-            content = (message.get("content") or "").strip()
-            if content:
-                return message
-    return None
-
-
 def resolve_effective_issue(state: IdeationConvState, persona_id: str | None = None) -> dict[str, str]:
     """용준/Claude(2026-07-23, Phase 1 "Shadow Deterministic Evidence Planner"): 이번 턴
     retrieval이 실제로 초점을 맞추는 쟁점을 issue_id/title 구조로 반환한다.
     resolve_retrieval_issue()와 정확히 같은 우선순위를 따르며(아래에서 그 함수가 이 함수의
     title만 재사용하도록 리팩터링했다 — 요청: "_topic_query()가 사용한 issue title/query와
     Planner의 issue가 반드시 동일") 반환하는 title 문자열은 항상 같다."""
-    user_interjection = _active_user_interjection(state)
-    if user_interjection is not None:
-        question = user_interjection["content"].strip()
-        issue_id = state.get("active_issue_id") or _slugify_issue_title(question)
-        return {
-            "issue_id": issue_id,
-            "title": question,
-            "query": question,
-            "source": "user_interjection",
-        }
-
     issue_id = state.get("active_issue_id")
     if issue_id:
         title = _active_issue_title(state) or issue_id
@@ -2323,8 +2327,6 @@ def _topic_query(state: IdeationConvState, persona_id: str | None = None) -> str
     동일하게 기본 필드 요약 + 이슈만 반환한다."""
     parts: list[str] = []
     effective_issue = resolve_effective_issue(state, persona_id)
-    if effective_issue.get("source") == "user_interjection":
-        parts.append(f"사용자 직접 질문: {effective_issue['query']}")
 
     idea_summary = _idea_core_summary(state["user_idea"], persona_id)
     if idea_summary:
@@ -3376,8 +3378,6 @@ def _route_next_expert_turn(state: IdeationConvState) -> str:
             issue=active_issue_id,
             resolved=last_structured.get("issue_resolved"),
             needs_counterpart=last_structured.get("needs_counterpart_response"),
-            required_counterpart=state.get("required_counterpart_speaker_id"),
-            counterpart_review_completed=state.get("counterpart_review_completed"),
             turn_count=state.get("expert_turn_count", 0),
             issue_turn_count=issue_turn_count,
             stop_reason=reason if selected == "facilitator" else None,
@@ -3406,20 +3406,6 @@ def _route_next_expert_turn(state: IdeationConvState) -> str:
             if issue["issue_id"] == active_issue_id and issue.get("turns", 0) >= MAX_EXPERT_TURNS_PER_ISSUE:
                 hit_issue_cap = True
                 break
-
-    # 용준/Claude(2026-07-22, 요청: 지정 위원 질문 후 상대 검토 코드 강제) — required_counterpart_
-    # speaker_id가 남아있고 아직 검토가 끝나지 않았다면(counterpart_review_completed=False),
-    # issue_resolved/needs_user_input/recommended_next_speaker 등 다른 어떤 신호보다 이 검토를
-    # 우선한다 — "지정 위원이 issue_resolved=true를 반환해도 상대 검토 전에는 최종 확정 금지"
-    # (요청 7번)와 "counterpart_review_completed=false인 동안 facilitator 이동 금지"(요청 6번)의
-    # 실제 강제 지점이다. 발언·LLM 호출 상한(요청 10번)만은 예외로 여전히 절대 우선한다 — 상한에
-    # 도달했는데도 검토를 강제하면 무한 루프 방지 장치 자체가 무력화되기 때문이다.
-    required_counterpart = state.get("required_counterpart_speaker_id")
-    review_pending = bool(required_counterpart) and not state.get("counterpart_review_completed", True)
-    if review_pending:
-        if hit_round_cap or hit_issue_cap:
-            return routed("facilitator", "hard_turn_cap")
-        return routed(required_counterpart, "required_counterpart_review")
 
     # 2026-07-26 라운드테이블 재설계: 예전엔 여기서 고정 9단계 중 앞 두 단계일 때만
     # planning_expert 발언 뒤 dev_expert를 건너뛰고 진행자로 돌려보냈다. 이제 "전문가 발언
@@ -3752,45 +3738,6 @@ def _build_evidence_plan_notice(mode: str, plan: dict | None) -> str:
         f'이번 쟁점(effective_issue_id="{issue_id}", 제목: "{issue_title}")에는 인용할 문서 근거가 '
         f"없습니다. 문서 사실(document_fact)을 새로 만들지 말고 전문가 판단(expert_judgment)으로만 "
         f"판단하세요. 이 쟁점 범위 안에서만 판단하고 다른 쟁점으로 임의 전환하지 마세요."
-    )
-
-
-def _build_user_interjection_notice(state: IdeationConvState) -> str:
-    message = _active_user_interjection(state)
-    if message is None:
-        return ""
-    question = message["content"].strip()
-    structured = message.get("structured") or {}
-    opinion_target = structured.get("opinion_target_speaker_id")
-    interrupted_speaker = structured.get("interrupted_speaker_id")
-    target_label = {
-        "planning_expert": "기획 위원",
-        "dev_expert": "개발 위원",
-        "both": "기획 위원과 개발 위원 모두",
-    }.get(opinion_target)
-    target_notice = (
-        f"사용자는 {target_label}의 의견을 대상으로 말하고 있습니다. "
-        if target_label
-        else ""
-    )
-    interrupted_targeted = (
-        interrupted_speaker == opinion_target
-        or opinion_target == "both"
-        and interrupted_speaker in ("planning_expert", "dev_expert")
-    )
-    interrupted_notice = (
-        "대상 위원의 직전 발언은 도중에 중단되어 완성 발언으로 저장되지 않았으므로, "
-        "중단된 문장을 추측하지 말고 사용자의 질문에 적힌 내용만 기준으로 답하세요. "
-        if interrupted_targeted
-        else ""
-    )
-    return (
-        "### 사용자 직접 질문 최우선 규칙\n"
-        f'사용자가 방금 질문했습니다: "{question}"\n'
-        f"{target_notice}{interrupted_notice}"
-        "이번 발언의 첫 문장부터 이 질문에 직접 답하세요. 기존 쟁점의 일반론을 반복하거나 "
-        "질문과 무관한 MVP·비용·기능 논의로 돌아가지 마세요. 문서 근거가 부족하면 그 사실을 "
-        "밝힌 뒤 전문가 판단으로 실행 가능한 답을 제시하세요."
     )
 
 
@@ -4207,21 +4154,6 @@ def make_conv_discussion_node(
 
     def node(state: IdeationConvState) -> dict:
         turn_started = time.perf_counter()
-        # 용준/Claude(2026-07-22, 요청: 지정 위원 질문 후 상대 검토 코드 강제) — 이번 실행이
-        # (a) "잠시만" 재개로 지정된 위원의 첫 응답인지, (b) 그 응답을 검토해야 할 반대편
-        # 위원의 검토 발언인지를 state만 보고 결정적으로 판별한다(LLM 판단에 맡기지 않는다).
-        # forced_next_speaker는 _route_entry가 이 노드를 강제 진입시켰을 때만 남아있고
-        # (실행 즉시 리셋되므로), interjection_response_message_id가 아직 비어 있으면
-        # "아직 첫 응답을 기록하지 않은 지정 위원 실행"이라는 뜻이다.
-        is_interjection_first_response = (
-            state.get("forced_next_speaker") == persona_id
-            and state.get("interjection_target_speaker_id") is not None
-            and not state.get("interjection_response_message_id")
-        )
-        is_required_counterpart_review = (
-            persona_id == state.get("required_counterpart_speaker_id")
-            and not state.get("counterpart_review_completed", True)
-        )
         discussion_stage = _discussion_stage_for(state, persona_id)
         responding_to_target = _responding_to_for(state, persona_id, discussion_stage)
         responding_to_message_id = responding_to_target["message_id"] if responding_to_target else None
@@ -4308,11 +4240,7 @@ def make_conv_discussion_node(
                 injected_evidence_count=len(turn_evidence),
                 elapsed_ms=plan_elapsed_ms,
             )
-        notice_parts = [
-            _build_user_interjection_notice(state),
-            _build_evidence_plan_notice(evidence_mode, shadow_plan),
-        ]
-        evidence_plan_notice = "\n\n".join(part for part in notice_parts if part)
+        evidence_plan_notice = _build_evidence_plan_notice(evidence_mode, shadow_plan) or ""
         context = conversation_context_for(state)
         if evidence_mode in ("active", "valid_empty"):
             context = _isolate_discussion_evidence_context(context)
@@ -4390,10 +4318,8 @@ def make_conv_discussion_node(
                 current_speaker_id=persona_id,
                 responding_to_speaker_id=responding_to_speaker_id,
                 responding_to_content=(responding_to_target.get("content") if responding_to_target else None),
-                require_user_question_focus=is_interjection_first_response,
                 expected_issue_id=expected_issue_id,
                 expected_issue_title=effective_issue.get("title"),
-                require_issue_content_focus=effective_issue.get("source") != "user_interjection",
                 evidence_claim_types_by_ref=evidence_claim_types_by_ref,
             )
 
@@ -4560,16 +4486,6 @@ def make_conv_discussion_node(
         if recommended_next_speaker not in _VALID_NEXT_SPEAKERS:
             recommended_next_speaker = _DISCUSSION_COUNTERPART.get(persona_id, "ideation_facilitator")
         issue_resolved = bool(raw.get("issue_resolved"))
-        # 용준/Claude(2026-07-22, 요청 7번: "첫 답변자가 issue_resolved=true를 반환해도 상대
-        # 검토 전에는 최종 resolved로 확정 금지") — 지정 위원의 첫 응답 자신이 이 쟁점을
-        # 해결됐다고 판단해도, 코드가 강제로 open 상태를 유지한다(active_issue_id도 아래에서
-        # 계속 살아있게 된다) — 상대가 검토한 뒤 자신도 issue_resolved=true를 반환해야만 실제로
-        # resolved_issues로 옮겨간다. 이 override는 message 생성 이전에 적용되므로
-        # structured["issue_resolved"]도 함께 False로 기록된다(화면/로그가 "아직 미확정"이라는
-        # 실제 상태와 다른 값을 보여주지 않도록 하기 위함 — raw 원본 값을 숨기는 것이 목적이
-        # 아니라, "이 시점에 회의가 실제로 이 쟁점을 닫았는가"를 정확히 반영하려는 것이다).
-        if is_interjection_first_response and issue_resolved:
-            issue_resolved = False
         llm_requested_user_input = bool(raw.get("needs_user_input"))
         llm_user_question = (raw.get("user_question") or None) if llm_requested_user_input else None
 
@@ -5018,8 +4934,7 @@ def make_conv_discussion_node(
                 "responding_to_message_id": responding_to_message_id,
                 "responding_to_speaker_id": responding_to_speaker_id,
                 # 용준/Claude(2026-07-22, 요청: 동적 전문가 회의로 개편) — 다음 발언자/쟁점
-                # 판단 근거. _route_next_expert_turn과 "잠시만" 재개(reply_to_interjection)가
-                # 그대로 참조한다.
+                # 판단 근거. _route_next_expert_turn이 그대로 참조한다.
                 "active_issue_id": active_issue_id,
                 "active_issue_title": active_issue_title,
                 "new_information": new_information,
@@ -5196,9 +5111,9 @@ def make_conv_discussion_node(
             "active_issue_id": None if issue_resolved else active_issue_id,
             "previous_speaker": persona_id,
             "expert_turn_count": state.get("expert_turn_count", 0) + 1,
-            # "잠시만" 재개(reply_to_interjection)가 강제 지정한 다음 발언자는 실행 즉시
-            # 소비된다 — 어느 전문가 노드가 실행되든(강제 지정 대상이든 아니든) 매 턴마다
-            # None으로 리셋해 다음 라운드에 잔류하지 않게 한다.
+            # continue_ideation_expert_turn이 강제 지정한 다음 발언자는 실행 즉시 소비된다 —
+            # 어느 전문가 노드가 실행되든(강제 지정 대상이든 아니든) 매 턴마다 None으로
+            # 리셋해 다음 라운드에 잔류하지 않게 한다.
             "forced_next_speaker": None,
             # 용준/Claude(2026-07-22, 요청: "잠시만" 취소 중 phase 오염 수정) — discussion_
             # facilitator/candidate_selection이 남긴 next_route("continue_round"/
@@ -5223,20 +5138,6 @@ def make_conv_discussion_node(
             "supplemental_retrieval_issue_ids": supplemental_attempted_issue_ids,
             "asked_decision_fingerprints": asked_decision_fingerprints,
         }
-        if is_interjection_first_response:
-            # 용준/Claude(2026-07-22, 요청: 지정 위원 질문 후 상대 검토 코드 강제) — "검토
-            # 대상"을 이 메시지로 확정한다. required_counterpart_speaker_id/
-            # counterpart_review_completed는 reply_to_interjection이 이미 설정해 둔 값
-            # 그대로 유지한다(여기서는 아직 검토가 끝나지 않았으므로 바꾸지 않는다).
-            update["interjection_response_message_id"] = message["message_id"]
-        if is_required_counterpart_review:
-            # 상대 위원이 실제로 검토를 마쳤다 — 이 인터젝션에 대한 강제 라우팅을 여기서
-            # 종료한다(요청 9번: "상대 검토가 끝난 뒤에만 facilitator 또는 다음 쟁점으로
-            # 이동"). 네 필드를 한 세트로 리셋해 다음 인터젝션과 섞이지 않게 한다.
-            update["counterpart_review_completed"] = True
-            update["interjection_target_speaker_id"] = None
-            update["interjection_response_message_id"] = None
-            update["required_counterpart_speaker_id"] = None
         return update
 
     return node
@@ -5734,6 +5635,40 @@ def make_discussion_facilitator_node(llm_call: LLMCall) -> Callable[[IdeationCon
                     resolved_issue_count=len(resolved_issues),
                 )
 
+        # 용준/Claude(2026-07-27, 실측 버그 수정: "진행자 질문이 무한 반복된다") — 사용자가
+        # 방금 답한 진행자 질문(last_answered_facilitator_question)과 의미가 같은 질문을
+        # 진행자가 또 만들면, 전문가 질문 쪽 answer_retry_count/_MAX_ANSWER_RETRY와 동일한
+        # 상한을 적용해 강제로 다음 단계로 넘긴다 — 그렇지 않으면 needs_user_decision=True를
+        # 계속 반환하는 한 사용자가 아무리 답해도(apply_user_answer가 곧장 facilitator로
+        # 되돌리므로) 문구만 바뀐 같은 질문이 끝없이 반복될 수 있다(전문가 질문 흐름에는
+        # 이미 이 상한이 있는데, 진행자 자신의 질문에는 의도적으로 빠져 있었다 — 그 갭).
+        _MAX_FACILITATOR_DECISION_REPEAT = 1
+        last_answered_facilitator_question = state.get("last_answered_facilitator_question")
+        facilitator_decision_repeat_count = state.get("facilitator_decision_repeat_count", 0)
+        if needs_user_decision and user_question:
+            is_repeat_of_answered_question = bool(last_answered_facilitator_question) and _looks_like_restatement(
+                user_question, last_answered_facilitator_question
+            )
+            facilitator_decision_repeat_count = (
+                facilitator_decision_repeat_count + 1 if is_repeat_of_answered_question else 0
+            )
+            if is_repeat_of_answered_question and facilitator_decision_repeat_count >= _MAX_FACILITATOR_DECISION_REPEAT:
+                trace_event(
+                    "IDEATION_FACILITATOR_DECISION_REPEAT_FORCED",
+                    session_id=state.get("session_id"),
+                    speaker="ideation_facilitator",
+                    repeat_count=facilitator_decision_repeat_count,
+                    question=sanitize_preview(user_question),
+                )
+                needs_user_decision = False
+                user_question = None
+                if (open_issues or no_expert_spoken_yet) and round_number <= max_rounds:
+                    decided_next_action = "continue_round"
+                else:
+                    decided_next_action = "complete_discussion"
+        else:
+            facilitator_decision_repeat_count = 0
+
         # 용준/Claude(2026-07-22, 요청: 보고서형 메시지 → 자연스러운 회의 발화 전환) — 채팅에
         # 실제로 보이는 content는 spoken_text(1~2문장의 자연스러운 정리, needs_user_decision=
         # true면 질문 자체를 자연스럽게 포함) 그대로다.
@@ -5902,6 +5837,7 @@ def make_discussion_facilitator_node(llm_call: LLMCall) -> Callable[[IdeationCon
             "consensus": new_consensus,
             "discussion_rounds": [record],
             "llm_calls_used": used,
+            "facilitator_decision_repeat_count": facilitator_decision_repeat_count,
             "stop_reason": stop_reason,
             "application_form_draft": application_form_draft,
         }

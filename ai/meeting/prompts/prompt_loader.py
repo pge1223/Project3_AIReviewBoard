@@ -755,8 +755,14 @@ def build_ideation_conv_candidate_planning_prompt(
     retrieved_evidence: Any,
     previous_candidates: Any | None = None,
     regeneration_reason: str | None = None,
+    external_research: Any | None = None,
 ) -> str:
-    """기획 전문가의 "후보 생성" 프롬프트를 조립한다(공모전 분석 + 서로 다른 후보 2~3개)."""
+    """기획 전문가의 "후보 생성" 프롬프트를 조립한다(공모전 분석 + 서로 다른 후보 2~3개).
+
+    용준/Claude(2026-07-27, RAG-007 연결) — external_research(RAG-007, 외부 통계·시장·정책
+    참고자료)는 retrieved_evidence(RAG-006, 프로젝트/공고문 근거)와 별도 토큰으로 주입한다 —
+    같은 목록에 섞으면 두 근거의 신뢰 수준(직접 근거 vs 참고 자료)이 프롬프트에서 구분되지
+    않는다. None/빈 리스트면(use_rag=False 등) 기존과 동일하게 빈 배열 텍스트가 들어간다."""
     card = get_persona_card("planning_expert")
     template = _read_text(IDEATION_CONV_CANDIDATE_PLANNING_TEMPLATE)
     if candidate_novelty_prompt_enabled():
@@ -782,6 +788,7 @@ def build_ideation_conv_candidate_planning_prompt(
         "<<RETRIEVED_EVIDENCE_JSON>>": _as_text(retrieved_evidence),
         "<<PREVIOUS_CANDIDATES_JSON>>": _as_text(previous_candidates if previous_candidates is not None else []),
         "<<REGENERATION_REASON>>": _as_text(regeneration_reason),
+        "<<EXTERNAL_RESEARCH_JSON>>": _as_text(external_research if external_research is not None else []),
     }
     for token, value in replacements.items():
         template = template.replace(token, value)
@@ -792,8 +799,12 @@ def build_ideation_conv_candidate_feasibility_prompt(
     notice_and_criteria: Any,
     candidates: Any,
     retrieved_evidence: Any,
+    external_research: Any | None = None,
 ) -> str:
-    """개발 전문가의 "후보별 실현 가능성 검토" 프롬프트를 조립한다."""
+    """개발 전문가의 "후보별 실현 가능성 검토" 프롬프트를 조립한다.
+
+    용준/Claude(2026-07-27, RAG-007 연결) — external_research는 build_ideation_conv_candidate_planning_prompt와
+    동일한 원칙으로 별도 토큰에 주입한다."""
     card = get_persona_card("dev_expert")
     template = _read_text(IDEATION_CONV_CANDIDATE_FEASIBILITY_TEMPLATE)
     if candidate_novelty_prompt_enabled():
@@ -814,6 +825,7 @@ def build_ideation_conv_candidate_feasibility_prompt(
         "<<NOTICE_AND_CRITERIA_JSON>>": _as_text(notice_and_criteria),
         "<<CANDIDATES_JSON>>": _as_text(candidates),
         "<<RETRIEVED_EVIDENCE_JSON>>": _as_text(retrieved_evidence),
+        "<<EXTERNAL_RESEARCH_JSON>>": _as_text(external_research if external_research is not None else []),
     }
     for token, value in replacements.items():
         template = template.replace(token, value)
