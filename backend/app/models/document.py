@@ -38,6 +38,8 @@ class DocumentModel:
         # INTEGRATION.md). build_conversion_metadata()가 만드는 DocumentConversionMetadata를
         # dict로 그대로 저장 — 새 컬럼 여러 개 대신 dict 하나로 묶음(가이드 3번 권장 사항).
         conversion_metadata: Optional[dict] = None,
+        # 색인 실패 단계와 사용자용 안전한 안내. 원본 예외/경로/토큰은 저장하지 않는다.
+        indexing_error: Optional[dict] = None,
         # 가은/Claude(2026-07-18): URL 공고문 수집 시 발견됐지만 자동으로 못 읽은 첨부파일
         # (지금은 HWP/HWPX만 해당, ai/rag/loaders/url_loader.py의 UnsupportedAttachment를
         # {"url", "file_name", "reason"} dict로 그대로 저장) — 실측(sotong.go.kr): 평가
@@ -64,6 +66,7 @@ class DocumentModel:
         self.document_role = document_role
         self.parsed_text = parsed_text
         self.conversion_metadata = conversion_metadata
+        self.indexing_error = indexing_error
         self.unsupported_attachments = unsupported_attachments
 
     def to_dict(self) -> dict:
@@ -83,5 +86,6 @@ class DocumentModel:
             "document_role": self.document_role,
             "parsed_text": self.parsed_text,
             "conversion_metadata": self.conversion_metadata,
+            "indexing_error": self.indexing_error,
             "unsupported_attachments": self.unsupported_attachments,
         }

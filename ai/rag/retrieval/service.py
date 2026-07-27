@@ -6,6 +6,7 @@ RAG Indexing Service (Integration Layer)
 """
 
 import logging
+import threading
 import time
 from typing import Optional
 
@@ -28,6 +29,10 @@ class RAGIndexingService:
     def __init__(self, embedder: KUREEmbedder, vector_store: ChromaVectorStore):
         self._embedder = embedder
         self._vector_store = vector_store
+        # 한 서비스가 공유하는 PersistentClient에 여러 background thread가 동시에
+        # upsert/list/delete 트랜잭션을 수행하지 않도록 문서 단위 색인을 직렬화한다.
+        # 파싱·HWP 변환은 이 서비스 호출 전에 끝나므로 해당 작업들은 계속 병렬로 돈다.
+        self._index_lock = threading.Lock()
 
     @property
     def embedder(self) -> KUREEmbedder:
@@ -44,6 +49,22 @@ class RAGIndexingService:
         return self._vector_store
 
     def index_chunking_result(
+        self,
+        chunking_result: ChunkingResult,
+        context: IndexingContext,
+    ) -> IndexingResult:
+        wait_started = time.monotonic()
+        with self._index_lock:
+            waited_ms = (time.monotonic() - wait_started) * 1000
+            if waited_ms >= 1:
+                logger.info(
+                    "rag.indexing.lock_acquired document_id=%s waited_ms=%.0f",
+                    context.document_id,
+                    waited_ms,
+                )
+            return self._index_chunking_result_locked(chunking_result, context)
+
+    def _index_chunking_result_locked(
         self,
         chunking_result: ChunkingResult,
         context: IndexingContext,

@@ -18,13 +18,14 @@ from ai.rag.chunking.schemas import (
     SourceType,
 )
 from ai.rag.domain import IndexingContext
+from ai.rag.domain.config import DEFAULT_COLLECTION_NAME
 from ai.rag.loaders.schemas import WebBlockType, WebContentBlock
 from ai.rag.preprocessing.schemas import CleanedWebContent
 from ai.rag.retrieval.chroma_store import ChromaVectorStore, create_persistent_client
 from ai.rag.retrieval.exceptions import EmbeddingStageError, RAGIndexingError, VectorStoreStageError
 from ai.rag.retrieval.service import RAGIndexingService
 
-_COLLECTION = "project_documents_kure_v1"
+_COLLECTION = DEFAULT_COLLECTION_NAME
 
 
 def _make_chunking_result() -> ChunkingResult:

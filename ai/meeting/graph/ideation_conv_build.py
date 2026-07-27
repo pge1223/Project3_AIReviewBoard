@@ -71,13 +71,13 @@ def _route_entry(state: IdeationConvState) -> str:
     (호출부가 그 phase에서는 그래프를 아예 부르지 않아야 한다 — ideation_conv_run.py가
     보장한다).
 
-    용준/Claude(2026-07-22, 요청: "잠시만" 재개 — 지정 위원 우선 응답): phase가
-    "expert_discussion"이고 forced_next_speaker가 설정돼 있으면(reply_to_interjection이
-    사용자가 지정한 위원을 강제 지정한 경우) 기본값(planning_expert_discussion) 대신 그
-    위원의 노드로 바로 진입한다. forced_next_speaker=planning_expert/dev_expert는 그 노드가
+    재인/Claude(2026-07-23, 아바타 페이싱 연동): phase가 "expert_discussion"이고
+    forced_next_speaker가 설정돼 있으면(continue_ideation_expert_turn이 한 턴씩 끊어 진행할
+    때 다음 화자를 강제 지정한 경우) 기본값(planning_expert_discussion) 대신 그 화자의
+    노드로 바로 진입한다. forced_next_speaker=planning_expert/dev_expert는 그 노드가
     실행되자마자 리셋되므로(make_conv_discussion_node 참고) 다음 라운드에는 잔류하지 않는다.
 
-    재인/Claude(2026-07-23, 아바타 페이싱 연동): forced_next_speaker="facilitator"(위와 같은
+    forced_next_speaker="facilitator"(위와 같은
     이유로 discussion_facilitator로 강제 진입)는 discussion_facilitator_node 자체에는 리셋
     로직이 없다 — 그 노드가 원래 forced 진입 대상이 아니었기 때문이다. 대신 이 값을 쓰는
     쪽(ideation_conv_run.py::continue_ideation_expert_turn)이 호출 뒤 직접 지운다."""
@@ -147,6 +147,7 @@ def assemble_ideation_conversation_graph(
     ground_claims=None,
     index_target_evidence=None,
     evidence_planner=None,
+    external_evidence_lookup=None,
 ):
     """대화형 아이디어 발전 회의 그래프를 조립한다.
 
@@ -200,8 +201,11 @@ def assemble_ideation_conversation_graph(
     synthesis_node = make_conv_synthesis_node(llm_call)
 
     # 용준/Claude(2026-07-21): discovery(아이디어 발굴) 모드 노드 3종.
-    candidate_planning_node = make_candidate_planning_node(llm_call, evidence_lookup)
-    candidate_feasibility_node = make_candidate_feasibility_node(llm_call, evidence_lookup)
+    # 용준/Claude(2026-07-27, RAG-007 연결) — external_evidence_lookup은 candidate_planning/
+    # candidate_feasibility에만 주입한다(요청 4번). 다른 노드(질문/토론/synthesis)는 이
+    # 파라미터를 받지 않는다 — discovery 후보 생성에만 외부 통계·정책 참고자료가 필요하다.
+    candidate_planning_node = make_candidate_planning_node(llm_call, evidence_lookup, external_evidence_lookup)
+    candidate_feasibility_node = make_candidate_feasibility_node(llm_call, evidence_lookup, external_evidence_lookup)
     candidate_selection_node = make_candidate_selection_node(
         llm_call, evidence_lookup, index_target_evidence=index_target_evidence
     )
