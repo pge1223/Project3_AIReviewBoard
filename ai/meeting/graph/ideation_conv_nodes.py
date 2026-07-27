@@ -33,7 +33,6 @@ from prompts import (
     get_persona_card,
 )
 
-from .application_form_draft import apply_application_form_draft_patch, remaining_content_fields
 from .ideation_conv_state import (
     DISCUSSION_TOPIC_PRIORITY,
     TOPIC_PRIORITY,
@@ -253,34 +252,8 @@ _VAGUE_ENDING_PATTERN = re.compile(
 
 def _has_vague_ending(spoken_text: str) -> bool:
     return bool(_VAGUE_ENDING_PATTERN.search((spoken_text or "").strip()))
-# 2026-07-26 라운드테이블 재설계: 예전 _FACILITATOR_PHASE_ORDER(고정 9단계 semantic
-# 체크리스트)는 제거했다 — 공모전마다 신청서 구성이 달라 "모든 세션에 MVP/AI 역할/필요
-# 데이터 단계를 강제"하는 게 맞지 않다는 지적(사용자 피드백)에 따라, "다음에 다룰 필드"는
-# 이제 이 신청서에 실제로 남아있는 내용 필드 목록(application_form_draft.remaining_content_fields,
-# 신청서 원래 순서)에서 고른다 — discussion_facilitator 노드의 focus_phase/next_phase 계산부
-# 참고. "이른 단계라 기술 필드를 다루면 안 된다"는 제약은 더 이상 9단계 중 앞쪽 3개가 아니라
-# "아직 한 번도 필드를 다루지 않은 첫 턴(prior_field_id is None, = 후보 선택 직후 고정
-# 문제정의 앵커 턴)"으로 판단한다 — 아래 _DOWNSTREAM_FACILITATOR_TEXT_PATTERN 사용처 참고.
-_DOWNSTREAM_FACILITATOR_TEXT_PATTERN = re.compile(
-    r"\b(?:MVP|API|DB|RAG)\b|데이터베이스|필요\s*데이터|데이터\s*수집\s*인프라|"
-    r"수집\s*인프라|AI\s*역할|모델\s*개발|기술\s*스택|서버\s*구성",
-    re.IGNORECASE,
-)
-_DOWNSTREAM_FORM_FIELD_PATTERN = re.compile(
-    r"MVP|필요\s*데이터|데이터|AI.*(?:기술|모델)|적용\s*기술|실현\s*가능|API|인프라|"
-    r"성과|KPI|결과|효과|혁신성|확장성|적용성",
-    re.IGNORECASE,
-)
-_ADMIN_FORM_FIELD_PATTERN = re.compile(
-    r"신청\s*기관|도시명|홈페이지|담당자|성명|부서|전화|직위|이메일|대표자|"
-    r"사업자\s*등록|법인\s*등록|주소|이미지|로고",
-    re.IGNORECASE,
-)
-_VAGUE_FACILITATOR_QUESTION_PATTERN = re.compile(
-    r"자세히\s*(?:작성|설명)|구체적인\s*(?:정보|내용).{0,12}(?:제공|알려)|"
-    r"목적.{0,12}무엇|어떻게\s*정의하시겠",
-    re.IGNORECASE,
-)
+
+
 _FACILITATOR_ANCHOR_STOPWORDS = frozenset(
     {
         "기반",
@@ -1598,64 +1571,15 @@ def _validate_facilitator_response(raw: dict) -> str | None:
     return None
 
 
-def _make_validate_general_facilitator_response_with_choices() -> Callable[[dict], str | None]:
-    """가은/Claude(2026-07-27, 실측: "idea_development 단계 질문에 선택지가 없다") — 신청서
-    필드 모드(_make_validate_form_facilitator_response)에서만 선택지 2~4개를 강제하고,
-    아직 idea_development 단계인 턴은 빠져 있었다. _validate_facilitator_response 자체를
-    바꾸지 않는 이유는 그 함수가 신청서 없는 세션(remaining_fields 비어 있음)과 여러
-    테스트의 기본 검증으로도 쓰이기 때문이다 — 여기서는 그 결과에 선택지 개수 확인만
-    더한 새 함수를 만들어, "신청서가 등록된 세션의 idea_development 턴"에만 호출부
-    (discussion_facilitator 노드)가 골라 쓰게 한다. needs_user_decision=true(LLM이 이미
-    실제 질문을 하기로 판단한 턴)일 때만 선택지 개수를 검사한다 — "질문은 하는데
-    선택지가 없는" 사례만 정확히 막고, needs_user_decision=false로 답하는 턴은
-    건드리지 않는다."""
-
-    def validate(raw: dict) -> str | None:
-        base_error = _validate_facilitator_response(raw)
-        if base_error:
-            return base_error
-        if bool(raw.get("needs_user_decision")):
-            choice_labels = _choice_labels(raw.get("choices"))
-            if not 2 <= len(choice_labels) <= 4:
-                return "facilitator_question_requires_two_to_four_choices"
-        return None
-
-    return validate
-
-
-def _make_validate_general_facilitator_response(decided_next_action: str) -> Callable[[dict], str | None]:
-    """신청서 필드 모드가 아닌(remaining_form_fields가 비어 있거나 아직 idea_development
-    단계인) 세션의 진행자 응답 검증. 2026-07-26 라운드테이블 재설계로 decided_next_action이
-    거의 항상 await_user_decision이 되면서, 그 턴에는 실제로 사용자에게 물을 질문이 있어야
-    한다는 계약을 코드가 강제해야 한다 — 그렇지 않으면(LLM이 needs_user_decision=false를
-    반환하면) 진행자 노드가 "실행 가능한 질문 없음"으로 판단해 조용히 회의를 끝내버린다
-    (특히 후보 선택 직후 고정 1턴에서, 아직 열린 쟁점이 하나도 없어 continue_round로도
-    못 빠지고 곧장 complete_discussion으로 새는 문제)."""
-
-    def validate(raw: dict) -> str | None:
-        base_error = _validate_facilitator_response(raw)
-        if base_error:
-            return base_error
-        if decided_next_action == "await_user_decision":
-            if not bool(raw.get("needs_user_decision")):
-                return "general_facilitator_must_await_user_decision"
-            if _blank(raw.get("user_question")):
-                return "missing_or_empty_field:user_question"
-        return None
-
-    return validate
-
-
-def _next_facilitator_field(remaining: list[dict], focus_field_id: str | None) -> str | None:
-    """remaining(신청서 원래 순서로 정렬된, 아직 확정 안 된 내용 필드 목록)에서 focus_field_id
-    다음 필드의 field_id를 돌려준다. 고정 9단계를 이 신청서의 실제 남은 필드 목록으로
-    대체한 것 — 마지막 필드에서는 자기 자신을 반환해 "더 넘어갈 곳 없음"을 표현한다
-    (예전 _next_facilitator_phase의 min(index+1, len-1) 클램프와 동일한 관례)."""
-    ids = [str(row.get("field_id")) for row in remaining]
-    if focus_field_id not in ids:
-        return ids[0] if ids else None
-    index = ids.index(focus_field_id)
-    return ids[min(index + 1, len(ids) - 1)]
+# 가은/Claude(2026-07-27, 실측: "시민의과 관련해", "시민의을 고려할 때"처럼 조사가 겹치는
+# 문구가 fallback 발화에 나온다") — 공백 기준으로 토큰을 뽑으면 "시민의 의견" 같은 문구에서
+# "시민의"(명사+조사 "의")가 그대로 anchor가 된다. 이 anchor를 fallback 템플릿이
+# "{anchor}과", "{anchor}을"처럼 조사를 또 붙여 쓰면 이중 조사로 문법이 깨진다. 흔한 조사를
+# 토큰 끝에서 미리 떼어 "시민"만 anchor로 남긴다 — 뗀 결과가 너무 짧아지면(원 명사 자체가
+# "의"/"이" 등으로 끝나는 2글자 단어인 경우, 예: "정의", "회의") 원래 토큰을 그대로 쓴다.
+_TRAILING_PARTICLE_RE = re.compile(
+    r"(?:으로|에게|에서|까지|부터|이며|이고|의|을|를|이|가|은|는|로|와|과|도|만)+$"
+)
 
 
 def _facilitator_context_anchors(
@@ -1676,7 +1600,9 @@ def _facilitator_context_anchors(
     anchors: list[str] = []
     seen: set[str] = set()
     for value in values:
-        for token in re.findall(r"[가-힣A-Za-z0-9]{2,}", value):
+        for raw_token in re.findall(r"[가-힣A-Za-z0-9]{2,}", value):
+            stripped = _TRAILING_PARTICLE_RE.sub("", raw_token)
+            token = stripped if len(stripped) >= 2 else raw_token
             normalized = token.lower()
             if normalized in _FACILITATOR_ANCHOR_STOPWORDS or normalized.isdigit():
                 continue
@@ -1686,318 +1612,6 @@ def _facilitator_context_anchors(
                 if len(anchors) >= limit:
                     return anchors
     return anchors
-
-
-def _choice_labels(raw_choices: Any) -> list[str]:
-    if not isinstance(raw_choices, list):
-        return []
-    labels: list[str] = []
-    for choice in raw_choices:
-        if isinstance(choice, dict):
-            label = str(choice.get("label") or "").strip()
-        else:
-            label = str(choice or "").strip()
-        if label:
-            labels.append(label)
-    return labels
-
-
-def _compose_form_facilitator_text(
-    field_name: str,
-    confirmed_content: str,
-    decision_reason: str,
-    user_question: str,
-) -> str:
-    """진행자 v02의 사용자 노출 발화를 조립한다.
-
-    가은/Claude(2026-07-27, 요청: "선택지가 발화 버블 안에도 나오고 아래 선택 버블로도
-    또 나온다") — choices는 화면에 이미 별도 선택 버블(structured.choices)로 렌더링되므로
-    이 발화 문장에는 다시 나열하지 않는다(예전엔 여기서 choice_labels를 붙여 중복이
-    생겼다). user_question도 gated_decision 경로(_compose_decision_question)가 만든
-    "질문\n1. ...\n2. ...\n응답이 없으면 기본값(...)으로 진행합니다." 형식이면, 그 번호
-    목록·기본값 안내 역시 같은 선택 버블과 중복이므로 첫 줄(질문 자체)만 남긴다.
-
-    confirmed_content="아직 없음"은 내부 상태값으로만 유지하고 화면·TTS 본문에서는
-    생략한다(dev 병합). 실제로 확정된 내용이 생긴 뒤에는 기존처럼 발화에 포함한다."""
-    question = user_question.split("\n", 1)[0].strip()
-    confirmed_text = (
-        f" 지금까지 확정된 내용: {confirmed_content}"
-        if confirmed_content and confirmed_content != "아직 없음"
-        else ""
-    )
-    return (
-        f"지금 작성 중인 신청 양식 항목은 '{field_name}'입니다.{confirmed_text}\n"
-        f"{decision_reason}\n"
-        f"{question}"
-    )
-
-
-def _make_validate_form_facilitator_response(
-    application_form_draft: list[dict],
-    focus_phase: str,
-    next_phase: str,
-    prior_field_id: str | None,
-    context_anchors: list[str] | None = None,
-    decided_next_action: str = "await_user_decision",
-    is_session_first_turn: bool = False,
-) -> Callable[[dict], str | None]:
-    """신청 양식 모드의 단계 순서와 네 요소 출력 계약을 구조적으로 검증한다.
-
-    2026-07-26 라운드테이블 재설계: decided_next_action="continue_round"(전문가에게 먼저
-    넘기는 "다음 주제 열기" 턴)에는 이 4요소 계약을 강제하지 않는다 — 아직 사용자에게 물을
-    질문이 없는 턴이라 current_field_id/confirmed_content/decision_reason/선택지를
-    요구할 이유가 없다. 이런 턴은 기본 검증(_validate_facilitator_response, facilitator_
-    summary/spoken_text만 확인)만 통과하면 된다.
-
-    is_session_first_turn(2026-07-26 실측 버그 수정: "답변할수록 첫 턴으로 돌아가는 느낌")
-    — 예전엔 여기서 "문제정의 앵커 턴인가"를 prior_field_id is None으로 판단했다. 이건
-    "아이디어 성숙도 게이트 도입 전"에는 맞았다(그땐 첫 실제 진행자 턴 = 첫 필드 턴이
-    항상 같았으므로). 지금은 아이디어 성숙도 게이트 때문에 idea_development 턴을 여러 번
-    거친 뒤에야 처음으로 필드 모드에 들어가므로, prior_field_id is None이 "세션의 진짜
-    첫 턴"이 아니라 "필드 모드로 막 전환된 시점"을 가리킨다 — 그 시점에 문제정의를 다시
-    묻고 2~4개 선택지를 강제하면(구버전 anchor 규칙), 이미 여러 턴에 걸쳐 논의한 문제정의를
-    다시 처음부터 반복하게 된다. 이 매개변수는 호출부가 계산한 진짜 "이번 세션에서 진행자가
-    아직 한 번도 실제 턴을 낸 적이 없는가"(is_first_facilitator_turn)를 그대로 받는다 —
-    아이디어 성숙도 게이트가 있는 한 필드 모드 진입 시점엔 항상 False이므로, 이 anchor
-    전용 분기는 사실상 이 검증기 안에서는 더 이상 발동하지 않는다(진짜 세션 첫 턴은
-    remaining_fields가 비어 있어 이 검증기 자체가 안 쓰인다)."""
-    rows_by_id = {
-        str(row.get("field_id")): row
-        for row in application_form_draft
-        if isinstance(row, dict) and row.get("field_id")
-    }
-    normalized_anchors = [anchor.lower() for anchor in (context_anchors or []) if anchor.strip()]
-
-    def validate(raw: dict) -> str | None:
-        base_error = _validate_facilitator_response(raw)
-        if base_error:
-            return base_error
-        if decided_next_action != "await_user_decision":
-            return None
-
-        # 구버전 테스트 스텁/저장 세션 응답은 신규 필드가 전혀 없으면 기존 검증을 유지한다.
-        # 실제 v02 응답은 스키마에 아래 키들이 있으므로 하나라도 반환한 순간 전체 계약을 강제한다.
-        v02_keys = {"phase", "current_field_id", "confirmed_content", "decision_reason", "draft_patch"}
-        if not rows_by_id or not any(key in raw for key in v02_keys):
-            return None
-
-        current_field_id = str(raw.get("current_field_id") or "").strip()
-        if current_field_id not in rows_by_id:
-            return "invalid_current_field_id"
-        if _blank(raw.get("confirmed_content")):
-            return "missing_or_empty_field:confirmed_content"
-        if _blank(raw.get("decision_reason")):
-            return "missing_or_empty_field:decision_reason"
-        if not bool(raw.get("needs_user_decision")):
-            return "form_facilitator_must_await_user_decision"
-        if _blank(raw.get("user_question")):
-            return "missing_or_empty_field:user_question"
-        is_turn_one_anchor = is_session_first_turn
-        # 가은/Claude(2026-07-27, 요청: "선택지 없이 직접 입력만 하는 진행 방식 없애기") —
-        # 예전엔 세션 첫 턴에만 선택지 개수를 강제해, 그 이후 턴은 LLM이 choices=[]를
-        # 반환해도 검증을 통과했다(안내 문구는 "기본적으로 만든다"였지만 코드가 강제하지
-        # 않았다). await_user_decision인 턴은 첫 턴 여부와 무관하게 항상 2~4개를 요구한다.
-        choice_labels = _choice_labels(raw.get("choices"))
-        if not 2 <= len(choice_labels) <= 4:
-            return (
-                "initial_problem_turn_requires_two_to_four_choices"
-                if is_turn_one_anchor
-                else "facilitator_question_requires_two_to_four_choices"
-            )
-
-        confirms_prior_field = any(
-            isinstance(patch, dict)
-            and str(patch.get("field_id") or "").strip() == prior_field_id
-            and str(patch.get("status") or "").strip().lower() == "confirmed"
-            for patch in (raw.get("draft_patch") or [])
-        )
-        # 2026-07-26 라운드테이블 재설계: 고정 9단계 대신, 이 신청서의 실제 남은 필드
-        # 목록에서 계산한 focus_phase/next_phase(둘 다 field_id 값)로 "다음에 다뤄야 할
-        # 필드가 정확히 이거다"만 검증한다 — LLM이 반환하는 별도 phase 라벨과 비교하지
-        # 않는다(그 라벨은 이제 meeting_stage로 의미가 바뀌었다, _validate_facilitator_response
-        # 밖에서 검증).
-        expected_field_id = next_phase if prior_field_id and confirms_prior_field else focus_phase
-        if expected_field_id and current_field_id != expected_field_id:
-            return f"unexpected_current_field_id:expected_{expected_field_id}"
-
-        row = rows_by_id[current_field_id]
-        field_name = str(row.get("field_name") or "").strip()
-        current_field_will_be_confirmed = row.get("status") == "confirmed" or any(
-            isinstance(patch, dict)
-            and str(patch.get("field_id") or "").strip() == current_field_id
-            and str(patch.get("status") or "").strip().lower() == "confirmed"
-            for patch in (raw.get("draft_patch") or [])
-        )
-        confirmed_content = str(raw.get("confirmed_content") or "").strip()
-        if not current_field_will_be_confirmed and confirmed_content != "아직 없음":
-            return "unconfirmed_field_must_say_no_confirmed_content"
-        if current_field_will_be_confirmed and confirmed_content == "아직 없음":
-            return "confirmed_field_must_summarize_confirmed_content"
-        if _ADMIN_FORM_FIELD_PATTERN.search(field_name):
-            return "administrative_field_not_allowed_in_ideation_flow"
-        if is_turn_one_anchor:
-            if _DOWNSTREAM_FORM_FIELD_PATTERN.search(field_name):
-                return "downstream_form_field_before_problem_target_context"
-            visible_parts = " ".join(
-                [
-                    str(raw.get("spoken_text") or ""),
-                    str(raw.get("decision_reason") or ""),
-                    str(raw.get("user_question") or ""),
-                    " ".join(_choice_labels(raw.get("choices"))),
-                ]
-            )
-            if _DOWNSTREAM_FACILITATOR_TEXT_PATTERN.search(visible_parts):
-                return "downstream_technical_topic_before_problem_target_context"
-        question = str(raw.get("user_question") or "").strip()
-        if _VAGUE_FACILITATOR_QUESTION_PATTERN.search(question):
-            return "vague_facilitator_question"
-        if normalized_anchors and not any(anchor in question.lower() for anchor in normalized_anchors):
-            return "question_not_grounded_in_selected_idea"
-        contextual_explanation = str(raw.get("decision_reason") or "").lower()
-        if normalized_anchors and not any(
-            anchor in contextual_explanation for anchor in normalized_anchors
-        ):
-            return "decision_not_grounded_in_selected_idea"
-
-        composed = _compose_form_facilitator_text(
-            field_name,
-            str(raw.get("confirmed_content")).strip(),
-            str(raw.get("decision_reason")).strip(),
-            str(raw.get("user_question")).strip(),
-        )
-        if len(composed) > _MAX_FACILITATOR_SPOKEN_TEXT_CHARS:
-            return "composed_spoken_text_too_long"
-        return None
-
-    return validate
-
-
-def _form_facilitator_fallback_payload(
-    application_form_draft: list[dict],
-    focus_phase: str,
-    prior_field_id: str | None,
-    context_anchors: list[str] | None,
-    selected_idea: Any = None,
-    decided_next_action: str = "await_user_decision",
-    is_session_first_turn: bool = False,
-) -> dict:
-    """v02 응답 검증이 두 번 실패해도 회의를 중단하지 않는 보수적 질문을 만든다.
-
-    2026-07-26 라운드테이블 재설계: decided_next_action이 "await_user_decision"이 아니면
-    (전문가에게 먼저 넘기는 "다음 주제 열기" 턴) 사용자에게 묻는 형태를 만들지 않는다 —
-    이 폴백이 needs_user_decision=true를 반환해도 그래프는 decided_next_action을 우선해
-    바로 다음 전문가 노드로 넘어가므로(상태 전이 자체는 안전), 여기서 맞춰두는 건 화면에
-    "질문이 있는 것처럼" 보이는 문구 불일치를 막기 위한 것뿐이다.
-
-    is_session_first_turn: _make_validate_form_facilitator_response와 동일한 이유로
-    prior_field_id is None 대신 호출부가 계산한 진짜 "세션 첫 턴 여부"를 받는다 — 아이디어
-    성숙도 게이트 도입 이후 필드 모드 첫 진입은 세션 첫 턴이 아니므로, 문제정의를 처음부터
-    다시 묻는 폴백 문구를 만들면 안 된다."""
-    rows = [row for row in application_form_draft if isinstance(row, dict)]
-
-    is_turn_one_anchor = is_session_first_turn
-
-    def allowed(row: dict) -> bool:
-        field_name = str(row.get("field_name") or "").strip()
-        if not field_name or _ADMIN_FORM_FIELD_PATTERN.search(field_name):
-            return False
-        if is_turn_one_anchor:
-            return not _DOWNSTREAM_FORM_FIELD_PATTERN.search(field_name)
-        return True
-
-    current_row = next(
-        (
-            row
-            for row in rows
-            if str(row.get("field_id") or "") == str(prior_field_id or "") and allowed(row)
-        ),
-        None,
-    )
-    if current_row is None:
-        current_row = next((row for row in rows if allowed(row)), None)
-    if current_row is None:
-        current_row = rows[0] if rows else {
-            "field_id": "",
-            "field_name": "현재 신청 양식 항목",
-            "value": "",
-            "status": "empty",
-        }
-
-    anchor = next((str(item).strip() for item in (context_anchors or []) if str(item).strip()), "")
-    subject = anchor or "선택한 아이디어"
-    field_name = str(current_row.get("field_name") or "현재 신청 양식 항목").strip()
-    field_description = str(current_row.get("description") or "").strip()
-    # 2026-07-26 라운드테이블 재설계: 예전에는 고정 9단계마다 손으로 쓴 문구(phase_copy)를
-    # 썼지만, 이제 필드는 공모전마다 다른 실제 신청서에서 온다 — 손으로 미리 쓸 수 없으므로
-    # 현재 필드의 field_name/description을 그대로 문구에 엮는 범용 템플릿으로 바꾼다.
-    if is_turn_one_anchor:
-        decision_reason = f"{subject}의 문제 상황과 기획 의도를 먼저 확인해야 이후 항목을 구체화할 수 있습니다."
-        user_question = f"{subject} 문제 상황을 한 문장으로 정리하면 무엇인가요?"
-    else:
-        description_suffix = f" ({field_description})" if field_description else ""
-        decision_reason = f"{subject}과 관련해 '{field_name}' 항목이 아직 비어 있고 공고 평가기준과 직접 연결되는 항목이라 지금 정리가 필요합니다."
-        user_question = f"{subject}을 고려할 때 '{field_name}'{description_suffix} 항목에 들어갈 내용을 한 문장으로 정리하면 무엇인가요?"
-    choices: list[dict] = []
-    if is_turn_one_anchor:
-        problem = (
-            str((selected_idea or {}).get("problem") or "").strip()
-            if isinstance(selected_idea, dict)
-            else ""
-        )
-        if problem:
-            choices.append({"id": "problem_hypothesis", "label": problem[:80]})
-        choices.append({"id": "direct_input", "label": "다른 문제를 직접 입력"})
-    else:
-        # 가은/Claude(2026-07-27, 요청: "선택지 없이 직접 입력만 하는 턴 없애기") — 이
-        # 안전망도 첫 턴처럼 항상 2개 이상의 선택지를 준다. 필드에 이미 초안 값이 있으면
-        # 그 값을 그대로 선택지 하나로 제시하고, 없으면 위원 제안을 참고하겠다는 일반
-        # 선택지를 쓴다.
-        existing_value = str(current_row.get("value") or "").strip()
-        if existing_value:
-            choices.append({"id": "keep_current_draft", "label": existing_value[:80]})
-        else:
-            choices.append({"id": "follow_expert_suggestion", "label": "위원 제안을 참고해서 정리"})
-        choices.append({"id": "direct_input", "label": "직접 입력"})
-    confirmed_content = (
-        str(current_row.get("value") or "").strip()
-        if current_row.get("status") == "confirmed"
-        else "아직 없음"
-    )
-    awaits_user = decided_next_action == "await_user_decision"
-    if not awaits_user:
-        # 전문가에게 먼저 넘기는 턴 — 사용자에게 묻지 않는다(choices/user_question 비움).
-        user_question = ""
-        choices = []
-    return {
-        # v02 응답의 "phase" 키는 이제 필드 진행 순서가 아니라 meeting_stage(아이디어
-        # 구체화/신청서 채우기)를 나타낸다 — 이 폴백은 신청서 필드 모드에서만 불리므로
-        # 항상 "form_filling"이다.
-        "phase": "form_filling",
-        "current_field_id": str(current_row.get("field_id") or ""),
-        "confirmed_content": confirmed_content,
-        "decision_reason": decision_reason,
-        "spoken_text": (
-            _compose_form_facilitator_text(
-                field_name,
-                confirmed_content,
-                decision_reason,
-                user_question,
-            )
-            if awaits_user
-            else f"'{field_name}' 항목을 살펴보겠습니다. {decision_reason}"
-        ),
-        "user_question": user_question or None,
-        "choices": choices,
-        "expert_insight_summary": {"planning": "", "development": ""},
-        "draft_patch": [],
-        "next_action": "ask_user" if awaits_user else "continue_internal_review",
-        "agreements": [],
-        "disagreements": [],
-        "facilitator_summary": decision_reason,
-        "needs_user_decision": awaits_user,
-        "safe_fallback": True,
-        "safe_fallback_reason": "facilitator_v02_validation_failed_twice",
-    }
 
 
 def _now_iso() -> str:
@@ -2969,19 +2583,6 @@ MIN_EXPERT_TURNS_PER_ISSUE = 1
 MAX_EXPERT_TURNS_PER_ISSUE = 3
 MIN_EXPERT_TURNS_PER_ROUND = 2
 MAX_EXPERT_TURNS_PER_ROUND = 4
-
-# 2026-07-26 라운드테이블 재설계 — "아이디어 성숙도 게이트": 신청서가 있는 세션도 후보
-# 선택 직후 바로 필드 채우기로 들어가지 않고, 몇 바퀴는 자유롭게 아이디어를 구체화한 뒤에만
-# 필드 채우기로 전환한다(사용자 피드백: "아이디어 회의를 하면 딱 고르고 끝이잖아"). 여기서
-# "바퀴"는 진행자가 사용자에게 실제로 질문/선택지를 던진 완료된 사이클 수를 뜻한다(고정
-# 문제정의 확인 턴도 1바퀴로 센다). MIN 전에는 LLM이 필드 채우기로 넘어가겠다고 판단해도
-# 코드가 막고, MAX에 도달하면 LLM 판단과 무관하게 필드 채우기로 강제 전환한다(무한정
-# 아이디어만 구체화하다 신청서를 하나도 못 채우는 상황 방지). MIN과 MAX 사이에서는 진행자가
-# 직전 턴에 스스로 판단해 반환한 meeting_stage(phase 필드, "idea_development"|"form_filling")를
-# 그대로 따른다 — 이번 턴 LLM 호출 전에 결정해야 하므로 "이번 턴의 판단"이 아니라 "직전
-# 턴의 판단"을 본다.
-MIN_IDEA_DEVELOPMENT_TURNS_BEFORE_FORM = 2
-MAX_IDEA_DEVELOPMENT_TURNS_BEFORE_FORM = 4
 
 
 def _most_recent_message_by(messages: list[ConvMessage], speaker_id: str) -> ConvMessage | None:
@@ -5193,6 +4794,27 @@ def _stop_reason_for(state: IdeationConvState) -> str:
     return "no_new_information"
 
 
+_CHOICE_ENUM_MARKER_RE = re.compile(r"(?<!\d)1[).]\s")
+_CHOICE_ENUM_SECOND_MARKER_RE = re.compile(r"(?<!\d)2[).]\s")
+
+
+def _strip_inline_choice_enumeration(content: str) -> str:
+    """가은/Claude(2026-07-27, 리포트: "진행자 버블 안에 1) 2) 3) 4) 선택지가 그대로 써져서
+    나온다") — 프롬프트가 "선택지를 spoken_text 안에 번호로 나열하지 말라"고 이미 명시하지만
+    (ideation_conv_discussion_facilitator_02.txt) LLM이 가끔 이를 어기고 spoken_text 자체에
+    번호 목록을 그대로 적어 넣는다. structured.choices가 이미 같은 목록을 별도 선택 버블로
+    렌더링하므로, spoken_text 안에 "1)"로 시작해 "2)"로 이어지는 번호 목록이 보이면(우연히
+    숫자 하나만 나온 문장까지 잘라내지 않도록 두 번째 번호까지 확인) 그 목록 이전까지만
+    남긴다. 호출부(make_discussion_facilitator_node)가 이 턴에 실제로 choices가 있을 때만
+    호출한다 — choices가 없으면 대신 보여줄 곳이 없으므로 원문을 자르지 않는다."""
+    first = _CHOICE_ENUM_MARKER_RE.search(content)
+    if not first:
+        return content
+    if not _CHOICE_ENUM_SECOND_MARKER_RE.search(content, first.end()):
+        return content
+    return content[: first.start()].rstrip()
+
+
 def make_discussion_facilitator_node(llm_call: LLMCall) -> Callable[[IdeationConvState], dict]:
     """용준/Claude(2026-07-22, 요청: 동적 전문가 회의로 개편): 예전에는 기획/개발이 각각
     정확히 1회씩 말한 "매 라운드 끝"에 무조건 실행됐지만, 이제 _route_next_expert_turn이
@@ -5411,41 +5033,7 @@ def make_discussion_facilitator_node(llm_call: LLMCall) -> Callable[[IdeationCon
         else:
             decided_next_action = "continue_round"
 
-        # 가은/Claude(2026-07-24, dev 병합) — 진행자 v02(신청 양식 작성 코치) 컨텍스트 계산.
-        # 위 게이트 로직(dev, 쟁점 로테이션 축)과는 독립적인 축이라 함께 둔다.
         facilitator_context = _isolate_discussion_evidence_context(conversation_context_for(state))
-        prior_facilitator_structured = (prior_facilitator_msg or {}).get("structured") or {}
-        # 2026-07-26 라운드테이블 재설계: prior_field_id가 None이면 "이 세션에서 진행자가
-        # 아직 한 번도 필드를 다룬 적이 없다" = 후보 선택 직후 고정 문제정의/기획의도 확인
-        # 턴(turn-1 anchor)이라는 뜻이다. 예전에는 별도 phase 라벨("problem_definition")로
-        # 판단했지만, 이제 phase는 고정 9단계가 아니라 실제 신청서 필드 목록이라 그 판단을
-        # prior_field_id 유무로 대체한다(_make_validate_form_facilitator_response/
-        # _form_facilitator_fallback_payload의 is_turn_one_anchor와 동일한 신호).
-        prior_field_id = str(prior_facilitator_structured.get("current_field_id") or "").strip() or None
-        current_form_draft = state.get("application_form_draft") or []
-        remaining_fields = remaining_content_fields(current_form_draft)
-        focus_phase = prior_field_id if prior_field_id in {
-            str(row.get("field_id")) for row in remaining_fields
-        } else (str(remaining_fields[0]["field_id"]) if remaining_fields else None)
-        next_phase = _next_facilitator_field(remaining_fields, focus_phase) if remaining_fields else None
-
-        # 아이디어 성숙도 게이트(MIN/MAX_IDEA_DEVELOPMENT_TURNS_BEFORE_FORM 참고) — 신청서
-        # 필드가 남아있어도, 정해둔 최소 바퀴 전에는 필드 채우기 검증/구성으로 넘어가지 않는다.
-        prior_await_decision_turns = sum(
-            1
-            for m in state["messages"]
-            if m.get("speaker_id") == "ideation_facilitator" and (m.get("structured") or {}).get("needs_user_decision")
-        )
-        prior_meeting_stage = str(prior_facilitator_structured.get("phase") or "").strip()
-        if not remaining_fields:
-            form_filling_active = False
-        elif prior_await_decision_turns >= MAX_IDEA_DEVELOPMENT_TURNS_BEFORE_FORM:
-            form_filling_active = True
-        elif prior_await_decision_turns < MIN_IDEA_DEVELOPMENT_TURNS_BEFORE_FORM:
-            form_filling_active = False
-        else:
-            form_filling_active = prior_meeting_stage == "form_filling"
-
         context_anchors = _facilitator_context_anchors(
             state.get("selected_idea"),
             state.get("idea_canvas"),
@@ -5477,76 +5065,22 @@ def make_discussion_facilitator_node(llm_call: LLMCall) -> Callable[[IdeationCon
             resolved_issues=resolved_issues,
             stop_reason=stop_reason,
             next_issue_hint=next_active_issue_title,
-            application_form_items=state.get("application_form_items") or [],
-            application_form_draft=state.get("application_form_draft") or [],
             selected_idea=state.get("selected_idea"),
             idea_canvas=state.get("idea_canvas"),
             latest_user_answer=user_msg.get("content", "") if user_msg else None,
             recent_messages=facilitator_context.get("recent_messages") or [],
-            remaining_form_fields=remaining_fields if form_filling_active else [],
-            meeting_stage_hint="form_filling" if form_filling_active else "idea_development",
             context_anchors=context_anchors,
         )
-        # 아이디어 성숙도 게이트가 아직 idea_development로 판단했거나(remaining_fields는
-        # 있어도 form_filling_active=False), 애초에 다룰 내용 필드가 없으면 v02 필드 진행
-        # 검증 대신 일반 검증으로 내려간다 — 아직 필드 진행을 강제할 시점이 아니기 때문이다
-        # (이 경우 진행자는 자유로운 아이디어 구체화 발화를 한다).
-        # 2026-07-26 라운드테이블 재설계 — 여기서 신청서 필드 모드가 아닐 때 곧바로
-        # _make_validate_general_facilitator_response(decided_next_action)로 "await_user_decision
-        # 턴엔 반드시 needs_user_decision=true를 요구"하는 강화 검증을 시도했지만, 이 회의
-        # 그래프를 쓰는 다른 여러 테스트 파일(test_ideation_conv_graph.py 등)의 LLM 스텁이
-        # 아직 예전 계약(needs_user_decision=false로 응답하는 경우가 흔함)을 그대로 쓰고
-        # 있어서 그 검증을 켜면 관련 없는 테스트가 대거 깨졌다. 그래서 일반(비-신청서필드)
-        # 세션은 기존과 동일하게 느슨한 _validate_facilitator_response만 쓴다 — 다만 이건
-        # "후보 선택 직후 고정 1턴에서 LLM이 needs_user_decision=false를 반환하면 진행자가
-        # 질문 없이 곧장 discussion_complete로 새 버릴 수 있다"는 알려진 갭으로 남는다
-        # (_make_validate_general_facilitator_response는 이 갭을 메우려고 만들어 뒀지만
-        # 지금은 사용하지 않는다 — 다음에 이 문제를 고칠 때는 이 그래프를 쓰는 스텁들을
-        # 한 번에 새 계약으로 옮기는 별도 작업으로 진행해야 한다).
-        # 가은/Claude(2026-07-27) — form_filling_active가 아니어도(아직 idea_development
-        # 단계) 신청서가 등록된 세션(remaining_fields 있음)이면 선택지 개수까지 확인하는
-        # _make_validate_general_facilitator_response_with_choices를 쓴다. 신청서 자체가
-        # 없는 세션(순수 자유 토론, 대부분의 기존 테스트 스텁이 이 경우)은 여전히 느슨한
-        # _validate_facilitator_response 그대로 둔다 — 위 주석의 "관련 없는 테스트가 대거
-        # 깨진다"는 문제를 신청서 유무로 좁혀서 피한다.
-        validate_facilitator = (
-            _make_validate_form_facilitator_response(
-                current_form_draft,
-                focus_phase,
-                next_phase,
-                prior_field_id,
-                context_anchors,
-                decided_next_action=decided_next_action,
-                is_session_first_turn=is_first_facilitator_turn,
-            )
-            if form_filling_active
-            else (
-                _make_validate_general_facilitator_response_with_choices()
-                if remaining_fields
-                else _validate_facilitator_response
-            )
-        )
         raw, ok, attempts = _safe_call_structured_json(
-            llm_call, prompt, validate_facilitator, "discussion_facilitator"
+            llm_call, prompt, _validate_facilitator_response, "discussion_facilitator"
         )
         used = state.get("llm_calls_used", 0) + attempts
         if not ok:
-            if remaining_fields:
-                raw = _form_facilitator_fallback_payload(
-                    current_form_draft,
-                    focus_phase,
-                    prior_field_id,
-                    context_anchors,
-                    state.get("selected_idea"),
-                    decided_next_action=decided_next_action,
-                    is_session_first_turn=is_first_facilitator_turn,
-                )
-            else:
-                return {
-                    "phase": "failed",
-                    "failed_node": "discussion_facilitator",
-                    "llm_calls_used": used,
-                }
+            return {
+                "phase": "failed",
+                "failed_node": "discussion_facilitator",
+                "llm_calls_used": used,
+            }
 
         summary_text = raw.get("facilitator_summary", "")
         agreements = _as_string_list(raw.get("agreements"))
@@ -5737,63 +5271,13 @@ def make_discussion_facilitator_node(llm_call: LLMCall) -> Callable[[IdeationCon
         ):
             content = f"{content}\n\n{user_question}" if content else user_question
 
-        # 가은/Claude(2026-07-24, dev 병합) — 진행자 v02(신청 양식 작성 코치)가 있는 세션은
-        # 아래에서 content를 다시 구조화된 문장(_compose_form_facilitator_text)으로 덮어쓴다.
-        # 위 dev 로직(게이트 질문 보정 등)은 v02가 아닌 세션의 기본 동작으로 그대로 남겨둔다.
-        confirmable_field_ids = {prior_field_id} if user_msg and prior_field_id else set()
-        application_form_draft, applied_draft_patch = apply_application_form_draft_patch(
-            state.get("application_form_draft"),
-            raw.get("draft_patch"),
-            confirmable_field_ids=confirmable_field_ids,
+        final_choices = (
+            gated_decision_options
+            if gated_decision_options
+            else (raw.get("choices") if isinstance(raw.get("choices"), list) else [])
         )
-        allowed_field_ids = {
-            str(row.get("field_id"))
-            for row in application_form_draft
-            if isinstance(row, dict) and row.get("field_id")
-        }
-        current_field_id = str(raw.get("current_field_id") or "").strip() or None
-        if current_field_id not in allowed_field_ids:
-            current_field_id = None
-        confirmed_content = raw.get("confirmed_content")
-        decision_reason = raw.get("decision_reason")
-        is_v02_form_response = bool(
-            current_form_draft
-            and form_filling_active
-            and current_field_id
-            # 2026-07-26 라운드테이블 재설계: 사용자에게 실제로 묻는 턴에서만, 그리고 아이디어
-            # 성숙도 게이트가 필드 채우기로 넘어갔다고 판단한 뒤에만 4요소 구조화 문장으로
-            # 덮어쓴다 — "다음 주제 열기"(continue_round, needs_user_decision=false) 턴이나
-            # 아직 idea_development 단계인 턴은 자연스러운 spoken_text를 그대로 쓴다.
-            and needs_user_decision
-            and any(
-                key in raw
-                for key in (
-                    "phase",
-                    "current_field_id",
-                    "confirmed_content",
-                    "decision_reason",
-                    "draft_patch",
-                )
-            )
-        )
-        if is_v02_form_response:
-            current_row = next(
-                row
-                for row in application_form_draft
-                if str(row.get("field_id")) == current_field_id
-            )
-            confirmed_content = (
-                str(raw.get("confirmed_content") or "").strip()
-                if current_row.get("status") == "confirmed"
-                else "아직 없음"
-            )
-            decision_reason = str(raw.get("decision_reason") or "").strip()
-            content = _compose_form_facilitator_text(
-                str(current_row.get("field_name") or "").strip(),
-                confirmed_content,
-                decision_reason,
-                str(user_question or "").strip(),
-            )
+        if final_choices:
+            content = _strip_inline_choice_enumeration(content)
 
         message = _build_message(
             persona_id="ideation_facilitator",
@@ -5809,21 +5293,13 @@ def make_discussion_facilitator_node(llm_call: LLMCall) -> Callable[[IdeationCon
                 "needs_user_decision": needs_user_decision,
                 "user_question": user_question,
                 "stop_reason": stop_reason,
-                "phase": raw.get("phase"),
-                "current_field_id": current_field_id,
-                "confirmed_content": confirmed_content,
-                "decision_reason": decision_reason,
-                "choices": (
-                    gated_decision_options
-                    if gated_decision_options
-                    else (raw.get("choices") if isinstance(raw.get("choices"), list) else [])
-                ),
+                "decision_reason": raw.get("decision_reason"),
+                "choices": final_choices,
                 "expert_insight_summary": (
                     raw.get("expert_insight_summary")
                     if isinstance(raw.get("expert_insight_summary"), dict)
                     else {}
                 ),
-                "draft_patch": applied_draft_patch,
                 "next_action": raw.get("next_action"),
                 "safe_fallback": bool(raw.get("safe_fallback")),
                 "safe_fallback_reason": raw.get("safe_fallback_reason"),
@@ -5882,7 +5358,6 @@ def make_discussion_facilitator_node(llm_call: LLMCall) -> Callable[[IdeationCon
             "llm_calls_used": used,
             "facilitator_decision_repeat_count": facilitator_decision_repeat_count,
             "stop_reason": stop_reason,
-            "application_form_draft": application_form_draft,
         }
         if parked_issue_id:
             # 발언 상한으로 강제 종료한 쟁점은 다음 라운드에 다시 등장하지 않는다 —

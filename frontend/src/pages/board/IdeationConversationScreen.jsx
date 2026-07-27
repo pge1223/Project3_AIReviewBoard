@@ -1700,7 +1700,13 @@ export function IdeationScreen({
               백엔드 응답 계약을 바꾸지 않는다. 직접 입력은 아래 항상 떠 있는 입력창으로도
               가능하므로 별도 "직접 입력" 버튼을 강제하지 않는다(진행자가 필요하면 선택지
               안에 "직접 입력" 항목을 이미 포함해서 준다). */}
-          {latestFacilitatorChoices.length > 0 && (
+          {/* 가은/Claude(2026-07-27, 요청: "선택 버블을 눌렀는데 너무 늦게 사라짐") — 예전엔
+              disabled={!canReplyOrContinue}만으로 막아서, 클릭 즉시 버튼이 비활성화(회색)될
+              뿐 다음 진행자 응답이 도착할 때까지(수 초) 선택지 묶음 자체는 화면에 그대로
+              남아 있었다(latestFacilitatorChoices는 phase/canonicalMessages가 실제로 바뀌어야
+              갱신되는데, 그건 왕복 응답이 끝나야 일어난다). sending은 handleSend가 네트워크
+              요청 전에 동기적으로 true가 되므로, 클릭 즉시 선택지 묶음 자체를 감춘다. */}
+          {latestFacilitatorChoices.length > 0 && !sending && (
             <div style={{ marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
               {latestFacilitatorChoices.map((choice, i) => (
                 <button
@@ -2091,23 +2097,6 @@ export function ApplicationFormDraftScreen({ ideationConv, onBack }) {
               <li key={i}>{note}</li>
             ))}
           </ul>
-        </div>
-      )}
-
-      {(ideationConv.application_form_items || []).length > 0 && (
-        <div style={{ marginTop: 20 }}>
-          {formDraftError && (
-            <p style={{ color: 'var(--coral)', fontSize: 14.5, marginBottom: 10 }}>{formDraftError.message}</p>
-          )}
-          <button
-            type="button"
-            className="btn-primary"
-            style={{ display: 'flex', alignItems: 'center', gap: 8 }}
-            onClick={handleGenerateFormDraft}
-            disabled={generatingFormDraft}
-          >
-            {generatingFormDraft ? '신청서 초안 작성 중...' : '신청서 초안 만들기'}
-          </button>
         </div>
       )}
     </div>
