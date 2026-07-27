@@ -59,6 +59,7 @@ uploads/
 storage/
 temp/
 tmp/
+.tmp/
 
 # Vector DB
 chroma_db/

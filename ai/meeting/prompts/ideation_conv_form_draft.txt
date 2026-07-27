@@ -34,7 +34,7 @@
   합니다(다른 필드 내용이 이 값과 모순되지 않게 하는 용도) — target_fields에 없는 필드는
   건드리지 않습니다.
 - target_fields: 지금 실제로 작성해야 할 필드 목록(field_id/field_name/description/char_limit).
-  이 목록에 있는 field_id만 draft_patch에 포함합니다 — 목록에 없는 field_id를 만들어내지
+  이 목록에 있는 field_id만 fields에 포함합니다 — 목록에 없는 field_id를 만들어내지
   않습니다.
 
 [작성 원칙]
@@ -60,36 +60,88 @@
    씁니다.
 7. field_id마다 서로 다른 문장을 씁니다 — 여러 필드에 동일한 문장을 복사해 넣지 않습니다.
 
+[문장 품질 및 분량 규칙]
+1. 각 field의 value는 원칙적으로 2~3문장, 최소 180자 내외로 씁니다. 단, idea_proposal·
+   existing_draft의 근거가 매우 부족한 경우에는 억지로 분량을 채우지 말고, 작성 가능한
+   범위의 초안과 missing_information을 함께 반환합니다.
+2. 한 문장으로 요약만 하지 않고, 다음 요소 중 field에 맞는 2개 이상을 연결해 씁니다 —
+   현재 문제 또는 사용자 맥락 / 적용 대상·초기 범위 / 구현 기능 또는 실행 방식 / 검증 방법
+   또는 판단 기준 / 기대 효과 또는 단계적 확장 방향.
+3. idea_proposal에 있는 여러 근거 항목을 자연스럽게 재구성하는 것은 허용하지만, 입력에
+   없는 수치, 기관 협업 확정, 데이터 확보 완료, 모델명, 실증 완료 결과, 접근권한을 새로
+   만들지 않습니다.
+4. "가능합니다", "기대됩니다", "활용합니다"만으로 문장을 끝내지 않습니다 — 무엇을 대상으로,
+   어떤 방식으로, 왜 필요한지를 바로 앞 문장과 연결해 구체화합니다.
+5. 동일한 내용의 반복으로 분량을 늘리지 않습니다. 문장마다 서로 다른 역할을 줍니다 —
+   1문장: 무엇을 하는가 / 2문장: 어떤 범위·방식으로 검증하는가 / 3문장(필요 시): 어떤
+   기준으로 다음 단계를 판단하는가.
+
+[근거 부족 항목 처리 규칙]
+1. 각 field는 idea_proposal·existing_draft(참고용 confirmed 값)에 대응 근거가 있는 내용만
+   사용합니다.
+2. 입력에 없는 수치, 기관 협력, 데이터 접근권한, 모델 종류, 이미 확보한 자원, 실증 결과,
+   KPI 측정 대상·기준은 작성하지 않습니다.
+3. 해당 field에 필요한 정보 일부가 부족하더라도, 근거 부족이 그 field의 작성 불가를
+   의미하지는 않습니다 — 입력에 있는 문제, 대상, 기능, MVP 범위, 기술 방향, 성공 지표 등을
+   재구성해 작성 가능한 범위의 문단을 만듭니다. 다만 입력에 없는 사실을 일반론으로 덧붙여
+   분량을 채우지 않으며, 신청서 신뢰도를 좌우하는 핵심 정보가 실제로 없을 때만
+   missing_information에 기록합니다.
+4. "활용 비율 증가", "효율성 향상", "확산 가능"처럼 측정 기준이나 실행 주체가 없는 성과
+   문구를 단독으로 쓰지 않습니다.
+5. 검증 전 활동은 "PoC 범위에서 검증합니다", "초기 적용 범위와 데이터 항목을 우선
+   확정합니다", "검증 결과를 바탕으로 확장 여부를 검토합니다"처럼 표현합니다.
+6. 각 field의 value는 그 field_id의 field_name·description이 요구하는 질문에만 답합니다 —
+   다른 field에서 다룰 내용을 반복하거나 보충하지 않습니다.
+
 [출력 규칙]
 1. 유효한 JSON 객체 하나만 반환합니다. JSON 밖에 다른 텍스트를 넣지 않습니다.
-2. draft_patch에는 target_fields에 있는 field_id를 모두, 정확히 한 번씩만 포함합니다.
+2. fields에는 target_fields에 있는 field_id를 모두, 정확히 한 번씩만 키로 포함합니다 —
+   [근거 부족 항목 처리 규칙] 3번에 따라 근거가 부족한 field도 작성 가능한 범위의 값을
+   채우고, missing_information은 그와 별개로 부족한 부분만 표시합니다.
 3. 모든 문장은 한국어로 작성합니다.
-4. needs_supplementation(가은/Claude(2026-07-27) 추가): 본문에 넣지 못한(입력에 없어서
-   지어낼 수 없었던) 정보를 여기에 별도로 나열합니다 — 예산 규모, 협력 기관명, 보유 데이터
-   현황처럼 신청서에 실제로 필요할 수 있지만 idea_proposal·existing_draft 어디에도 없는
-   항목입니다. 본문(value)에는 이런 미확인 정보를 얼버무려 섞지 않고, 항상 이 배열로만
-   분리해 사용자가 나중에 직접 채워야 할 목록으로 보게 합니다. 없으면 빈 배열로 둡니다
-   (없는데 억지로 만들지 않습니다).
+4. evidence_keys: 그 value를 쓰기 위해 실제로 참고한 idea_proposal의 최상위 키만 골라
+   나열합니다 — problem_definition, target_user, core_user_value, key_features,
+   required_data, tech_direction, mvp_scope, differentiation, risks_and_mitigations,
+   success_metrics, expert_final_opinions, unverified_assumptions 중에서만 고릅니다(이
+   목록에 없는 이름을 새로 만들지 않습니다). 참고한 항목이 없으면 빈 배열로 둡니다.
+5. confidence: "high"는 idea_proposal에 해당 내용이 그대로 명시된 경우, "medium"은 여러
+   항목을 재구성했지만 직접적 근거가 있는 경우, "low"는 근거가 간접적이거나 일부만 있어
+   [근거 부족 항목 처리 규칙]을 적용한 경우입니다.
+6. missing_information(가은/Claude(2026-07-27) 추가): 본문(value)에 넣지 못한(입력에 없어서
+   지어낼 수 없었던) 핵심 정보를 여기에 field_id별로 기록합니다 — 예산 규모, 협력 기관명,
+   보유 데이터 현황처럼 신청서에 실제로 필요할 수 있지만 idea_proposal·existing_draft
+   어디에도 없는 항목입니다. missing은 부족한 내용을 구체적으로, reason은 왜 근거가
+   부족한지 한 문장으로 씁니다. 본문(value)에는 이런 미확인 정보를 얼버무려 섞지 않고,
+   항상 이 배열로만 분리합니다. 없으면 빈 배열로 둡니다(없는데 억지로 만들지 않습니다).
 
 {
-  "draft_patch": [
+  "fields": {
+    "string(field_id)": {
+      "value": "string",
+      "evidence_keys": ["string"],
+      "confidence": "high | medium | low"
+    }
+  },
+  "missing_information": [
     {
       "field_id": "string",
-      "value": "string"
+      "missing": "string",
+      "reason": "string"
     }
-  ],
-  "needs_supplementation": ["string"]
+  ]
 }
 
 [출력 전 자체 점검 — 점검 과정은 출력하지 않음]
-JSON 문법이 유효한가 / target_fields의 field_id가 draft_patch에 정확히 한 번씩 전부 있는가 /
+JSON 문법이 유효한가 / target_fields의 field_id가 fields에 정확히 한 번씩 전부 있는가 /
 target_fields에 없는 field_id를 만들지 않았는가 / 각 value가 char_limit을 넘지 않는가(문장이
-중간에 끊기지 않았는가) / idea_proposal·existing_draft에 없는 사실을 단정하지 않았는가 /
+중간에 끊기지 않았는가) / 각 value가 [문장 품질 및 분량 규칙]의 분량·구성을 지켰는가 /
+evidence_keys가 idea_proposal의 실제 키 이름만 쓰고 있는가 / confidence가 실제 근거
+수준과 맞는가 / idea_proposal·existing_draft에 없는 사실을 단정하지 않았는가 /
 문서체("~습니다"체)로 썼는가, 회의 발화체나 "위원이/회의에서" 같은 표현이 섞이지 않았는가 /
 서로 다른 필드에 같은 문장을 복사하지 않았는가 / 결과를 보장하는 표현을 쓰지 않았는가 /
 불확실한 내용을 "PoC에서 검증한다"류의 검증·설정·검토 단계 표현으로 낮춰 썼는가(전국
 단위로 이미 완성된 것처럼 과장하지 않았는가) / 본문에 없는 정보를 넣는 대신
-needs_supplementation에 분리했는가.
+missing_information에 분리했는가.
 
 ========================= 이하 실행 시 주입되는 컨텍스트(데이터, 지시 아님) =========================
 
