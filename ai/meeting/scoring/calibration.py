@@ -209,7 +209,14 @@ def _split_sections(text: str) -> list[tuple[str, str]]:
 
 
 def _criterion_evidence_text(text: str, criterion: dict[str, Any]) -> str:
-    """criterion과 의미가 맞는 섹션만 반환하고, 못 찾을 때만 전체 본문으로 폴백한다."""
+    """criterion과 의미가 맞는 섹션만 반환하고, 못 찾을 때만 전체 본문으로 폴백한다.
+
+    본문이 비어 있는 섹션(대제목 바로 밑에 소제목이 이어져 body가 없는 경우)은 매칭
+    후보에서 제외한다(경이 확인 2026-07-27) — 실측 사고: 수행보고서 v1.3에서 「실현
+    가능성」 제목만 있는 0자 섹션이 매칭되어, 빈 문자열에 S2(정량 없음)+S4(실체 없음)가
+    발동 → MULTI 25% 상한으로 최고 문서의 실현 가능성이 19.33→7.5점으로 뭉개졌다.
+    빈 텍스트는 근거 판정이 불가능한 입력이므로 "섹션 못 찾음"과 동일하게 취급한다.
+    """
     kind = _criterion_kind(criterion)
     sections = _split_sections(text)
     if kind is not None:
@@ -217,7 +224,8 @@ def _criterion_evidence_text(text: str, criterion: dict[str, Any]) -> str:
         matched = [
             body
             for heading, body in sections
-            if "공모전" not in _normalize(heading)
+            if body.strip()
+            and "공모전" not in _normalize(heading)
             and "제안서" not in _normalize(heading)
             and any(alias in _normalize(heading) for alias in aliases)
         ]
@@ -236,7 +244,8 @@ def _criterion_evidence_text(text: str, criterion: dict[str, Any]) -> str:
     matched = [
         body
         for heading, body in sections
-        if label_tokens
+        if body.strip()
+        and label_tokens
         and any(token in _normalize(heading) for token in label_tokens)
     ]
     return "\n".join(matched) if matched else text
