@@ -168,6 +168,7 @@ if str(_MEETING_DIR) not in sys.path:
 # ai/meeting/graph/reevaluate.py, MTG-007 재평가 임시 구현)는 경이 버전으로 교체하고
 # 아래(analyze_project/reevaluate_reviewer)에 주석으로만 남겨둔다.
 from graph import (  # noqa: E402
+    RUBRIC_EXTRACTION_VERSION,
     build_dynamic_rubric_mapping,
     build_rubric,
     combine_criteria_documents,
@@ -437,7 +438,10 @@ def _load_rubric_mapping(domain: str) -> dict:
 # (government_support는 role_mapping.py 미확정 등으로 아직 범위 밖, PER-002 우선순위
 # 합의 참고).
 _RUBRIC_EXTRACTION_MAX_ITEMS = 8
-_RUBRIC_EXTRACTION_VERSION = 7  # v7: 균등배분 금지+배점 숫자 원문 확인 필수(양식 제목 지어내기 차단) — 캐시 무효화
+# 추출 파이프라인 버전은 ai/meeting/graph/rubric.py의 RUBRIC_EXTRACTION_VERSION 한 곳에서만
+# 관리한다(경이 2026-07-27). 여기 로컬 상수(7)와 저장 쪽 하드코딩(3)이 어긋나 캐시가 영원히
+# 무효 → 같은 프로젝트도 매 분석마다 rubric LLM 재추출(~9초/회)되던 실측 버그의 재발 방지.
+_RUBRIC_EXTRACTION_VERSION = RUBRIC_EXTRACTION_VERSION
 
 # 공고문(criteria) 텍스트 예산 — 배점표가 뒤쪽에 있거나 공고 자료가 여러 개(공고문+신청서식)여도
 # 배점표가 잘리지 않도록 submission(6000자)보다 넉넉하게 잡는다.
@@ -1197,6 +1201,27 @@ async def analyze_project(
         "[analyze] 평가 대상 문서 확정: %s (%d자)", submission["document_name"], len(submission["text"])
     )
 
+    # 경이/Claude(2026-07-27, 가은 progress 코드 확장 — 경이 승인): 진행률 토큰을 분석
+    # 초입에 바로 등록한다. 원래는 rubric 추출·근거 검색이 다 끝난 뒤(run_meeting 직전)에야
+    # 등록해서, 가장 오래 걸리는 준비 구간 내내 GET 폴링이 빈 응답을 받아 로딩바가 5%에
+    # 고정돼 보였다. 준비 단계는 stage 문자열("평가 기준 추출"/"근거 검색")로 세분화하고,
+    # reviews_total은 committee 확정 전이라 0으로 둔다(기존 소비처 3곳 모두
+    # reviews_total>0 조건이라 준비 단계에선 기존과 동일하게 동작 — 새 프론트 매핑만
+    # stage를 읽는다). run_meeting 직전의 기존 등록 블록이 reviews_total을 채운다.
+    progress_token = request.progress_token if request else None
+
+    def _set_stage(stage: str) -> None:
+        if progress_token:
+            _analyze_progress[progress_token] = {
+                "stage": stage,
+                "reviews_done": 0,
+                "reviews_total": 0,
+                "score_done": False,
+                "chair_done": False,
+            }
+
+    _set_stage("평가 기준 추출")
+
     base_mapping = _load_rubric_mapping(domain)
     mapping = await _get_or_build_rubric_mapping(project, project_id, domain, base_mapping)
     rubric = build_rubric(mapping)
@@ -1220,6 +1245,8 @@ async def analyze_project(
     # 엔진 영역이라 위험 부담이 크다고 보고 이번엔 안전한 쪽(0점 처리)으로 감.
     committee = (request.committee if request else None) or full_committee
     if not (2 <= len(committee) <= 4) or not set(committee) <= set(full_committee):
+        if progress_token:  # 조기 등록한 진행률 토큰 정리(경이 2026-07-27)
+            _analyze_progress.pop(progress_token, None)
         raise HTTPException(
             status_code=400,
             detail=f"committee는 {full_committee} 중 2~4명이어야 합니다.",
@@ -1253,12 +1280,20 @@ async def analyze_project(
         evidence_sufficiency_service=_evidence_sufficiency_service,
         top_k=5,
     )
-    evidence_context = evidence_service.prepare_meeting_evidence(
-        project_id=project_id,
-        domain=domain,
-        rubric_mapping=mapping,
-        trace_id=meeting_id,
-    )
+    _set_stage("근거 검색")
+    try:
+        evidence_context = evidence_service.prepare_meeting_evidence(
+            project_id=project_id,
+            domain=domain,
+            rubric_mapping=mapping,
+            trace_id=meeting_id,
+        )
+    except Exception:
+        # 조기 등록한 진행률 토큰 정리 — 여기서 죽는데 엔트리가 남으면 프론트 폴링이
+        # "준비 단계"에 영원히 갇힌 것처럼 보인다(run_meeting 실패 시의 pop과 동일 정책).
+        if progress_token:
+            _analyze_progress.pop(progress_token, None)
+        raise
     _log_evidence_context(project_id, evidence_context)
     evidence_callback = evidence_service.create_evidence_callback(trace_id=meeting_id)
     # MeetingModel.retrieved_evidence(MTG-007 rerun_reviewer()용 flat 레거시 포맷)와
@@ -1291,11 +1326,12 @@ async def analyze_project(
     # GET .../analyze/progress로 중간 상태를 볼 수 있게 한다. on_progress는
     # run_meeting() 내부(threadpool 워커 스레드)에서 동기로 호출된다 — 여기선 dict
     # 값을 통째로 교체만 하므로 별도 락 없이도 안전하다.
-    progress_token = request.progress_token if request else None
+    # progress_token은 위(분석 초입 조기 등록)에서 이미 정의됨 — 여기선 committee가
+    # 확정됐으므로 reviews_total을 채워 "위원 검토" 단계로 넘긴다(경이 2026-07-27).
     on_progress = None
     if progress_token:
         _analyze_progress[progress_token] = {
-            "stage": "준비",
+            "stage": "위원 검토",
             "reviews_done": 0,
             "reviews_total": len(committee),
             "score_done": False,

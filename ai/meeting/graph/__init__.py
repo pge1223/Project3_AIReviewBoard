@@ -8,6 +8,7 @@ from .llm import make_openai_llm_call
 from .reevaluate import assemble_reevaluation_graph, reevaluation_state
 from .rerun import rerun_reviewer
 from .rubric import (
+    RUBRIC_EXTRACTION_VERSION,
     build_dynamic_rubric_mapping,
     build_routing,
     build_rubric,
@@ -79,6 +80,7 @@ __all__ = [
     "assemble_meeting_graph",
     "assemble_reevaluation_graph",
     "reevaluation_state",
+    "RUBRIC_EXTRACTION_VERSION",
     "build_dynamic_rubric_mapping",
     "build_routing",
     "build_rubric",
