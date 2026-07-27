@@ -57,6 +57,7 @@ from graph import (  # noqa: E402
     IdeationConvState,
     active_stage_for,
     bind_trace_context,
+    configure_ideation_llm_log,
     configure_ideation_trace,
     continue_ideation_expert_turn,
     finalize_ideation_conversation,
@@ -75,6 +76,7 @@ configure_ideation_trace(
     content_max_chars=settings.IDEATION_TRACE_CONTENT_MAX_CHARS,
     stream_deltas=settings.IDEATION_TRACE_STREAM_DELTAS,
 )
+configure_ideation_llm_log(enabled=settings.ENABLE_IDEATION_LLM_RESPONSE_LOG)
 
 from app.api.routes.meetings import GUEST_USER_EMAIL, _role_retrieval_service, get_current_user  # noqa: E402
 # 용준/Claude(2026-07-21, 요청: 실시간 스트리밍) — 스트리밍 llm_call 생성 로직은 별도

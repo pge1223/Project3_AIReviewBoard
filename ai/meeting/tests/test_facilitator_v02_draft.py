@@ -124,7 +124,6 @@ def test_form_facilitator_text_is_composed_from_the_four_required_parts():
         "아직 없음",
         "구체적인 문제 설정이 평가 기준이기 때문에 지금 결정해야 합니다.",
         "누가 어떤 상황에서 가장 큰 불편을 겪나요?",
-        [],
     )
 
     assert "사업 목적" in content
@@ -132,6 +131,28 @@ def test_form_facilitator_text_is_composed_from_the_four_required_parts():
     assert "평가 기준" in content
     assert "누가 어떤 상황" in content
     assert len(content.splitlines()) == 3
+
+
+def test_form_facilitator_text_does_not_repeat_choices_already_shown_as_buttons():
+    """가은/Claude(2026-07-27, 요청: "선택지가 발화 버블 안에도 뜨고 아래 선택 버블로도
+    또 뜬다") — choices는 화면에 별도 선택 버튼으로 렌더링되므로 발화 문장 안에는 나열되지
+    않아야 한다. gated_decision 경로가 만드는 "질문\n1. ...\n2. ...\n응답이 없으면
+    기본값(...)으로 진행합니다." 형식의 user_question도 첫 줄(질문)만 남아야 한다."""
+    content = _compose_form_facilitator_text(
+        "과제 배경 및 목표",
+        "아직 없음",
+        "공고 평가기준과 직접 연결되는 항목이라 지금 정리가 필요합니다.",
+        "시스템의 중요성에 대해 전문가들이 서로 다른 실행 대안을 제시해 문서와 전문가 판단만으로는 "
+        "하나를 확정할 수 없습니다. 다음 중 하나를 선택해 주세요.\n"
+        "1. 실제 위험 감지 사례를 포함 — 실제 위험 감지 사례를 포함하여 구체화\n"
+        "2. 효과를 정량적으로 명확히 — 정량 지표로 명확히\n"
+        "응답이 없으면 기본값(1. 실제 위험 감지 사례를 포함 — 가장 먼저 제시된 전문가 제안)으로 진행합니다.",
+    )
+
+    assert "다음 중 하나를 선택해 주세요" in content
+    assert "1." not in content
+    assert "2." not in content
+    assert "응답이 없으면 기본값" not in content
 
 
 def test_facilitator_context_anchors_are_derived_from_selected_idea():

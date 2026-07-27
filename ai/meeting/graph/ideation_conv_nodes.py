@@ -1575,6 +1575,31 @@ def _validate_facilitator_response(raw: dict) -> str | None:
     return None
 
 
+def _make_validate_general_facilitator_response_with_choices() -> Callable[[dict], str | None]:
+    """가은/Claude(2026-07-27, 실측: "idea_development 단계 질문에 선택지가 없다") — 신청서
+    필드 모드(_make_validate_form_facilitator_response)에서만 선택지 2~4개를 강제하고,
+    아직 idea_development 단계인 턴은 빠져 있었다. _validate_facilitator_response 자체를
+    바꾸지 않는 이유는 그 함수가 신청서 없는 세션(remaining_fields 비어 있음)과 여러
+    테스트의 기본 검증으로도 쓰이기 때문이다 — 여기서는 그 결과에 선택지 개수 확인만
+    더한 새 함수를 만들어, "신청서가 등록된 세션의 idea_development 턴"에만 호출부
+    (discussion_facilitator 노드)가 골라 쓰게 한다. needs_user_decision=true(LLM이 이미
+    실제 질문을 하기로 판단한 턴)일 때만 선택지 개수를 검사한다 — "질문은 하는데
+    선택지가 없는" 사례만 정확히 막고, needs_user_decision=false로 답하는 턴은
+    건드리지 않는다."""
+
+    def validate(raw: dict) -> str | None:
+        base_error = _validate_facilitator_response(raw)
+        if base_error:
+            return base_error
+        if bool(raw.get("needs_user_decision")):
+            choice_labels = _choice_labels(raw.get("choices"))
+            if not 2 <= len(choice_labels) <= 4:
+                return "facilitator_question_requires_two_to_four_choices"
+        return None
+
+    return validate
+
+
 def _make_validate_general_facilitator_response(decided_next_action: str) -> Callable[[dict], str | None]:
     """신청서 필드 모드가 아닌(remaining_form_fields가 비어 있거나 아직 idea_development
     단계인) 세션의 진행자 응답 검증. 2026-07-26 라운드테이블 재설계로 decided_next_action이
@@ -1659,16 +1684,21 @@ def _compose_form_facilitator_text(
     confirmed_content: str,
     decision_reason: str,
     user_question: str,
-    choices: Any,
 ) -> str:
-    """진행자 v02의 사용자 노출 발화를 네 필수 요소가 빠지지 않도록 3줄로 조립한다."""
-    choice_labels = _choice_labels(choices)
-    choice_text = f" 선택지: {' / '.join(choice_labels)}" if choice_labels else ""
+    """진행자 v02의 사용자 노출 발화를 세 필수 요소가 빠지지 않도록 조립한다.
+
+    가은/Claude(2026-07-27, 요청: "선택지가 발화 버블 안에도 나오고 아래 선택 버블로도
+    또 나온다") — choices는 화면에 이미 별도 선택 버블(structured.choices)로 렌더링되므로
+    이 발화 문장에는 다시 나열하지 않는다(예전엔 여기서 choice_labels를 붙여 중복이
+    생겼다). user_question도 gated_decision 경로(_compose_decision_question)가 만든
+    "질문\n1. ...\n2. ...\n응답이 없으면 기본값(...)으로 진행합니다." 형식이면, 그 번호
+    목록·기본값 안내 역시 같은 선택 버블과 중복이므로 첫 줄(질문 자체)만 남긴다."""
+    question = user_question.split("\n", 1)[0].strip()
     return (
         f"지금 작성 중인 신청 양식 항목은 '{field_name}'입니다. "
         f"지금까지 확정된 내용: {confirmed_content}\n"
         f"{decision_reason}\n"
-        f"{user_question}{choice_text}"
+        f"{question}"
     )
 
 
@@ -1804,7 +1834,6 @@ def _make_validate_form_facilitator_response(
             str(raw.get("confirmed_content")).strip(),
             str(raw.get("decision_reason")).strip(),
             str(raw.get("user_question")).strip(),
-            raw.get("choices"),
         )
         if len(composed) > _MAX_FACILITATOR_SPOKEN_TEXT_CHARS:
             return "composed_spoken_text_too_long"
@@ -1923,7 +1952,6 @@ def _form_facilitator_fallback_payload(
                 confirmed_content,
                 decision_reason,
                 user_question,
-                choices,
             )
             if awaits_user
             else f"'{field_name}' 항목을 살펴보겠습니다. {decision_reason}"
@@ -5575,6 +5603,12 @@ def make_discussion_facilitator_node(llm_call: LLMCall) -> Callable[[IdeationCon
         # (_make_validate_general_facilitator_response는 이 갭을 메우려고 만들어 뒀지만
         # 지금은 사용하지 않는다 — 다음에 이 문제를 고칠 때는 이 그래프를 쓰는 스텁들을
         # 한 번에 새 계약으로 옮기는 별도 작업으로 진행해야 한다).
+        # 가은/Claude(2026-07-27) — form_filling_active가 아니어도(아직 idea_development
+        # 단계) 신청서가 등록된 세션(remaining_fields 있음)이면 선택지 개수까지 확인하는
+        # _make_validate_general_facilitator_response_with_choices를 쓴다. 신청서 자체가
+        # 없는 세션(순수 자유 토론, 대부분의 기존 테스트 스텁이 이 경우)은 여전히 느슨한
+        # _validate_facilitator_response 그대로 둔다 — 위 주석의 "관련 없는 테스트가 대거
+        # 깨진다"는 문제를 신청서 유무로 좁혀서 피한다.
         validate_facilitator = (
             _make_validate_form_facilitator_response(
                 current_form_draft,
@@ -5586,7 +5620,11 @@ def make_discussion_facilitator_node(llm_call: LLMCall) -> Callable[[IdeationCon
                 is_session_first_turn=is_first_facilitator_turn,
             )
             if form_filling_active
-            else _validate_facilitator_response
+            else (
+                _make_validate_general_facilitator_response_with_choices()
+                if remaining_fields
+                else _validate_facilitator_response
+            )
         )
         raw, ok, attempts = _safe_call_structured_json(
             llm_call, prompt, validate_facilitator, "discussion_facilitator"
@@ -5741,9 +5779,16 @@ def make_discussion_facilitator_node(llm_call: LLMCall) -> Callable[[IdeationCon
         if not needs_user_decision and decided_next_action == "continue_round" and content.endswith("?"):
             content = summary_text or "현재 논의를 정리하고 다음 세부 쟁점으로 이어가겠습니다."
         if needs_user_decision and gated_decision_required and gated_decision_question and user_question not in content:
-            # 결정론적 게이트가 만든 선택지+기본값 형식의 질문을 화면에 보이는 문장에도 그대로
-            # 반영한다 — 진행자가 자기 말로 요약하면서 선택지 구조가 사라지는 것을 막는다.
-            content = f"{content}\n\n{user_question}" if content else user_question
+            # 결정론적 게이트가 만든 질문을 화면에 보이는 문장에도 반영해 선택지 구조가
+            # 사라지지 않게 하되(진행자가 자기 말로 요약), 번호 목록·기본값 안내는 붙이지
+            # 않는다 — 그 목록은 gated_decision_options → structured.choices로 이미 별도
+            # 선택 버블에 렌더링되므로(위 gated_decision_options 조립부 참고), 여기서 전체
+            # user_question(번호 목록 포함)을 그대로 붙이면 같은 선택지가 발화 버블과 선택
+            # 버블 양쪽에 중복으로 보인다(가은/Claude(2026-07-27) 리포트 — _compose_form_
+            # facilitator_text에는 이미 같은 이유로 첫 줄만 남기게 해뒀는데 이 경로는
+            # 빠뜨렸었다). 질문/맥락 문장인 첫 줄만 남긴다.
+            question_headline = user_question.split("\n", 1)[0].strip()
+            content = f"{content}\n\n{question_headline}" if content else question_headline
         elif (
             needs_user_decision
             and user_question
@@ -5814,7 +5859,6 @@ def make_discussion_facilitator_node(llm_call: LLMCall) -> Callable[[IdeationCon
                 confirmed_content,
                 decision_reason,
                 str(user_question or "").strip(),
-                raw.get("choices"),
             )
 
         message = _build_message(
