@@ -64,6 +64,7 @@ from .ideation_conv_state import (
 # 용준/Claude(2026-07-21, 요청: 실시간 스트리밍) — 그래프/노드 코드와 완전히 분리된 순수
 # 유틸리티(FastAPI·OpenAI 모두 참조하지 않음). backend의 스트리밍 llm_call이 사용한다.
 from .json_stream import JSONFieldStreamer, decode_partial_json_string
+from .ideation_llm_log import configure_ideation_llm_log
 from .ideation_trace import (
     bind_trace_context,
     configure_ideation_trace,
@@ -130,6 +131,7 @@ __all__ = [
     "decode_partial_json_string",
     "bind_trace_context",
     "configure_ideation_trace",
+    "configure_ideation_llm_log",
     "is_late_request_event",
     "reset_trace_context",
     "sanitize_preview",

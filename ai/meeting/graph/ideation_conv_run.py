@@ -35,7 +35,6 @@ from .ideation_conv_nodes import (
     make_expert_delegation_review_message,
     make_follow_up_message,
 )
-from .ideation_nodes import call_evidence_lookup
 from .ideation_conv_state import (
     ConvMessage,
     IdeationCancelled,
@@ -45,6 +44,8 @@ from .ideation_conv_state import (
     is_graph_entry_phase,
     request_finalize,
 )
+from .ideation_llm_log import log_llm_response
+from .ideation_nodes import call_evidence_lookup
 from .ideation_trace import sanitize_preview, trace_event
 from .llm import LLMCall, parse_json_response
 
@@ -1007,8 +1008,9 @@ def _fill_form_draft_batch(
             notice_and_criteria, idea_proposal, working_draft, remaining
         )
         attempts_used += 1
+        llm_text = llm_call(prompt)
         try:
-            raw = parse_json_response(llm_call(prompt))
+            raw = parse_json_response(llm_text)
         except (ValueError, KeyError, TypeError):
             trace_event(
                 "IDEATION_FORM_DRAFT_BATCH_PARSE_FAILED",
@@ -1017,10 +1019,32 @@ def _fill_form_draft_batch(
                 attempt=attempt + 1,
                 batch_field_count=len(remaining),
             )
+            log_llm_response(
+                node_name="form_draft_batch",
+                attempt=attempt + 1,
+                ok=False,
+                reason="json_parse_failed",
+                raw_response=llm_text,
+            )
             continue
 
-        patch = raw.get("draft_patch") if isinstance(raw, dict) else None
-        if isinstance(patch, list):
+        fields = raw.get("fields") if isinstance(raw, dict) else None
+        log_llm_response(
+            node_name="form_draft_batch",
+            attempt=attempt + 1,
+            ok=isinstance(fields, dict),
+            reason=None if isinstance(fields, dict) else "fields_missing_or_not_a_dict",
+            raw_response=llm_text,
+        )
+        low_confidence_count = 0
+        if isinstance(fields, dict):
+            patch = []
+            for field_id, field_data in fields.items():
+                if not isinstance(field_data, dict):
+                    continue
+                patch.append({"field_id": field_id, "value": field_data.get("value")})
+                if str(field_data.get("confidence") or "").strip().lower() == "low":
+                    low_confidence_count += 1
             working_draft, applied = apply_application_form_draft_patch(
                 working_draft, patch, confirmable_field_ids=remaining_ids
             )
@@ -1031,17 +1055,29 @@ def _fill_form_draft_batch(
             applied_count += len(applied)
             remaining = [row for row in remaining if str(row.get("field_id")) not in applied_ids]
         if isinstance(raw, dict):
-            supplement_notes.extend(
-                note.strip()
-                for note in (raw.get("needs_supplementation") or [])
-                if isinstance(note, str) and note.strip()
-            )
+            field_names = {
+                str(row.get("field_id")): str(row.get("field_name") or "")
+                for row in working_draft
+            }
+            for note in raw.get("missing_information") or []:
+                if not isinstance(note, dict):
+                    continue
+                missing = str(note.get("missing") or "").strip()
+                if not missing:
+                    continue
+                label = field_names.get(str(note.get("field_id") or "").strip())
+                reason = str(note.get("reason") or "").strip()
+                text = f"{label}: {missing}" if label else missing
+                if reason:
+                    text = f"{text} ({reason})"
+                supplement_notes.append(text)
         trace_event(
             "IDEATION_FORM_DRAFT_BATCH_PROGRESS",
             session_id=session_id,
             attempt=attempt + 1,
             requested_field_count=len(remaining_ids),
             still_missing_field_count=len(remaining),
+            low_confidence_field_count=low_confidence_count,
         )
 
     return working_draft, applied_count, supplement_notes, attempts_used
