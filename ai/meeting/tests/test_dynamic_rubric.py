@@ -16,7 +16,12 @@ import pytest
 MEETING_DIR = Path(__file__).resolve().parents[1]  # ai/meeting
 sys.path.insert(0, str(MEETING_DIR))
 
-from graph import build_dynamic_rubric_mapping, build_rubric, combine_criteria_documents  # noqa: E402
+from graph import (  # noqa: E402
+    RUBRIC_EXTRACTION_VERSION,
+    build_dynamic_rubric_mapping,
+    build_rubric,
+    combine_criteria_documents,
+)
 
 COMPETITION_MAPPING_PATH = MEETING_DIR / "personas" / "rubric_mapping_competition.json"
 PERSONA_CARDS_PATH = MEETING_DIR / "personas" / "persona_cards.json"
@@ -137,7 +142,9 @@ def test_dynamic_bonus_rules_are_preserved_separately_from_base_score():
     )
     runtime_rubric = build_rubric(merged)
 
-    assert merged["meta"]["rubric_extraction_version"] == 3
+    # 저장 버전은 캐시 판정(backend meetings.py)과 같은 단일 상수를 써야 한다 —
+    # 값 하드코딩(3)과 판정 상수(7)가 어긋나 캐시가 영원히 무효되던 실측 버그 회귀 방지.
+    assert merged["meta"]["rubric_extraction_version"] == RUBRIC_EXTRACTION_VERSION
     assert runtime_rubric["total_max_score"] == 100
     assert runtime_rubric["bonus_max_score"] == 2
     assert runtime_rubric["bonus_rules"] == rules

@@ -1748,11 +1748,27 @@ function AnalysisScreen({ mode, onNext, onBack, projectId }) {
 }
 
 function overallPercent(snapshot) {
-  if (!snapshot) return 0
-  if (snapshot.chair_done) return 100
-  if (snapshot.score_done) return 85
-  if (snapshot.reviews_total) return 10 + (snapshot.reviews_done / snapshot.reviews_total) * 60
-  return 5
+  if (!snapshot) return 2
+  // 채점(score_done)까지 끝나면 사용자 기준 분석 완료 — 이 시점에 "피드백 확인하기" 버튼이
+  // 이미 활성화되므로 바를 85%에 세워두지 않고 100%로 채운다. 위원장 종합(chair)은
+  // 백그라운드로 이어지고 리포트 화면에서 따로 채워진다(경이/Claude 2026-07-27).
+  if (snapshot.chair_done || snapshot.score_done) return 100
+  if (snapshot.reviews_total) return 15 + (snapshot.reviews_done / snapshot.reviews_total) * 70
+  // 준비 단계(경이/Claude 2026-07-27, 가은 코드 확장): 백엔드가 진행률 토큰을 분석 초입에
+  // 등록하면서 준비 구간도 stage 문자열로 세분화됨 — 5% 고정 대신 단계 따라 전진.
+  if (snapshot.stage === '근거 검색') return 10
+  if (snapshot.stage === '평가 기준 추출') return 6
+  return 4
+}
+
+// 로딩 카드 문구 — 지금 어느 단계인지 사용자에게 그대로 보여준다(경이/Claude 2026-07-27).
+function analyzeStageLabel(snapshot) {
+  if (!snapshot) return '문서 피드백 준비중'
+  if (snapshot.chair_done || snapshot.score_done) return '분석 완료 — 피드백을 확인할 수 있어요'
+  if (snapshot.reviews_total) return `AI 위원 검토 중 (${snapshot.reviews_done}/${snapshot.reviews_total}명 완료)`
+  if (snapshot.stage === '근거 검색') return '공고 자료에서 평가 근거 검색 중'
+  if (snapshot.stage === '평가 기준 추출') return '공고문에서 평가 기준 추출 중'
+  return '문서 피드백 준비중'
 }
 
 /* ---------------- 5. 작성 후: 기획서 업로드 → 분석 시작 → 피드백 확인 (실제 API) ----------------
@@ -1977,7 +1993,7 @@ function UploadAndAnalyzeScreen({ projectId, onFeedbackReady, onBack, initialDoc
       {analyzing && (
         <div className="card glass">
           <p style={{ fontSize: 13, color: 'var(--text-1)', marginBottom: 16 }}>
-            문서 피드백 준비중
+            {analyzeStageLabel(snapshot)}
           </p>
           <div className="progress-track" style={{ marginBottom: 6 }}>
             <div className="progress-fill" style={{ width: `${analyzePercent}%` }} />
