@@ -456,3 +456,86 @@ def test_real_retrieved_sample_flows_through_run_meeting():
     assert ev["chunk_id"] == "CHUNK-014"
     assert ev["text"] == retrieved_sample[0]["text"]
     assert ev["score"] == 0.86
+
+
+# ---------------------------------------------------------------------------
+# 항목별 적정 위원만 채점(경이 확정 2026-07-27) — 배정(expected_criterion_ids) 밖 항목은
+# 근거 게이트를 통과해도 점수·지적이 집계에서 완전히 제외된다. 이전에는 비담당 위원
+# 점수가 calculator 평균에 섞여 배정과 무관한 3명 평균(1/3 단위 점수)이 생겼다.
+# ---------------------------------------------------------------------------
+
+
+def test_out_of_scope_criterion_is_dropped_even_if_evidence_gate_allows():
+    raw = {
+        "review_id": "REV-1",
+        "persona_id": "business_strategy",
+        "review_items": [
+            {
+                "criterion_id": "my_axis",
+                "criterion_name": "담당 항목",
+                "judgment": "adequate",
+                "score_recommendation": 20,
+                "max_score": 25,
+                "weaknesses": [],
+            },
+            {
+                "criterion_id": "other_axis",
+                "criterion_name": "남의 항목",
+                "judgment": "adequate",
+                "score_recommendation": 18,
+                "max_score": 25,
+                "weaknesses": [],
+            },
+        ],
+    }
+    pool = EvidencePool("business_strategy", [])
+    # 근거 게이트가 두 항목 모두 점수를 허용해도(비담당 항목까지 콜백이 통과시켜도)
+    criterion_evidence = {
+        cid: {
+            "linked_evidence_refs": [],
+            "sufficiency": {"allow_numeric_score": True, "allow_definitive_judgment": True},
+        }
+        for cid in ("my_axis", "other_axis")
+    }
+
+    result = raw_reviewer_to_v2(
+        raw,
+        pool,
+        criterion_evidence=criterion_evidence,
+        expected_criterion_ids={"my_axis"},
+    )
+
+    scored = [s["criterion_id"] for s in result["rubric_scores"]]
+    assert scored == ["my_axis"]  # 배정된 항목만 집계
+    assert all(u["criterion_id"] == "my_axis" for u in result.get("unscored_criteria", []))
+
+
+def test_legacy_path_without_assignment_keeps_all_items():
+    """expected_criterion_ids=None(레거시 flat 경로)은 기존처럼 전 항목을 유지한다."""
+    raw = {
+        "review_id": "REV-1",
+        "persona_id": "business_strategy",
+        "review_items": [
+            {
+                "criterion_id": "a",
+                "criterion_name": "A",
+                "judgment": "adequate",
+                "score_recommendation": 20,
+                "max_score": 25,
+                "weaknesses": [],
+                "evidence_refs": [],
+            },
+            {
+                "criterion_id": "b",
+                "criterion_name": "B",
+                "judgment": "adequate",
+                "score_recommendation": 18,
+                "max_score": 25,
+                "weaknesses": [],
+                "evidence_refs": [],
+            },
+        ],
+    }
+    pool = EvidencePool("business_strategy", [])
+    result = raw_reviewer_to_v2(raw, pool, expected_criterion_ids=None)
+    assert [s["criterion_id"] for s in result["rubric_scores"]] == ["a", "b"]

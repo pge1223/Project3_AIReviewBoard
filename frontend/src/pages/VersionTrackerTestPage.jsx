@@ -1330,7 +1330,8 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
   // 상세(탭 영역)는 처음에 숨기고, 점수 추이의 버전 점(v1.0…)을 클릭해야 열린다.
   const [detailOpen, setDetailOpen] = useState(false)
   const [schemeOpen, setSchemeOpen] = useState(false) // 점수 체계표 접기/펼치기
-  const [noticeOpen, setNoticeOpen] = useState(false) // 총점 참고용 안내 — 총점 옆 ⓘ 클릭 팝업
+  const [noticeOpen, setNoticeOpen] = useState(false) // 총점 참고용 안내 — 제목 옆 ⓘ 클릭 팝업
+  const [versionListOpen, setVersionListOpen] = useState(false) // "버전별 상세 리포트" 박스 → 버전 목록 드롭다운
   const [statusFilter, setStatusFilter] = useState('all') // 전체/신규/보완필요(남음)/해결 필터
   const detailRef = useRef(null)
   const [profileKey, setProfileKey] = useState('nonmajor')
@@ -1677,7 +1678,30 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
         {!detailOpen && (<>
         {/* 히어로 */}
         <div className="card glass" style={{ padding: '26px 28px', marginBottom: 18 }}>
-          <h1 style={{ fontSize: 32, fontWeight: 800, lineHeight: 1.3, textAlign: 'center', margin: '2px 0 18px' }}>종합 리포트</h1>
+          <div style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, margin: '2px 0 18px' }}>
+            <h1 style={{ fontSize: 32, fontWeight: 800, lineHeight: 1.3, margin: 0 }}>종합 리포트</h1>
+            {noticeAvailable && (
+              <span role="button" tabIndex={0} aria-label="총점 참고용 안내"
+                onClick={() => setNoticeOpen((v) => !v)}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setNoticeOpen((v) => !v) } }}
+                style={{ display: 'inline-flex', alignItems: 'center', cursor: 'pointer', padding: 2, borderRadius: 8 }}>
+                <Info size={22} style={{ color: '#b8830b', flexShrink: 0 }} />
+              </span>
+            )}
+            {/* ⓘ 클릭 팝업 — 총점 참고용 안내 (제목 옆 ⓘ 아래로 펼침) */}
+            {noticeAvailable && noticeOpen && (
+              <div className="vt-fade" style={{ position: 'absolute', top: 'calc(100% + 8px)', left: '50%', transform: 'translateX(-50%)', zIndex: 60, width: 'min(560px, 86vw)', textAlign: 'left', background: '#fff', border: '1px solid rgba(184,131,11,0.35)', borderLeft: '4px solid #b8830b', borderRadius: 12, boxShadow: '0 14px 34px rgba(28,26,46,0.16)', padding: '12px 16px', display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                <Info size={16} style={{ color: '#b8830b', flexShrink: 0, marginTop: 2 }} />
+                <div style={{ fontSize: 12.5, lineHeight: 1.7, color: '#5b5770' }}>
+                  <b style={{ color: '#8a6508' }}>제시된 총점은 참고용입니다.</b>{' '}
+                  공고문 평가 항목 중 <b>문서 내용으로 측정 가능한 항목만</b> 근거를 들어 채점하며,
+                  정성 판단이 필요한 <b>주관적 항목</b>과 공모전마다 기준이 달라지는 <b>가점 요소</b>는
+                  총점에서 제외됩니다. 항목별 채점·제외 사유는 아래 <b>점수 체계표</b>에서 확인할 수
+                  있으며, 실제 심사 결과와는 다를 수 있습니다.
+                </div>
+              </div>
+            )}
+          </div>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 24, flexWrap: 'wrap' }}>
             <div style={{ flex: 1, minWidth: 300 }}>
               <div style={{ maxWidth: 500, display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -1697,35 +1721,12 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
                 </div>
               </div>
             </div>
-            <div style={{ textAlign: 'center', minWidth: 140, padding: '4px 8px', position: 'relative' }}>
-              <div className="mono" style={{ fontSize: 11, color: '#918d9f', marginBottom: 6, fontWeight: 600, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
-                {selected.version} 총점
-                {noticeAvailable && (
-                  <span role="button" tabIndex={0} aria-label="총점 참고용 안내"
-                    onClick={() => setNoticeOpen((v) => !v)}
-                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setNoticeOpen((v) => !v) } }}
-                    style={{ display: 'inline-flex', alignItems: 'center', cursor: 'pointer', padding: 2, borderRadius: 6 }}>
-                    <Info size={14} style={{ color: '#b8830b', flexShrink: 0 }} />
-                  </span>
-                )}
-              </div>
+            <div style={{ textAlign: 'center', minWidth: 140, padding: '4px 8px' }}>
+              <div className="mono" style={{ fontSize: 11, color: '#918d9f', marginBottom: 6, fontWeight: 600 }}>{selected.version} 총점</div>
               <div className="mono" style={{ fontSize: 46, fontWeight: 800, lineHeight: 1, marginBottom: 10, color: '#1c1a2e' }}>
                 {heroScore}<span style={{ fontSize: 15, color: '#918d9f' }}>/{selected.max_total ?? 100}</span>
               </div>
               {totalDelta != null ? <DeltaPill value={totalDelta} size="lg" /> : <span className="badge amber mono">출발점</span>}
-              {/* ⓘ 클릭 팝업 — 총점 참고용 안내 (점수 체계표 헤더에서 총점 옆으로 이동) */}
-              {noticeAvailable && noticeOpen && (
-                <div className="vt-fade" style={{ position: 'absolute', top: 26, right: 0, zIndex: 60, width: 'min(430px, 78vw)', textAlign: 'left', background: '#fff', border: '1px solid rgba(184,131,11,0.35)', borderLeft: '4px solid #b8830b', borderRadius: 12, boxShadow: '0 14px 34px rgba(28,26,46,0.16)', padding: '12px 16px', display: 'flex', alignItems: 'flex-start', gap: 10 }}>
-                  <Info size={16} style={{ color: '#b8830b', flexShrink: 0, marginTop: 2 }} />
-                  <div style={{ fontSize: 12.5, lineHeight: 1.7, color: '#5b5770' }}>
-                    <b style={{ color: '#8a6508' }}>제시된 총점은 참고용입니다.</b>{' '}
-                    공고문 평가 항목 중 <b>문서 내용으로 측정 가능한 항목만</b> 근거를 들어 채점하며,
-                    정성 판단이 필요한 <b>주관적 항목</b>과 공모전마다 기준이 달라지는 <b>가점 요소</b>는
-                    총점에서 제외됩니다. 항목별 채점·제외 사유는 아래 <b>점수 체계표</b>에서 확인할 수
-                    있으며, 실제 심사 결과와는 다를 수 있습니다.
-                  </div>
-                </div>
-              )}
             </div>
           </div>
         </div>
@@ -1746,6 +1747,27 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
                 <TrendingUp size={17} color="#7c5cea" /> 버전별 점수 추이
               </h2>
               <span style={{ fontSize: 12, color: '#918d9f' }}>버전 점(v1.0 …)을 클릭하면 그 버전의 상세 리포트 화면으로 이동합니다.</span>
+            </div>
+            {/* 버전별 상세 리포트 — 클릭하면 v1.0 → v1.1 → … 목록이 펼쳐지고, 버전을 고르면 그 버전 상세 화면으로 이동 */}
+            <div style={{ position: 'relative' }}>
+              <button type="button" onClick={() => setVersionListOpen((v) => !v)}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 14px', borderRadius: 10, border: '1.5px solid rgba(28,26,46,0.18)', background: 'rgba(255,255,255,0.85)', fontSize: 12.5, fontWeight: 800, color: '#1c1a2e', cursor: 'pointer' }}>
+                버전별 상세 리포트
+                <ChevronDown size={14} style={{ color: '#918d9f', transition: 'transform 0.2s', transform: versionListOpen ? 'rotate(180deg)' : 'none' }} />
+              </button>
+              {versionListOpen && (
+                <div className="vt-fade" style={{ position: 'absolute', top: 'calc(100% + 6px)', right: 0, zIndex: 60, minWidth: 210, background: '#fff', border: '1px solid rgba(28,26,46,0.12)', borderRadius: 12, boxShadow: '0 14px 34px rgba(28,26,46,0.16)', padding: 6, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  {versions.map((v, i) => (
+                    <button key={v.version} type="button" className="btn-ghost"
+                      onClick={() => { setSelectedIndex(i); setDetailOpen(true); setStatusFilter('all'); setVersionListOpen(false) }}
+                      style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '8px 10px', borderRadius: 8, fontSize: 12.5, textAlign: 'left' }}>
+                      <span className="mono" style={{ fontWeight: 800, color: '#7c5cea', flexShrink: 0 }}>{v.version}</span>
+                      <span style={{ color: '#5b5770', flex: 1, whiteSpace: 'nowrap' }}>{v.label}</span>
+                      <span className="mono" style={{ fontWeight: 700, color: '#918d9f', flexShrink: 0 }}>{v.total_score}점</span>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
           {/* 업로드+재분석 진행/에러 배너 */}
