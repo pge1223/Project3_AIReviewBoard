@@ -96,14 +96,37 @@ def _external_evidence_query(state: IdeationConvState, candidates: list[dict] | 
     후보 아이디어 내용을 포함한다(요청 6번). RAG-006 project evidence_lookup이 쓰는
     _contest_query(공모전명+공고문만)와는 별도로 관리한다 — 두 RAG은 책임이 다르므로
     검색어 조합 로직도 독립적으로 둔다."""
-    parts = [_contest_query(state)]
+    # 검색 엔진에 공고문 원문 전체를 보내면 긴 문장·작성 요령까지 하나의 검색어가 되어
+    # NAVER 뉴스 결과가 0건으로 떨어진다. 외부 검색에는 공모전명과 현재 문제/후보의
+    # 핵심 필드만 사용하고, 공고문 원문은 내부 evidence_lookup에만 남긴다.
+    parts: list[str] = []
+    notice = state.get("notice_and_criteria")
+    if isinstance(notice, dict):
+        competition_name = str(notice.get("competition_name") or "").strip()
+        if competition_name:
+            parts.append(competition_name)
+    elif notice:
+        parts.append(str(notice).strip()[:120])
+
+    problem_definition = state.get("problem_definition")
+    if isinstance(problem_definition, dict):
+        problem_fragment = " ".join(
+            str(problem_definition.get(field) or "")
+            for field in ("problem", "target_user")
+        ).strip()
+        if problem_fragment:
+            parts.append(problem_fragment)
+
     for candidate in candidates or []:
         if not isinstance(candidate, dict):
             continue
-        fragment = " ".join(str(candidate.get(field) or "") for field in ("title", "problem", "solution")).strip()
+        fragment = " ".join(
+            str(candidate.get(field) or "")
+            for field in ("title", "problem", "target_user", "solution")
+        ).strip()
         if fragment:
             parts.append(fragment)
-    return "\n".join(p for p in parts if p)
+    return " ".join(" ".join(p.split()) for p in parts if p)[:300]
 
 
 def _merge_external_evidence_results(previous: dict[str, Any] | None, new: dict[str, Any]) -> dict[str, Any]:

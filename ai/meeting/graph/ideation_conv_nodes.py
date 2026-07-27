@@ -1723,9 +1723,10 @@ def _validate_facilitator_response(raw: dict) -> str | None:
         return "missing_or_empty_field:facilitator_summary"
     if bool(raw.get("needs_user_decision")) and _blank(raw.get("user_question")):
         return "missing_or_empty_field:user_question"
-    if _blank(raw.get("spoken_text")):
-        return "missing_or_empty_field:spoken_text"
-    if len(raw.get("spoken_text", "")) > _MAX_FACILITATOR_SPOKEN_TEXT_CHARS:
+    if (
+        not _blank(raw.get("spoken_text"))
+        and len(raw.get("spoken_text", "")) > _MAX_FACILITATOR_SPOKEN_TEXT_CHARS
+    ):
         return "spoken_text_too_long"
     if "draft_patch" in raw and not isinstance(raw.get("draft_patch"), list):
         return "draft_patch_not_a_list"
@@ -5099,22 +5100,13 @@ def _used_facilitator_research_keys(messages: list[ConvMessage]) -> set[str]:
     return used
 
 
-def _facilitator_grounded_content(
-    source_type: str,
-    item: dict,
-    issue_title: str,
-) -> str:
-    text = str(item.get("quote") or item.get("text") or "").strip()
-    quote = text if len(text) <= 150 else f"{text[:147].rstrip()}…"
-    if source_type == "external":
-        source = str(item.get("title") or item.get("publisher") or "외부 참고자료").strip()
-    else:
-        source = str(item.get("document_name") or "내부 문서").strip()
-    return (
-        f"'{source}'에서는 “{quote}”라고 제시합니다. "
-        f"이 근거를 바탕으로 '{issue_title}' 쟁점의 임시 결론을 잡고, "
-        "다음 전문가 발언에서 신청서 초안에 반영할 문장과 조건을 구체화하겠습니다."
-    )
+_FACILITATOR_EVIDENCE_FALLBACK = (
+    "관련 공모전 근거를 확인했습니다. 해당 기준을 바탕으로 후보를 검증하겠습니다."
+)
+_RAW_EVIDENCE_IN_SPEECH_RE = re.compile(
+    r"\.hwpx?\b|<\s*작성\s*요령\s*>|(?:^|\n)\s*(?:○|※|-)\s*",
+    re.IGNORECASE,
+)
 
 
 def _merge_facilitator_external_evidence(state: IdeationConvState, new_items: list[dict]) -> list[dict]:
@@ -5406,7 +5398,16 @@ def make_discussion_facilitator_node(
             if substantive_internal:
                 pre_question_source = "internal"
                 pre_question_item = substantive_internal[0]
-                pre_question_internal_evidence = [pre_question_item]
+                pre_question_internal_evidence = [
+                    {
+                        **pre_question_item,
+                        "quote": str(
+                            pre_question_item.get("quote")
+                            or pre_question_item.get("text")
+                            or ""
+                        ).strip(),
+                    }
+                ]
             else:
                 pre_question_external_result = _call_facilitator_external_evidence(
                     external_evidence_lookup,
@@ -5501,15 +5502,28 @@ def make_discussion_facilitator_node(
         pre_question_research_resolved = pre_question_item is not None
         if pre_question_research_resolved:
             # LLM이 기존 계약을 따라 질문을 반환해도 검색 게이트의 결정이 최종적이다.
-            # 근거 원문을 포함한 결정론적 문장으로 화면 내용을 고정해, 막연한 질문이나 근거
-            # 없는 요약이 다시 노출되지 않게 한다.
-            grounded_content = _facilitator_grounded_content(
-                str(pre_question_source),
-                pre_question_item,
-                str(research_issue_title),
+            # 검색 원문은 message.evidence에만 보존하고, 화면 발화는 LLM이 요약한
+            # spoken_text를 유지한다. 모델이 원문을 복사하거나 빈 값을 반환하면 raw chunk
+            # 대신 고정 안내문을 사용한다.
+            spoken_text = str(raw.get("spoken_text") or "").strip()
+            evidence_text = str(
+                pre_question_item.get("quote")
+                or pre_question_item.get("text")
+                or ""
+            ).strip()
+            copied_evidence = (
+                len(evidence_text) >= 32
+                and " ".join(evidence_text.split())[:32]
+                in " ".join(spoken_text.split())
             )
-            summary_text = grounded_content
-            raw["spoken_text"] = grounded_content
+            if (
+                not spoken_text
+                or _RAW_EVIDENCE_IN_SPEECH_RE.search(spoken_text)
+                or copied_evidence
+            ):
+                spoken_text = _FACILITATOR_EVIDENCE_FALLBACK
+                summary_text = spoken_text
+            raw["spoken_text"] = spoken_text
             needs_user_decision = False
             user_question = None
             decided_next_action = (
@@ -5680,7 +5694,7 @@ def make_discussion_facilitator_node(
         # 용준/Claude(2026-07-22, 요청: 보고서형 메시지 → 자연스러운 회의 발화 전환) — 채팅에
         # 실제로 보이는 content는 spoken_text(1~2문장의 자연스러운 정리, needs_user_decision=
         # true면 질문 자체를 자연스럽게 포함) 그대로다.
-        content = raw.get("spoken_text", "").strip()
+        content = str(raw.get("spoken_text") or "").strip() or _FACILITATOR_EVIDENCE_FALLBACK
         if not needs_user_decision and decided_next_action == "continue_round" and content.endswith("?"):
             content = summary_text or "현재 논의를 정리하고 다음 세부 쟁점으로 이어가겠습니다."
         if needs_user_decision and gated_decision_required and gated_decision_question and user_question not in content:

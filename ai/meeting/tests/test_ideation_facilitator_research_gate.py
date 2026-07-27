@@ -109,11 +109,14 @@ def test_internal_rag_fact_resolves_question_before_external_search():
     assert update["phase"] == "expert_discussion"
     assert update["next_route"] == "continue_round"
     assert update["pending_question"] is None
-    assert "평균 3시간" in message["content"]
+    assert "행정업무 실태조사" not in message["content"]
+    assert "평균 3시간" not in message["content"]
     assert not message["content"].endswith("?")
     assert message["structured"]["pre_question_research_source"] == "internal"
     assert message["structured"]["pre_question_research_resolved"] is True
     assert message["evidence"][0]["chunk_id"] == "CHK-REPORT-1"
+    assert message["evidence"][0]["document_name"] == "행정업무 실태조사"
+    assert "평균 3시간" in message["evidence"][0]["quote"]
 
 
 def test_form_instruction_is_not_an_answer_and_external_rag_is_used_next():
@@ -162,9 +165,61 @@ def test_form_instruction_is_not_an_answer_and_external_rag_is_used_next():
     assert len(external_calls) == 1
     assert update["phase"] == "expert_discussion"
     assert update["pending_question"] is None
-    assert "반복적인 문서 입력" in message["content"]
+    assert "공공부문 행정업무 조사" not in message["content"]
+    assert "반복적인 문서 입력" not in message["content"]
     assert message["structured"]["pre_question_research_source"] == "external"
     assert update["external_evidence"][0]["source_id"] == "SRC-1"
+
+
+def test_hwpx_raw_chunk_is_kept_in_evidence_not_facilitator_message():
+    class _RawChunkFacilitatorLLM:
+        def __call__(self, _prompt: str) -> str:
+            raw = (
+                "'붙임2_2026_공공기관_AI_혁신_챌린지_참가_신청_서식_실증·PoC_F.hwpx'에서는\n"
+                "○\n-\n※\n<작성 요령> 타 기관 확산 가능성을 구체적으로 작성"
+            )
+            return json.dumps(
+                {
+                    "agreements": [],
+                    "disagreements": [],
+                    "facilitator_summary": raw,
+                    "spoken_text": raw,
+                    "needs_user_decision": False,
+                    "user_question": None,
+                },
+                ensure_ascii=False,
+            )
+
+    def internal_lookup(_persona_id: str, _query: str) -> list[dict]:
+        return [
+            {
+                "document_id": "DOC-HWPX",
+                "document_name": "붙임2_2026_공공기관_AI_혁신_챌린지_참가_신청_서식_실증·PoC_F.hwpx",
+                "chunk_id": "CHK-HWPX-1",
+                "section": "타 기관 확산 계획 및 노력",
+                "document_role": "criteria",
+                "quote": (
+                    "2. 타 기관 확산 계획 및 노력 ○ - ※ "
+                    "<작성 요령> 타 기관 확산 가능성을 구체적으로 작성 "
+                    "3. 대국민 체감 효과"
+                ),
+            }
+        ]
+
+    update = make_discussion_facilitator_node(
+        _RawChunkFacilitatorLLM(),
+        evidence_lookup=internal_lookup,
+    )(_state())
+
+    message = update["messages"][0]
+    assert message["content"] == (
+        "관련 공모전 근거를 확인했습니다. 해당 기준을 바탕으로 후보를 검증하겠습니다."
+    )
+    assert ".hwpx" not in message["content"]
+    assert "<작성 요령>" not in message["content"]
+    assert message["evidence"][0]["document_name"].endswith(".hwpx")
+    assert "<작성 요령>" in message["evidence"][0]["quote"]
+    assert message["evidence"][0]["chunk_id"] == "CHK-HWPX-1"
 
 
 def test_user_is_asked_only_when_internal_and_external_research_are_empty():

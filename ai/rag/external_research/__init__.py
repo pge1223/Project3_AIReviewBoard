@@ -34,6 +34,8 @@ from ai.rag.external_research.providers import (
     DatasetProvider,
     ExternalEvidenceCandidate,
     ExternalResearchProvider,
+    NAVER_NEWS_API_URL,
+    NaverNewsFetcher,
     PublicApiFetchFn,
     PublicApiProvider,
 )
@@ -80,6 +82,8 @@ __all__ = [
     "ExternalEvidenceIndexingService",
     "ExternalEvidenceIndexingSummary",
     "DatasetProvider",
+    "NAVER_NEWS_API_URL",
+    "NaverNewsFetcher",
     "PublicApiProvider",
     "PublicApiFetchFn",
     "ExternalEvidenceCandidate",

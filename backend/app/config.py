@@ -47,6 +47,11 @@ class Settings(BaseSettings):
     NCP_SECRET_KEY: str = ""
     NCP_BUCKET_NAME: str = ""
 
+    # NAVER API HUB 뉴스 검색(RAG-007 실시간 외부 근거)
+    NAVER_CLIENT_ID: str = ""
+    NAVER_CLIENT_SECRET: str = ""
+    RAG_EXTERNAL_ENABLE_PUBLIC_API: bool = False
+
     # 재인/Claude (2026-07-16): 위원 발언 영상(TTS+MuseTalk 립싱크) 생성 서버 주소.
     # 실제 생성은 별도 MuseTalk 서버(현재 Colab, Cloudflare Quick Tunnel로 노출)가 하고,
     # backend/app/api/routes/media.py가 이 값으로 그 서버에 연결해 중계한다.
@@ -55,6 +60,8 @@ class Settings(BaseSettings):
 
     # RAG (Chroma)
     CHROMA_PERSIST_DIR: str = "./chroma_db"
+    RAG_EMBEDDING_BATCH_SIZE: int = Field(default=32, ge=1)
+    RAG_TORCH_NUM_THREADS: int | None = Field(default=None, ge=1)
 
     # JWT
     JWT_SECRET_KEY: str = "sherpa-secret-key-change-in-production"

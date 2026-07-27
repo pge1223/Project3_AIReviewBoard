@@ -5,6 +5,7 @@ Unit Tests for ai.rag.external_research.search_service (RAG-007)
 사용한다. ai.meeting.graph, LangGraph, 실제 LLM/외부 네트워크를 호출하지 않는다.
 """
 
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -249,6 +250,99 @@ class TestSearchEndToEnd:
 
 
 class TestPublicApiFailureIsolation:
+    def test_public_api_receives_compact_live_query_not_labeled_rag_query(self, repository):
+        embedder = FakeEvidenceEmbedder(dimension=_DIM)
+        dataset_provider = DatasetProvider(repository, embedder)
+        received_queries = []
+
+        def fake_fetch(request, query_text):
+            received_queries.append(query_text)
+            return []
+
+        config = ExternalResearchConfig(
+            enable_dataset_search=False,
+            enable_public_api_search=True,
+        )
+        service = ExternalResearchService(
+            dataset_provider,
+            public_api_provider=PublicApiProvider(fetch=fake_fetch, enabled=True),
+            config=config,
+        )
+
+        service.search(
+            _request(
+                domain="competition",
+                reviewer_role="technology",
+                query_context="공공기관 AI 민원 서비스",
+            )
+        )
+
+        assert received_queries == ["공공기관 AI 민원 서비스 최신 기술 동향 도입 사례"]
+        assert "위원 역할:" not in received_queries[0]
+        assert "평가 기준:" not in received_queries[0]
+
+    def test_public_api_result_without_similarity_score_is_not_discarded(self, repository):
+        embedder = FakeEvidenceEmbedder(dimension=_DIM)
+        dataset_provider = DatasetProvider(repository, embedder)
+
+        def fake_fetch(request, qt):
+            return [{
+                "source_id": "NAVER-1", "document_id": "NAVER-1", "chunk_id": "NAVER-1-01",
+                "title": "실시간 뉴스", "evidence_type": "news", "publisher": "example.com",
+                "source_url": "https://example.com/news/1", "domain": "competition",
+                "content": "AI 공모전 관련 실시간 뉴스", "published_at": "2026-07-27",
+                "semantic_score": None,
+            }]
+
+        public_api_provider = PublicApiProvider(fetch=fake_fetch, enabled=True)
+        config = ExternalResearchConfig(
+            enable_dataset_search=False,
+            enable_public_api_search=True,
+            min_similarity_score=0.45,
+        )
+        service = ExternalResearchService(
+            dataset_provider,
+            public_api_provider=public_api_provider,
+            config=config,
+        )
+
+        response = service.search(_request(domain="competition"))
+        assert len(response.results) == 1
+        assert response.results[0].evidence_type == ExternalEvidenceType.NEWS
+        assert response.results[0].semantic_score == 0.0
+
+    def test_news_uses_separate_freshness_weight(self, repository):
+        embedder = FakeEvidenceEmbedder(dimension=_DIM)
+        dataset_provider = DatasetProvider(repository, embedder)
+
+        def fake_fetch(request, qt):
+            return [{
+                "source_id": "NAVER-FRESH", "document_id": "NAVER-FRESH", "chunk_id": "NAVER-FRESH-01",
+                "title": "오늘의 기술 뉴스", "evidence_type": "news", "publisher": "example.com",
+                "source_url": "https://example.com/news/fresh", "domain": "competition",
+                "content": "오늘 발표된 AI 기술 동향", "published_at": date.today().isoformat(),
+                "semantic_score": None,
+            }]
+
+        config = ExternalResearchConfig(
+            enable_dataset_search=False,
+            enable_public_api_search=True,
+            news_freshness_weight=0.30,
+        )
+        service = ExternalResearchService(
+            dataset_provider,
+            public_api_provider=PublicApiProvider(fetch=fake_fetch, enabled=True),
+            config=config,
+        )
+
+        result = service.search(_request(domain="competition")).results[0]
+
+        # semantic=0, role/criteria=0.5이고 뉴스 최신성=1.0이다. 비최신성 가중치
+        # 0.55/0.20/0.15는 남은 0.70 안에서 같은 비율로 재조정된다.
+        expected = 0.5 * (0.20 * 0.70 / 0.90) + 0.5 * (0.15 * 0.70 / 0.90) + 0.30
+        assert result.final_score == pytest.approx(expected)
+        assert result.freshness_score == 1.0
+
     def test_public_api_timeout_keeps_dataset_results(self, repository):
         import time
 

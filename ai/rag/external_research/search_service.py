@@ -39,6 +39,23 @@ def _is_finite(value: Optional[float]) -> bool:
     return value is not None and not math.isnan(value) and not math.isinf(value)
 
 
+_LIVE_QUERY_SUFFIX = {
+    "planning": "최근 뉴스 정책 동향",
+    "marketing": "최근 뉴스 시장 동향",
+    "technology": "최신 기술 동향 도입 사례",
+}
+
+
+def _build_live_api_query(request: ExternalResearchRequest, fallback_query: str) -> str:
+    """검색 API에는 RAG용 라벨 문장이 아니라 짧은 검색어를 전달한다."""
+    context = " ".join((request.query_context or "").split())
+    if not context:
+        context = " ".join(fallback_query.split())
+    suffix = _LIVE_QUERY_SUFFIX.get(request.reviewer_role, "최근 동향")
+    # NAVER 검색에서 공고문 전체가 그대로 질의가 되지 않도록 검색 문맥을 제한한다.
+    return f"{context[:300]} {suffix}".strip()
+
+
 class ExternalResearchService:
     """RAG-003/RAG-006과 완전히 분리된 외부 시장·정책 자료 검색 서비스.
     provider(들)를 생성자로 주입받으며, 새 Chroma client나 임베딩 모델, 외부 LLM을
@@ -92,7 +109,13 @@ class ExternalResearchService:
 
         if self._config.enable_public_api_search and self._public_api_provider is not None:
             used_public_api_search = True
-            candidates.extend(self._call_public_api_provider(request, query_text, warnings))
+            candidates.extend(
+                self._call_public_api_provider(
+                    request,
+                    _build_live_api_query(request, query_text),
+                    warnings,
+                )
+            )
 
         valid_candidates, rejected_count = self._filter_candidates(candidates, min_score)
         if rejected_count:
@@ -228,11 +251,14 @@ class ExternalResearchService:
                     candidate.chunk_id,
                 )
                 continue
-            score = candidate.semantic_score if candidate.semantic_score is not None else 0.0
-            if not _is_finite(score):
-                continue
-            if score < min_score:
-                continue
+            # Chroma 검색 결과만 유사도 임계값을 적용한다. NAVER 뉴스처럼 API가
+            # 유사도 점수를 제공하지 않는 결과(None)를 0점으로 만들어 전부 버리지는
+            # 않는다. 최종 랭킹에서는 기존 계약대로 semantic_score=0.0을 사용한다.
+            if candidate.semantic_score is not None:
+                if not _is_finite(candidate.semantic_score):
+                    continue
+                if candidate.semantic_score < min_score:
+                    continue
             valid.append(candidate)
         return valid, rejected
 
@@ -276,15 +302,30 @@ class ExternalResearchService:
             published_at=candidate.published_at,
             config=self._freshness_config,
         )
+        semantic_weight = self._config.semantic_weight
+        role_weight = self._config.role_weight
+        criteria_weight = self._config.criteria_weight
+        freshness_weight = self._config.freshness_weight
+        if candidate.evidence_type.value == "news":
+            # 뉴스만 최신성 비중을 높인다. 나머지 신호의 상대 비율은 유지하면서
+            # 총 가중치를 1로 맞춰 다른 자료 유형과 점수 크기를 비교할 수 있게 한다.
+            freshness_weight = self._config.news_freshness_weight
+            non_fresh_total = semantic_weight + role_weight + criteria_weight
+            if non_fresh_total > 0:
+                scale = (1.0 - freshness_weight) / non_fresh_total
+                semantic_weight *= scale
+                role_weight *= scale
+                criteria_weight *= scale
+
         final_score = compute_final_score(
             semantic_score=semantic_score,
             role_score=role_score,
             criteria_score=criteria_score,
             freshness_score=freshness_score,
-            semantic_weight=self._config.semantic_weight,
-            role_weight=self._config.role_weight,
-            criteria_weight=self._config.criteria_weight,
-            freshness_weight=self._config.freshness_weight,
+            semantic_weight=semantic_weight,
+            role_weight=role_weight,
+            criteria_weight=criteria_weight,
+            freshness_weight=freshness_weight,
         )
 
         candidate_criteria_norm = {c.strip().lower() for c in candidate.evaluation_criteria}

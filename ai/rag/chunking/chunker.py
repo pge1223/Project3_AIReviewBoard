@@ -55,6 +55,9 @@ _UNIT_JOIN_SEPARATOR = "\n\n"
 _PSEUDO_HEADING_PREFIX_RE = re.compile(rf"^\s*[{re.escape(PSEUDO_HEADING_MARKERS)}]\s*")
 _PSEUDO_HEADING_TITLE_DELIMITER_RE = re.compile(r"[:：\-\n]")
 _LIST_ITEM_BOUNDARY_RE = re.compile(rf"(?:\A|\n)[ \t]*(?:{LIST_ITEM_MARKER_PATTERN})")
+_FORM_GUIDANCE_LABEL_RE = re.compile(
+    r"^\s*(?:[<〈〔［【]\s*)?작성\s*요령(?:\s*[>〉〕］】])?(?:\s|$)"
+)
 _EVALUATION_BULLET_RE = re.compile(r"^\s*[-*•·]\s+")
 _EVALUATION_SCORE_RE = re.compile(r"(?:\(\s*\d{1,3}\s*\)|\d{1,3}\s*점)\s*$")
 _EVALUATION_SECTION_NAMES = (
@@ -227,7 +230,9 @@ def _segment_into_logical_units(blocks: list[UnifiedBlock]) -> list[_LogicalUnit
     """
     active_heading_text: 가장 최근에 확인된 section 제목(진짜 heading 또는 의사-heading)의 텍스트.
     table 단위를 만나도 초기화하지 않아, 표가 직전 section_title을 상속하도록 한다.
-    페이지/슬라이드가 바뀌면(location 변경) 기존 정책대로 초기화한다.
+    페이지/슬라이드가 바뀌면(location 변경) 원칙적으로 초기화한다. 단, PDF 신청 서식에서
+    숫자형 소제목만 이전 페이지 끝에 남고 다음 페이지가 작성 요령/불릿으로 시작하면 제목
+    단독 단위는 버리고 section 문맥만 다음 페이지 단위로 넘긴다.
     """
     units: list[_LogicalUnit] = []
     current: Optional[_LogicalUnit] = None
@@ -237,7 +242,14 @@ def _segment_into_logical_units(blocks: list[UnifiedBlock]) -> list[_LogicalUnit
     for block in blocks:
         location_key = (block.location_type, block.location_number)
         if last_location is not None and location_key != last_location:
-            active_heading_text = None  # 페이지/슬라이드 경계 처리 정책은 기존대로 유지
+            carried_heading = _cross_page_form_heading(current, block)
+            if carried_heading is not None:
+                # 제목만 있는 이전 페이지 단독 청크를 만들지 않는다. 실제 본문은 다음 페이지에
+                # 있으므로 페이지 위치는 다음 블록을 기준으로 유지하고 section_title만 상속한다.
+                current = None
+                active_heading_text = carried_heading
+            else:
+                active_heading_text = None
         last_location = location_key
 
         if block.kind == "table":
@@ -313,6 +325,35 @@ def _segment_into_logical_units(blocks: list[UnifiedBlock]) -> list[_LogicalUnit
         units.append(current)
 
     return units
+
+
+def _cross_page_form_heading(
+    current: Optional[_LogicalUnit],
+    next_block: UnifiedBlock,
+) -> Optional[str]:
+    """페이지 끝의 숫자형 서식 소제목을 다음 페이지 첫 작성 요령에 제한적으로 이어준다."""
+    if current is None:
+        return None
+    if current.location_type != ChunkLocationType.PAGE or next_block.location_type != ChunkLocationType.PAGE:
+        return None
+    if current.location_number is None or next_block.location_number != current.location_number + 1:
+        return None
+
+    current_blocks = current.all_blocks()
+    if len(current_blocks) != 1:
+        return None
+    title = extract_whole_line_heading_title(current_blocks[0].content)
+    if title is None:
+        return None
+
+    next_content = next_block.content.strip()
+    if not next_content:
+        return None
+    starts_with_guidance = _FORM_GUIDANCE_LABEL_RE.match(next_content) is not None
+    starts_with_bullet = _LIST_ITEM_BOUNDARY_RE.match(next_content) is not None
+    if not starts_with_guidance and not starts_with_bullet:
+        return None
+    return title
 
 
 def _is_toc_heading(heading_text: str) -> bool:
