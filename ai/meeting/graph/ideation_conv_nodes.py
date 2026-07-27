@@ -844,8 +844,20 @@ def validate_spoken_text_speaker_reference(
         return "spoken_text_role_name_opener"
     if any(phrase in (spoken_text or "") for phrase in _EMPTY_MEETING_PHRASES):
         return "spoken_text_report_like_or_empty_phrase"
+    # 가은/Claude(2026-07-27, 요청: "안전망(fallback)이 너무 자주 뜬다" — 검증 완화) —
+    # 예전엔 이 상투어 패턴이 걸리면 곧바로 재시도를 유발했다. 오늘 로그에서 이 사유
+    # (spoken_text_generic_hedge_sentence)가 discussion 노드의 검증 실패 중 가장 잦은
+    # 원인이었다 — "명확한/구체적인/충분한 ~이 필요합니다"류 표현은 자연스러운 한국어
+    # 업무 문장에서 흔히 나오는 표현이라 오탐이 잦다. _VAGUE_ENDING_PATTERN과 같은 이유로
+    # (요청: "재시도가 자주 일어나는 게 좋은 것만은 아니다") 하드 실패 대신 관찰 로그로만
+    # 남긴다 — 실제로 문제가 되는 빈도인지 다시 보고 필요하면 재승격한다.
     if _GENERIC_HEDGE_PATTERN.search(spoken_text or ""):
-        return "spoken_text_generic_hedge_sentence"
+        trace_event(
+            "IDEATION_GENERIC_HEDGE_OBSERVED",
+            speaker=current_speaker_id,
+            target=responding_to_speaker_id,
+            text=sanitize_preview(spoken_text, limit=200),
+        )
     return None
 
 
