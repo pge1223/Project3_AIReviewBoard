@@ -289,6 +289,14 @@ def test_criterion_kind_prefers_verified_name_over_description():
         "description": "AI 모델 활용과 데이터 기반 접근의 적정성",  # 드리프트된 요약
     }
     assert _criterion_kind(drifted) == "feasibility"
+    # criterion_id도 LLM이 지어내는 값이라 신뢰하지 않는다 — id에 'ai_'가 섞여도
+    # 원문 검증된 항목명이 우선이다.
+    drifted_id = {
+        "criterion_id": "ai_implementation_feasibility",
+        "criterion_name": "실현 가능성",
+        "description": "",
+    }
+    assert _criterion_kind(drifted_id) == "feasibility"
     # 항목명만으로 판별이 안 될 때는 기존처럼 description을 참고한다.
     unnamed = {
         "criterion_id": "extra_axis",
