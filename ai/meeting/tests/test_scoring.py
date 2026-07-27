@@ -12,6 +12,7 @@ MEETING_DIR = Path(__file__).resolve().parents[1]  # ai/meeting
 sys.path.insert(0, str(MEETING_DIR))
 
 from scoring import calculate_score  # noqa: E402
+from scoring.calibration import _criterion_kind, _has_concrete_method  # noqa: E402
 
 FIXTURE = MEETING_DIR / "tests" / "fixtures" / "final_meeting_result.v2.json"
 
@@ -277,6 +278,42 @@ def test_portal_name_and_contest_ordinal_are_not_evidence():
 
     assert {"S1", "S2"} <= codes
     assert data["raw_score"] <= 5
+
+
+def test_criterion_kind_prefers_verified_name_over_description():
+    """kind 판별은 검증된 항목명 우선 — description(LLM 요약)이 재추출마다 흔들려도
+    같은 항목명이면 같은 kind(=같은 상한 신호)가 나와야 한다(2026-07-27 실측 원인)."""
+    drifted = {
+        "criterion_id": "feasibility",
+        "criterion_name": "실현 가능성",
+        "description": "AI 모델 활용과 데이터 기반 접근의 적정성",  # 드리프트된 요약
+    }
+    assert _criterion_kind(drifted) == "feasibility"
+    # 항목명만으로 판별이 안 될 때는 기존처럼 description을 참고한다.
+    unnamed = {
+        "criterion_id": "extra_axis",
+        "criterion_name": "특별 심사",
+        "description": "데이터 활용의 구체성을 본다",
+    }
+    assert _criterion_kind(unnamed) == "data"
+
+
+def test_milestone_schedule_counts_as_feasibility_evidence():
+    """단계별 마일스톤·완료 기준이 명시된 추진 일정은 구현 실체로 인정(S4 미발동) —
+    막연한 추진 문장만 있으면 기존대로 실체 없음으로 본다."""
+    assert _has_concrete_method(
+        "총 6 개월을 4 단계로 구분하고, 단계별 완료 기준을 사전에 정의하여 관리함.",
+        "feasibility",
+    )
+    assert not _has_concrete_method(
+        "약 6 개월 동안 순차적으로 추진하였음.",
+        "feasibility",
+    )
+    # 미래형(예정)이면 마일스톤을 언급해도 실체로 보지 않는다.
+    assert not _has_concrete_method(
+        "마일스톤과 완료 기준은 추후 정할 예정이다.",
+        "feasibility",
+    )
 
 
 def test_short_specific_document_ranks_below_long_vague_document():
