@@ -35,7 +35,10 @@ DEFAULT_SEPARATORS: list[str] = [
 # v3 -> v4: 신청 서식의 "숫자. 소제목"이 긴 작성 요령과 분리되어 제목만 있는 청크가
 # 생기지 않도록 첫 본문을 제목 청크에 붙인다. 기존 v3 레코드에 개선 효과를 적용하려면
 # 해당 문서를 재색인해야 한다.
-CHUNKING_VERSION: str = "chunking_v4"
+# v4 -> v5: 숫자형 소제목이 PDF 페이지 끝에 있고 작성 요령이 다음 페이지에서 시작하는
+# 경우에도 다음 페이지 청크가 section_title을 상속하며, 이전 페이지 제목 단독 청크는 만들지 않는다.
+# 기존 v4 레코드에 개선 효과를 적용하려면 해당 문서를 재색인해야 한다.
+CHUNKING_VERSION: str = "chunking_v5"
 
 # 목차 판정: MVP는 강한 heading 키워드가 있을 때만 확정한다 (과탐 방지 우선)
 TOC_HEADING_KEYWORDS: list[str] = ["목차", "차례", "contents"]

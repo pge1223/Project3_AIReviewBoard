@@ -158,16 +158,16 @@ def test_config_validation():
 
 
 # ---------------------------------------------------------------------------
-# CHUNKING_VERSION (v4): 서식 소제목-첫 본문 결합까지 포함한 현재 버전.
+# CHUNKING_VERSION (v5): 페이지 경계를 넘는 서식 소제목 section 상속까지 포함한 현재 버전.
 # ---------------------------------------------------------------------------
 
-def test_new_chunks_are_tagged_with_chunking_v4():
+def test_new_chunks_are_tagged_with_chunking_v5():
     blocks = [_doc_block("법령규정을 학습", order=0), _doc_block("하여, 이에 대한 질의응답", order=1)]
     extraction = _extraction(blocks, file_type=FileType.PDF)
     result = chunk_document(extraction, _file_context(file_type="pdf"))
 
-    assert result.chunking_version == "chunking_v4"
-    assert all(c.chunking_version == "chunking_v4" for c in result.chunks)
+    assert result.chunking_version == "chunking_v5"
+    assert all(c.chunking_version == "chunking_v5" for c in result.chunks)
 
 
 def test_same_document_v1_and_v2_config_produce_different_chunk_ids():
@@ -708,6 +708,71 @@ def test_form_section_heading_is_attached_to_first_guidance_bullet(title):
     assert first.source_block_orders == [0, 1]
     assert all(chunk.section_title == title.removeprefix(title.split(" ", 1)[0] + " ") for chunk in result.chunks)
     assert not any(chunk.content.strip() in {title, f"{title}\n\n<작성 요령>"} for chunk in result.chunks)
+
+
+def test_form_section_heading_is_carried_to_guidance_on_next_page():
+    """페이지 끝 소제목은 단독 청크가 되지 않고 다음 페이지 작성 요령의 section으로 이어져야 한다."""
+    title = "3. 시스템 아키텍처 및 인프라 구성 적정성"
+    guidance = (
+        "<작성 요령>\n"
+        "• 시스템 전체 아키텍처를 도식화하여 구성 요소와 연계 방식을 작성합니다.\n"
+        "• 하드웨어·소프트웨어 인프라 구성과 운영 방안을 작성합니다."
+    )
+    blocks = [
+        _doc_block(title, order=0, location_number=8),
+        _doc_block(guidance, order=1, location_number=9),
+    ]
+    extraction = _extraction(blocks, file_type=FileType.PDF, page_count=9)
+
+    result = chunk_document(extraction, _file_context(file_type="pdf"))
+
+    assert result.chunk_count == 1
+    chunk = result.chunks[0]
+    assert chunk.location_number == 9
+    assert chunk.section_title == "시스템 아키텍처 및 인프라 구성 적정성"
+    assert chunk.content == guidance
+    assert chunk.source_block_orders == [1]
+    assert not any(candidate.content.strip() == title for candidate in result.chunks)
+
+
+@pytest.mark.parametrize(
+    ("next_content", "next_kind"),
+    [
+        ("• 첫 번째 작성 항목입니다.", BlockType.LIST),
+        ("- 첫 번째 작성 항목입니다.", BlockType.TEXT),
+    ],
+)
+def test_form_section_heading_is_carried_to_next_page_bullet(next_content, next_kind):
+    """작성 요령 레이블 없이 불릿부터 시작해도 페이지 끝 소제목을 상속해야 한다."""
+    title = "2. 추진 일정"
+    blocks = [
+        _doc_block(title, order=0, location_number=7),
+        _doc_block(next_content, block_type=next_kind, order=1, location_number=8),
+    ]
+    extraction = _extraction(blocks, file_type=FileType.PDF, page_count=8)
+
+    result = chunk_document(extraction, _file_context(file_type="pdf"))
+
+    assert result.chunk_count == 1
+    assert result.chunks[0].location_number == 8
+    assert result.chunks[0].section_title == "추진 일정"
+
+
+def test_plain_text_does_not_inherit_heading_across_page_boundary():
+    """다음 페이지가 일반 본문이면 기존 페이지 경계 정책대로 section을 상속하지 않는다."""
+    title = "3. 시스템 아키텍처 및 인프라 구성 적정성"
+    blocks = [
+        _doc_block(title, order=0, location_number=8),
+        _doc_block("새 페이지의 독립적인 일반 본문입니다.", order=1, location_number=9),
+    ]
+    extraction = _extraction(blocks, file_type=FileType.PDF, page_count=9)
+
+    result = chunk_document(extraction, _file_context(file_type="pdf"))
+
+    assert result.chunk_count == 2
+    assert result.chunks[0].content == title
+    assert result.chunks[1].section_title is None
+    assert result.chunks[1].location_number == 9
 
 
 def test_all_indexable_chunks_respect_chunk_size_with_mixed_content():

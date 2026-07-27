@@ -2,6 +2,8 @@
 Unit Tests for ai.rag.embedding (실제 KURE-v1 모델은 로딩하지 않고 fake_kure_embedder 사용)
 """
 
+import logging
+
 import numpy as np
 import pytest
 
@@ -195,6 +197,26 @@ class TestEmbedChunkingResult:
         fake_kure_embedder.embed_chunking_result(chunking_result, IndexingContext(project_id="p1", document_id="doc-1"))
         assert chunking_result == snapshot
 
+    def test_encode_log_contains_batch_and_lock_metrics(self, monkeypatch, caplog):
+        monkeypatch.setattr(
+            "ai.rag.embedding.kure_embedder.SentenceTransformer",
+            FakeSentenceTransformer,
+        )
+        embedder = KUREEmbedder(EmbeddingConfig(model_name="fake-model", batch_size=2))
+        chunks = [_make_chunk(f"c{i}", content=f"내용{i}", chunk_index=i) for i in range(5)]
+
+        with caplog.at_level(logging.INFO, logger="ai.rag.embedding.kure_embedder"):
+            embedder.embed_chunking_result(
+                _make_chunking_result(chunks),
+                IndexingContext(project_id="p1", document_id="doc-1"),
+            )
+
+        done_log = next(record.message for record in caplog.records if "rag.embed.encode_done" in record.message)
+        assert "encode_ms=" in done_log
+        assert "lock_wait_ms=" in done_log
+        assert "batch_size=2" in done_log
+        assert "batch_count=3" in done_log
+
 
 # --- KUREEmbedder.embed_query ---
 
@@ -224,3 +246,25 @@ class TestEmbeddingConfig:
     def test_batch_size_must_be_positive(self):
         with pytest.raises(ValueError):
             EmbeddingConfig(batch_size=0)
+
+    def test_cpu_threads_must_be_positive_when_configured(self):
+        with pytest.raises(ValueError):
+            EmbeddingConfig(cpu_threads=0)
+
+    def test_cpu_threads_can_use_runtime_default(self):
+        assert EmbeddingConfig().cpu_threads is None
+
+    def test_configured_cpu_threads_are_applied_before_model_load(self, monkeypatch):
+        import torch
+
+        configured: list[int] = []
+        monkeypatch.setattr(torch, "set_num_threads", configured.append)
+        monkeypatch.setattr(torch, "get_num_threads", lambda: 3)
+        monkeypatch.setattr(
+            "ai.rag.embedding.kure_embedder.SentenceTransformer",
+            FakeSentenceTransformer,
+        )
+
+        KUREEmbedder(EmbeddingConfig(model_name="fake-model", cpu_threads=3))
+
+        assert configured == [3]
