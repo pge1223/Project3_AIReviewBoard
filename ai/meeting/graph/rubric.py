@@ -104,6 +104,14 @@ def build_rubric(mapping: dict[str, Any]) -> dict[str, Any]:
 #     화이트리스트 검증).
 # 검증 실패 시 ValueError를 던진다 — 호출부(backend/app/api/routes/meetings.py)가
 # 잡아서 정적 템플릿(base_mapping)으로 폴백한다.
+# 추출 파이프라인 버전 — 캐시 무효화 기준. backend(meetings.py)의 캐시 판정과 여기
+# meta 저장이 반드시 같은 값을 봐야 하므로 상수는 이 한 곳에만 둔다(경이 2026-07-27).
+# 실측 사고: 판정 쪽만 v7로 올리고 저장은 3으로 남아 "저장 버전(3) < 요구 버전(7)"이
+# 항상 참 → 캐시가 영원히 무효 → 같은 프로젝트에서 매 분석마다 rubric LLM 재추출
+# (~9초/회 + 토큰 비용, 서버 로그로 확인).
+RUBRIC_EXTRACTION_VERSION = 7
+
+
 def build_dynamic_rubric_mapping(
     base_mapping: dict[str, Any],
     extracted_items: list[dict[str, Any]],
@@ -261,7 +269,7 @@ def build_dynamic_rubric_mapping(
             "source_document_id": source_document_id,
             "source_document_ids": source_document_ids or [source_document_id],
             "dynamic": True,
-            "rubric_extraction_version": 3,
+            "rubric_extraction_version": RUBRIC_EXTRACTION_VERSION,
         },
         "total_max_score": total_max_score,
         "rubric": normalized,
