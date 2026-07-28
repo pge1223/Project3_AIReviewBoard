@@ -2956,7 +2956,7 @@ export function IdeationResultScreen({ ideationConv, setIdeationConv, onBack, on
 // 하나 띄워주자") — IdeationResultScreen의 "신청서 초안 만들기" 버튼으로만 진입한다(goNext).
 // 필드 렌더링 자체는 새로 만들지 않고 기존 ApplicationFormPanel(회의 화면 오른쪽 패널에서
 // 이미 쓰던 컴포넌트)을 그대로 재사용한다 — items/draft 스키마가 동일하기 때문.
-export function ApplicationFormDraftScreen({ ideationConv, onBack }) {
+export function ApplicationFormDraftScreen({ ideationConv, onBack, onGoMain }) {
   const items = ideationConv?.application_form_items || []
   const draft = ideationConv?.application_form_draft || []
 
@@ -3018,6 +3018,16 @@ export function ApplicationFormDraftScreen({ ideationConv, onBack }) {
               <li key={i}>{note}</li>
             ))}
           </ul>
+        </div>
+      )}
+      {/* pge/Claude(2026-07-29, 요청: "패널 오른쪽 아래에 메인으로 돌아가기 버튼, 새 분석
+          시작으로") — 신청서 초안까지 끝난 뒤 이 세션을 마무리하고 EntryScreen("새 분석
+          시작")으로 완전히 새로 시작할 수 있는 출구. */}
+      {onGoMain && (
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 24 }}>
+          <button type="button" className="btn-primary" onClick={onGoMain}>
+            메인으로 돌아가기
+          </button>
         </div>
       )}
     </div>
