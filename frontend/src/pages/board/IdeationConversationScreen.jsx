@@ -89,6 +89,13 @@ const REPLYABLE_PHASES = new Set([
 // (진행자/기획/개발)만 IdeationAvatarStage의 AVATAR_SLOTS에 얼굴·목소리가 등록돼 있다.
 const AVATAR_SPEAKER_IDS = new Set(['ideation_facilitator', 'planning_expert', 'dev_expert'])
 
+// 용준/Claude(2026-07-28, 요청: "위원들이 순서대로 대화하는 것처럼 보여야 한다") — 사용자
+// 입력 없이 "다음 위원 발언 1건만 이어서 요청"하는 eager-fetch 루프가 적용되는 phase
+// 목록. expert_discussion(1차 라운드테이블)에 이어 idea_validation(후보 검증, 기획→개발
+// 순차 진행)도 같은 패턴을 쓴다 — backend continue_expert_turn_stream이 phase로
+// continue_ideation_expert_turn/continue_ideation_validation_turn을 나눠 부른다.
+const EAGER_FETCH_TURN_PHASES = ['expert_discussion', 'idea_validation']
+
 // 가은/Claude(2026-07-26, 요청: "영상 연결 URL 없으면 대화가 진행이 안 되는 것처럼
 // 보인다 — 개발자용으로 영상 없이 디버깅할 수 있게") — 아래 revealCutoffIndex 게이팅은
 // avatarRevealedCount가 실제 영상 재생 시작(video.play() 성공, IdeationAvatarStage.jsx)
@@ -420,6 +427,63 @@ function MessageBubble({ message, streaming = false, interrupted = false, allMes
   )
 }
 
+
+// 용준/Claude(2026-07-28, 요청: "검증 단계도 진짜 대화하듯이 보였으면 좋겠다") — 검증
+// (idea_validation) 단계는 백엔드가 LLM 호출 1번으로 기획·개발 두 위원의 발언을 한꺼번에
+// 만들어 finalState로 통째로 던져준다(질문/토론 노드와 달리 message_start/delta로 실시간
+// 스트리밍되지 않는다 — backend/app/api/routes/ideation_conversation_streaming.py의
+// _PHASE_ONLY_LABELS에 "[검증 규칙]"이 phase 문구로만 잡혀있기 때문). 서버 스트리밍을
+// 새로 만드는 대신, 이미 다 받은 텍스트를 화면에서만 한 글자씩 "재생"해 실제 스트리밍과
+// 같은 느낌을 낸다 — ideationStreamReducer.js의 charsPerTickFor와 같은 속도 곡선을 쓴다.
+function isValidationOpinionMessage(message) {
+  return (
+    message?.message_type === 'opinion'
+    && !!message?.structured?.validation
+    && (message.speaker_id === 'planning_expert' || message.speaker_id === 'dev_expert')
+  )
+}
+
+function TypedMessageBubble({ message, allMessages, isLatest, onDone, onProgress }) {
+  const [displayed, setDisplayed] = useState('')
+  const onDoneRef = useRef(onDone)
+  onDoneRef.current = onDone
+  const onProgressRef = useRef(onProgress)
+  onProgressRef.current = onProgress
+
+  useEffect(() => {
+    let cancelled = false
+    let shown = ''
+    let rafId
+    const full = message.content || ''
+    function tick() {
+      if (cancelled) return
+      if (shown.length >= full.length) {
+        onDoneRef.current?.()
+        return
+      }
+      const pending = full.length - shown.length
+      shown = full.slice(0, shown.length + charsPerTickFor(pending))
+      setDisplayed(shown)
+      onProgressRef.current?.()
+      rafId = requestAnimationFrame(tick)
+    }
+    rafId = requestAnimationFrame(tick)
+    return () => {
+      cancelled = true
+      if (rafId) cancelAnimationFrame(rafId)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [message.message_id])
+
+  return (
+    <MessageBubble
+      message={{ ...message, displayedContent: displayed }}
+      streaming
+      allMessages={allMessages}
+      isLatest={isLatest}
+    />
+  )
+}
 
 const EXPERT_LABELS = {
   planning_expert: '기획 의원',
@@ -942,6 +1006,12 @@ function ConflictResolutionBlock({ solutionDirections, onSend, disabled, pending
   const [selectedIds, setSelectedIds] = useState([])
   const activeDirections = solutionDirections.filter((d) => d.status === 'active')
   const inactiveDirections = solutionDirections.filter((d) => d.status !== 'active')
+  const activeDirectionTitles = activeDirections.map((d) => d.title).filter(Boolean)
+  const activeDirectionSummary = activeDirectionTitles.slice(0, 3).map((title) => `‘${title}’`).join(', ')
+    + (activeDirectionTitles.length > 3 ? ` 외 ${activeDirectionTitles.length - 3}개` : '')
+  const activeDirectionContext = activeDirectionSummary
+    ? `현재 활성 해결 방향(${activeDirectionSummary})`
+    : '현재 해결 방향'
 
   function toggle(directionId) {
     setSelectedIds((prev) => (prev.includes(directionId) ? prev.filter((id) => id !== directionId) : [...prev, directionId]))
@@ -971,11 +1041,17 @@ function ConflictResolutionBlock({ solutionDirections, onSend, disabled, pending
   }
 
   function handleAddDirection() {
-    onSend('새로운 해결 방향을 추가로 제안해 주세요.', { actionCode: 'add_solution_direction', actionPayload: {} })
+    onSend(
+      `${activeDirectionContext}을 보완할 새로운 해결 방향을 추가로 제안해 주세요.`,
+      { actionCode: 'add_solution_direction', actionPayload: {} },
+    )
   }
 
   function handleProceed() {
-    onSend('이 방향들로 검증을 진행합니다.', { actionCode: 'proceed_to_validation', actionPayload: {} })
+    onSend(
+      `${activeDirectionContext}으로 검증을 진행합니다.`,
+      { actionCode: 'proceed_to_validation', actionPayload: {} },
+    )
   }
 
   function handleReturnToProblem() {
@@ -1099,7 +1175,8 @@ function ConceptConfirmationBlock({
     onSend('이 방향으로 최종 확정합니다.', { actionCode: 'confirm_concept', actionPayload: {} })
   }
   function handleRevise() {
-    onSend('다시 검토하고 수정해 주세요.', { actionCode: 'revise_candidate', actionPayload: {} })
+    const target = provisionalIdea?.title ? `‘${provisionalIdea.title}’ 후보를` : '현재 후보를'
+    onSend(`${target} 다시 검토하고 수정해 주세요.`, { actionCode: 'revise_candidate', actionPayload: {} })
   }
   function handleReturnToProblem() {
     onSend('문제 정의로 돌아갑니다.', { actionCode: 'return_to_problem_definition', actionPayload: {} })
@@ -1288,6 +1365,27 @@ export function IdeationScreen({
   // import·렌더링에서 완전히 뺐다. IdeaCanvasPanel과 IdeaEvolutionTimeline을 탭으로
   // 전환하는 하나의 자리로 합친다. 기본 탭은 "canvas"다.
   const [canvasColumnTab, setCanvasColumnTab] = useState('evolution')
+  // 용준/Claude(2026-07-28, 요청: 검증 단계 타이핑 재현) — 검증(idea_validation) 발언은
+  // 아바타가 꺼져 있을 때(IDEATION_AVATAR_ENABLED=false, 개발 모드) 통째로 한 번에
+  // 도착하므로, "이미 화면에 다 드러난 발언 id"를 여기 담아둔다. 세션을 처음 불러올
+  // 때(마운트 시점) 이미 있던 검증 발언은 lazy 초기값으로 전부 넣어 애니메이션을
+  // 건너뛰고(재방문 시 다시 타이핑되면 어색하다), 마운트 이후 새로 도착한 발언만
+  // TypedMessageBubble로 타이핑된다.
+  const [revealedValidationIds, setRevealedValidationIds] = useState(() => {
+    const ids = new Set()
+    for (const m of ideationConv?.messages || []) {
+      if (isValidationOpinionMessage(m)) ids.add(m.message_id)
+    }
+    return ids
+  })
+  const markValidationRevealed = (messageId) => {
+    setRevealedValidationIds((prev) => {
+      if (prev.has(messageId)) return prev
+      const next = new Set(prev)
+      next.add(messageId)
+      return next
+    })
+  }
   // 재인/Claude(2026-07-23, 2026-07-24 갱신): 아래 eager fetch effect가 지금 진행 중인
   // continue-turn fetch를 추적한다 — "잠시만"이 그 사이에 눌리면 abort()로 끊어서, 이미
   // 중단한 뒤에 뒤늦게 도착하는 응답이 canonical state를 다시 덮어쓰지 않게 막는다
@@ -1582,6 +1680,15 @@ export function IdeationScreen({
     streamState.messages.reduce((n, m) => n + (m.displayedContent?.length || 0), 0),
   ])
 
+  // 용준/Claude(2026-07-28) — TypedMessageBubble(검증 발언 타이핑 재현)은 streamState
+  // 바깥에서 독립적으로 글자를 늘리므로 위 effect의 의존값에 안 잡힌다. 매 프레임 직접
+  // 호출해 같은 규칙(사용자가 바닥 근처에 있을 때만 따라 내려감)으로 스크롤을 맞춘다.
+  function followChatScrollIfNeeded() {
+    const container = chatScrollRef.current
+    if (!container || !shouldFollowChatRef.current) return
+    container.scrollTop = container.scrollHeight
+  }
+
   function handleChatScroll(event) {
     const container = event.currentTarget
     const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight
@@ -1642,7 +1749,12 @@ export function IdeationScreen({
   // "진짜로" 바뀌거나 sending/interrupting이 바뀔 때만 재평가한다.
   useEffect(() => {
     if (!ideationConv?.session_id) return
-    if (ideationConv.phase !== 'expert_discussion') return
+    // 용준/Claude(2026-07-28, 요청: "위원들이 순서대로 대화하는 것처럼 보여야 한다") —
+    // idea_validation도 expert_discussion과 같은 "위원 발언 1건씩 이어서 요청" 패턴을 쓴다
+    // (backend/app/api/routes/ideation_conversation_preview.py::continue_expert_turn_stream이
+    // phase로 continue_ideation_expert_turn/continue_ideation_validation_turn을 나눠
+    // 부른다). 그래서 이 루프는 phase 이름만 넓히면 그대로 재사용된다.
+    if (!EAGER_FETCH_TURN_PHASES.includes(ideationConv.phase)) return
     if (sending || interrupting) return
     if (avatarTurnAbortRef.current) return
 
@@ -1679,7 +1791,7 @@ export function IdeationScreen({
             },
           })
           console.log('[avatar-debug] eager fetch: continueIdeationExpertTurnStream resolved OK', { phase: nextState?.phase })
-          if (cancelled || !nextState || nextState.phase !== 'expert_discussion') break
+          if (cancelled || !nextState || !EAGER_FETCH_TURN_PHASES.includes(nextState.phase)) break
           currentSessionId = nextState.session_id
         }
       } catch (err) {
@@ -2171,18 +2283,43 @@ export function IdeationScreen({
           {interruptionMarkers
             .filter((marker) => marker.afterMessageId === null)
             .map((marker) => <InterruptionMarker key={marker.markerId} speakerId={marker.speakerId} />)}
-          {canonicalMessages.map((m) => (
-            <Fragment key={m.message_id}>
-              <MessageBubble
-                message={m}
-                allMessages={visibleMessages}
-                isLatest={m.message_id === latestVisibleMessageId}
-              />
-              {interruptionMarkers
-                .filter((marker) => marker.afterMessageId === m.message_id)
-                .map((marker) => <InterruptionMarker key={marker.markerId} speakerId={marker.speakerId} />)}
-            </Fragment>
-          ))}
+          {/* 검증(idea_validation) 발언은 기획→개발 순으로 하나씩만 타이핑되게, 아래
+              validationTurnTaken 플래그로 순서를 막는다(TypedMessageBubble 참고). */}
+          {(() => {
+            let validationTurnTaken = false
+            return canonicalMessages.map((m) => {
+              const isLatest = m.message_id === latestVisibleMessageId
+              const needsTyping = !IDEATION_AVATAR_ENABLED
+                && isValidationOpinionMessage(m)
+                && !revealedValidationIds.has(m.message_id)
+              let bubble
+              if (needsTyping && validationTurnTaken) {
+                // 앞선 검증 발언이 아직 타이핑 중 — 이 발언은 그 차례가 올 때까지 대기한다.
+                bubble = null
+              } else if (needsTyping) {
+                validationTurnTaken = true
+                bubble = (
+                  <TypedMessageBubble
+                    message={m}
+                    allMessages={visibleMessages}
+                    isLatest={isLatest}
+                    onDone={() => markValidationRevealed(m.message_id)}
+                    onProgress={followChatScrollIfNeeded}
+                  />
+                )
+              } else {
+                bubble = <MessageBubble message={m} allMessages={visibleMessages} isLatest={isLatest} />
+              }
+              return (
+                <Fragment key={m.message_id}>
+                  {bubble}
+                  {interruptionMarkers
+                    .filter((marker) => marker.afterMessageId === m.message_id)
+                    .map((marker) => <InterruptionMarker key={marker.markerId} speakerId={marker.speakerId} />)}
+                </Fragment>
+              )
+            })
+          })()}
           {/* 재인/Claude(2026-07-23): 사용자가 방금 보낸 메시지 — 서버 왕복이 끝나
               canonical에 진짜 echo가 도착하기 전까지 임시로 보여준다(handleSend/
               finalizeStream/sendNonStreaming이 도착 즉시 지운다 - 그래서 진짜 메시지와
@@ -2637,7 +2774,8 @@ function ConceptConfirmationSummary({ provisionalIdea, validationResult, onSend,
     onSend('이 방향으로 최종 확정합니다.', { actionCode: 'confirm_concept', actionPayload: {} })
   }
   function handleRevise() {
-    onSend('다시 검토하고 수정해 주세요.', { actionCode: 'revise_candidate', actionPayload: {} })
+    const target = provisionalIdea?.title ? `‘${provisionalIdea.title}’ 후보를` : '현재 후보를'
+    onSend(`${target} 다시 검토하고 수정해 주세요.`, { actionCode: 'revise_candidate', actionPayload: {} })
   }
   function handleChooseAnother() {
     onSend('다른 후보를 선택하겠습니다.', { actionCode: 'choose_another_candidate', actionPayload: {} })

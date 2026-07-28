@@ -716,3 +716,46 @@ def test_multiple_claims_citing_same_evidence_dedupe_in_linked_evidence_refs():
     assert {link["claim_id"] for link in result["claim_evidence_links"]} == {"claim_1", "claim_2"}
     for link in result["claim_evidence_links"]:
         assert link["chunk_ids"] == ["chk_9f8e7d6c5b4a3210"]
+
+
+def test_claim_summarizing_multiple_refs_is_graded_on_combined_coverage():
+    """용준/Claude(2026-07-28, 요청: "개발위원 근거가 유독 안 붙는다" 실측 재현) — 실사용
+    세션에서 개발위원 claim이 평가 항목 여러 개(E1+E2 등)를 한 문장으로 종합할 때마다
+    insufficient_claim_coverage로 탈락했다. 원인은 커버리지 검사가 청크 하나하나와 개별
+    대조되어, 결합해야만 넘는 절반 기준을 각 청크 단독으로는 절대 못 넘었기 때문이다.
+    이제는 claim이 실제로 인용한 근거 전체를 합쳐서 한 번만 검사하므로, 두 사실을 정확히
+    종합한 claim은 근거로 연결되어야 한다."""
+    claims = [
+        {
+            "claim_id": "claim_1",
+            "text": "WSCE는 실현 가능성과 경제성을 중점 평가하며, 신청 자격은 만 19세 이상 국민으로 제한한다.",
+            "claim_type": "document_fact",
+            "evidence_refs": ["C1", "C2"],
+        }
+    ]
+    result = ground_claims(claims, EVIDENCE)
+    assert result["unsupported_claims"] == []
+    assert set(result["linked_evidence_refs"]) == {"C1", "C2"}
+    assert result["evidence_status"] == "grounded"
+
+
+def test_claim_covering_only_unrelated_fragments_of_two_refs_stays_ungrounded():
+    """결합 커버리지로 완화하되, claim이 두 청크 중 어느 쪽과도 실질적으로 안 겹치면
+    여전히 탈락해야 한다(완화가 사실상 검증을 꺼버리는 게 아님을 확인)."""
+    claims = [
+        {
+            "claim_id": "claim_1",
+            "text": "이 공모전은 해외 진출 지원과 세제 혜택을 제공하는 프로그램이다.",
+            "claim_type": "document_fact",
+            "evidence_refs": ["C1", "C2"],
+        }
+    ]
+    result = ground_claims(claims, EVIDENCE)
+    assert result["linked_evidence_refs"] == []
+    # 완전히 무관한 내용이라 keyword-overlap 단계(evidence_not_relevant)에서 걸러지거나,
+    # 그걸 통과해도 coverage 단계(insufficient_claim_coverage)에서 걸러진다 — 어느 쪽이든
+    # 근거로 연결되지 않아야 한다는 게 이 테스트의 핵심이다.
+    assert result["unsupported_claims"][0]["reason"] in {
+        "evidence_not_relevant",
+        "insufficient_claim_coverage",
+    }

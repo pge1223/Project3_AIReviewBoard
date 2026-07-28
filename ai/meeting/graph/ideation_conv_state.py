@@ -577,6 +577,17 @@ class IdeationConvState(TypedDict):
     # idea_conflict_and_merge가 실행된 라운드 수(사용자 개입 없이 자동 반복되는 라운드 —
     # MAX_CONFLICT_ROUNDS 상한 판단에 쓴다. discussion_rounds/round와는 별개 카운터).
     conflict_round_count: int
+    # 용준/Claude(2026-07-28, 요청: "위원들이 결합하는 방식으로" 카드 선택 단계 제거) —
+    # provisional_from_merge가 카드 선택 없이 바로 idea_validation으로 넘어가면서,
+    # "검증 실패 -> idea_conflict_and_merge 재실행 -> 조건 재충족 -> 검증 -> 실패 -> ..."
+    # 순환을 끊어줄 자연스러운 정지점(예전에는 candidate_feasibility가 매번 멈춰줬다)이
+    # 사라졌다. 이 카운터가 그 정지점을 대신한다 — make_technical_validation_node가
+    # needs_revision일 때마다 늘리고, MAX_VALIDATION_REVISE_ROUNDS(ideation_conv_state.py)에
+    # 도달하면 더 이상 자동으로 idea_conflict_and_merge로 되돌아가지 않고
+    # awaiting_concept_confirmation에서 사용자가 직접 재검토/확정을 판단하게 한다.
+    # provisional_from_merge/provisional_selection이 새 provisional_idea를 채택할 때마다
+    # 0으로 리셋된다(요청: 이전 후보의 재시도 횟수가 새 후보에 넘어오면 안 된다).
+    validation_revise_count: int
     # candidate_selection이 골라낸 "검증 대상 잠정 후보" — concept_confirmation에서
     # 사용자가 최종 확정하기 전까지는 이 필드만 채워지고 selected_idea는 그대로 None이다
     # (요청 3번: "잠정 후보 선택"과 "최종 아이디어 확정"은 상태상 구분되어야 한다).
@@ -830,6 +841,7 @@ def initial_conv_state(
         solution_directions=[],
         idea_evolution=[],
         conflict_round_count=0,
+        validation_revise_count=0,
         provisional_idea=None,
         validation_result=None,
         user_confirmed=False,
@@ -1022,6 +1034,15 @@ MIN_SOLUTION_DIRECTIONS = 3
 # 요구사항이 그대로 성립한다 — 그 메커니즘 자체는 손대지 않았다.
 MAX_CONFLICT_ROUNDS = 1
 MAX_PROBLEM_REGENERATIONS = 2
+# 용준/Claude(2026-07-28, 요청: 카드 선택 단계 제거로 사라진 자연 정지점 대체) —
+# provisional_from_merge가 카드 선택 없이 바로 idea_validation으로 이어지면서, "검증
+# 실패 -> idea_conflict_and_merge 재실행 -> 조건 재충족 -> 검증 -> 실패 -> ..." 순환이
+# 사용자 개입 없이 한 번의 그래프 호출 안에서 무한 반복될 수 있게 됐다(이전에는
+# candidate_feasibility가 재실행마다 항상 멈춰줬다). validation_revise_count가 이 상수에
+# 도달하면 make_technical_validation_node는 더 이상 자동으로 idea_conflict_and_merge로
+# 되돌리지 않고 awaiting_concept_confirmation에서 사용자가 직접 재검토/확정을 선택하게
+# 한다.
+MAX_VALIDATION_REVISE_ROUNDS = 1
 
 
 def _non_blank(value: Any) -> bool:

@@ -46,10 +46,12 @@ from .ideation_conv_problem import (
     make_conflict_resolution_node,
     make_idea_conflict_and_merge_node,
     make_idea_divergence_node,
-    make_idea_validation_node,
+    make_planning_validation_node,
+    make_technical_validation_node,
     make_problem_definition_node,
     make_problem_discovery_node,
     make_problem_focus_selection_node,
+    make_provisional_from_merge_node,
     make_provisional_selection_node,
 )
 from .ideation_conv_state import IdeationConvState
@@ -74,6 +76,11 @@ _ENTRY_NODES = {
     "problem_focus_selection": "problem_focus_selection",
     "conflict_resolution": "conflict_resolution",
     "provisional_selection": "provisional_selection",
+    # 용준/Claude(2026-07-28, 요청: "위원들이 순서대로 대화하는 것처럼 보여야 한다") —
+    # idea_validation은 이제 항상 기획위원부터(validate_planning) 진입한다. 개발위원 차례로
+    # 이어서 재진입하는 경우는 expert_discussion과 동일하게 forced_next_speaker로
+    # 처리한다(아래 _route_entry의 idea_validation 분기 참고).
+    "idea_validation": "validate_planning",
     "concept_confirmation": "concept_confirmation",
 }
 
@@ -116,6 +123,13 @@ def _route_entry(state: IdeationConvState) -> str:
         forced_node = _FORCED_SPEAKER_TO_NODE.get(forced) if forced else None
         if forced_node:
             return forced_node
+    # 용준/Claude(2026-07-28, 요청: "위원들이 순서대로 대화하는 것처럼 보여야 한다") —
+    # idea_validation은 순서가 항상 "기획→개발" 고정이라(사용자 개입/라운드 반복 없음)
+    # expert_discussion의 라운터(_route_next_expert_turn)는 쓰지 않는다.
+    # continue_ideation_validation_turn(ideation_conv_run.py)이 기획위원 발언 직후에만
+    # forced_next_speaker="dev_expert"를 설정해 호출하므로, 여기서는 그 값 하나만 본다.
+    if phase == "idea_validation" and state.get("forced_next_speaker") == "dev_expert":
+        return "validate_technical"
     return _ENTRY_NODES[phase]
 
 
@@ -354,8 +368,21 @@ def assemble_ideation_conversation_graph(
     provisional_selection_node = make_provisional_selection_node(
         llm_call, evidence_lookup, index_target_evidence=index_target_evidence
     )
-    idea_validation_node = make_idea_validation_node(
-        llm_call, evidence_lookup, external_evidence_lookup
+    # 용준/Claude(2026-07-28, 요청: "위원들이 결합하는 방식으로" 카드 선택 단계 제거) —
+    # idea_conflict_and_merge가 조건을 충족(proceed)하면 더 이상 candidate_planning/
+    # candidate_feasibility/candidate_selection(카드 나열 → 사용자 선택)을 거치지 않고,
+    # 위원들이 이미 결합한 방향을 바로 provisional_idea로 채택한다(LLM 미사용,
+    # ideation_conv_problem.py 참고). candidate_planning 등 기존 노드는 레거시 세션
+    # 재개용으로 그대로 남겨둔다(아래 등록/엣지 변경 없음).
+    provisional_from_merge_node = make_provisional_from_merge_node(index_target_evidence)
+    # 용준/Claude(2026-07-28, 요청: "위원들이 순서대로 대화하는 것처럼 보여야 한다") — 기존
+    # 단일 idea_validation 노드(기획+개발 동시 1회 호출)를 expert_discussion과 같은 패턴
+    # (위원마다 별도 노드 + 별도 LLM 호출)으로 분리했다.
+    planning_validation_node = make_planning_validation_node(
+        llm_call, evidence_lookup, external_evidence_lookup, ground_claims=ground_claims
+    )
+    technical_validation_node = make_technical_validation_node(
+        llm_call, evidence_lookup, external_evidence_lookup, ground_claims=ground_claims
     )
     concept_confirmation_node = make_concept_confirmation_node(llm_call)
 
@@ -377,7 +404,9 @@ def assemble_ideation_conversation_graph(
     graph.add_node("await_conflict_resolution", _await_conflict_resolution_node)
     graph.add_node("conflict_resolution", conflict_resolution_node)
     graph.add_node("provisional_selection", provisional_selection_node)
-    graph.add_node("idea_validation", idea_validation_node)
+    graph.add_node("provisional_from_merge", provisional_from_merge_node)
+    graph.add_node("validate_planning", planning_validation_node)
+    graph.add_node("validate_technical", technical_validation_node)
     graph.add_node("concept_confirmation", concept_confirmation_node)
 
     graph.set_conditional_entry_point(
@@ -399,6 +428,12 @@ def assemble_ideation_conversation_graph(
             "problem_focus_selection": "problem_focus_selection",
             "conflict_resolution": "conflict_resolution",
             "provisional_selection": "provisional_selection",
+            # 용준/Claude(2026-07-28, 요청: "위원들이 순서대로 대화하는 것처럼 보여야
+            # 한다") — idea_validation 기본 진입점(validate_planning)과, 위 주석과 같은
+            # 이유로 forced_next_speaker="dev_expert"일 때의 강제 진입점
+            # (validate_technical) 둘 다 등록해야 한다(_route_entry가 둘 중 하나를 반환).
+            "validate_planning": "validate_planning",
+            "validate_technical": "validate_technical",
             "concept_confirmation": "concept_confirmation",
         },
     )
@@ -477,15 +512,19 @@ def assemble_ideation_conversation_graph(
     # 전용 신규 경로. problem_discovery(문제 영역 생성, 정지) -> problem_focus_selection
     # (사용자 선택 해석, 정지 없이 이어짐) -> problem_definition(정지 없이 이어짐) ->
     # idea_divergence(정지 없이 이어짐) -> idea_conflict_and_merge(라운드 상한/최소 조건까지
-    # 자기 자신으로 루프) -> 조건 충족 시 candidate_planning(기존 노드, 압축 후보 생성)으로
-    # 합류, 미충족+상한 도달 시 await_conflict_resolution(정지) -> 사용자 응답 ->
-    # conflict_resolution(정지 없이 이어짐, 사용자가 "검증 진행"을 명시하면 candidate_planning
-    # 으로, 아니면 idea_conflict_and_merge로 재진입) -> candidate_planning/candidate_feasibility
-    # (기존, 정지 없이 이어짐, awaiting_candidate_selection으로 멈춤) -> 사용자 선택 ->
-    # provisional_selection(기존 candidate_selection_node를 감싼 재사용) -> idea_validation
+    # 자기 자신으로 루프) -> 조건 충족 시 provisional_from_merge(정지 없이 이어짐, 아래
+    # 2026-07-28 갱신 참고)로 합류, 미충족+상한 도달 시 await_conflict_resolution(정지) ->
+    # 사용자 응답 -> conflict_resolution(정지 없이 이어짐, 사용자가 "검증 진행"을 명시하면
+    # provisional_from_merge로, 아니면 idea_conflict_and_merge로 재진입) -> idea_validation
     # (정지 없이 이어짐, awaiting_concept_confirmation으로 멈춤) -> 사용자 응답 ->
     # concept_confirmation(정지 없이 이어짐 — 확정이면 discussion_facilitator로 합류해
     # 기존 refinement 고정 1턴을 그대로 타고, 재검토면 idea_conflict_and_merge로 되돌아간다).
+    #
+    # 용준/Claude(2026-07-28, 요청: "위원들이 결합하는 방식으로" 카드 선택 단계 제거) —
+    # 위 경로에서 candidate_planning/candidate_feasibility/candidate_selection/
+    # provisional_selection(후보 카드 나열 -> 사용자 선택)은 더 이상 거치지 않는다.
+    # 이 4개 노드와 그 진입점(candidate_generation/candidate_selection phase)은 삭제하지
+    # 않고 레거시 세션 재개용으로만 남겨둔다 — 아래에서 그대로 등록·배선한다.
     graph.add_edge("problem_discovery", END)
     graph.add_conditional_edges(
         "problem_focus_selection",
@@ -512,7 +551,7 @@ def assemble_ideation_conversation_graph(
         _route_after_conflict_merge,
         {
             "continue": "idea_conflict_and_merge",
-            "proceed": "candidate_planning",
+            "proceed": "provisional_from_merge",
             "ask_user": "await_conflict_resolution",
             "failed": END,
         },
@@ -523,23 +562,40 @@ def assemble_ideation_conversation_graph(
         _route_after_conflict_resolution,
         {
             "reask": END,
-            "proceed": "candidate_planning",
+            "proceed": "provisional_from_merge",
             "continue": "idea_conflict_and_merge",
             "return_to_problem_definition": "problem_definition",
         },
+    )
+    # 용준/Claude(2026-07-28, 요청: 카드 선택 단계 제거) — provisional_from_merge는 LLM을
+    # 쓰지 않는 결정론적 노드라 정상 경로는 항상 성공하지만, active 방향이 하나도 없는
+    # 방어적 케이스에서만 phase="failed"를 스스로 설정한다(그런 경우까지 validate_planning을
+    # 실행하지 않도록 problem_definition/idea_divergence와 동일한 패턴으로 조건부 엣지를
+    # 건다).
+    graph.add_conditional_edges(
+        "provisional_from_merge",
+        lambda state: "failed" if state.get("phase") == "failed" else "ok",
+        {"ok": "validate_planning", "failed": END},
     )
     graph.add_conditional_edges(
         "provisional_selection",
         _route_after_provisional_selection,
         {
-            "validate": "idea_validation",
+            "validate": "validate_planning",
             "regenerate": "candidate_planning",
             "await_selection": END,
             "failed": END,
         },
     )
+    # 용준/Claude(2026-07-28, 요청: "위원들이 순서대로 대화하는 것처럼 보여야 한다") —
+    # 기획위원 검증 직후 곧바로 개발위원 검증으로 이어진다(끊김 없이 도는 호출 기준 — 실제
+    # HTTP 스트리밍 경로에서 "기획위원 발언 1건에서 멈추는" 동작은 그래프 엣지가 아니라
+    # ideation_conv_run.py::_drive_graph의 stop_after_expert_turn이 담당한다,
+    # expert_discussion과 동일한 방식). 라우팅 결정(_route_after_idea_validation)은 두
+    # 관점이 모두 준비된 뒤에만 의미가 있으므로 validate_technical에만 건다.
+    graph.add_edge("validate_planning", "validate_technical")
     graph.add_conditional_edges(
-        "idea_validation",
+        "validate_technical",
         _route_after_idea_validation,
         {
             "revise": "idea_conflict_and_merge",

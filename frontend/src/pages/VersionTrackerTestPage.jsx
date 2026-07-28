@@ -1664,14 +1664,23 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
       const uploaded = await uploadDocument(projectId, file, 'pdf', 'target')
       setSubmitStage('문서 색인 중...')
       const docId = uploaded?.id || uploaded?.document_id
-      for (let i = 0; i < 40 && docId; i++) {
+      // 색인은 서버 실측으로 문서당 20~90초(큐가 밀리면 그 이상) 걸린다. 이전엔 60초만
+      // 기다리고 색인 미완이어도 조용히 분석으로 넘어가 서버 400("색인이 끝난 뒤 분석을
+      // 시작하세요")이 그대로 노출됐다 — 긴 문서(13k자 수행보고서)에서 실측 재현. 색인이
+      // 끝나기 전에는 분석을 절대 시작하지 않고, 한도(4분) 초과 시 명확한 에러로 멈춘다.
+      let indexedOk = false
+      for (let i = 0; i < 160 && docId; i++) {
         const st = await getDocumentStatus(projectId, docId).catch(() => null)
         const s = st?.status
-        if (s === 'indexed' || s === 'indexed_empty') break
+        if (s === 'indexed' || s === 'indexed_empty') { indexedOk = true; break }
         if (s === 'indexing_failed' || s === 'conversion_failed' || s === 'indexing_timeout') {
           throw new Error('업로드한 수정본을 색인하지 못했습니다.')
         }
+        if (i > 0 && i % 10 === 0) setSubmitStage(`문서 색인 중... (${Math.round((i * 1.5) / 60 * 10) / 10}분 경과)`)
         await new Promise((r) => setTimeout(r, 1500))
+      }
+      if (docId && !indexedOk) {
+        throw new Error('문서 색인이 4분 안에 끝나지 않았습니다. 잠시 후 같은 파일로 다시 제출해 주세요.')
       }
       setSubmitStage('AI 위원 재검토 중...')
       const token = window.crypto?.randomUUID?.() || String(Date.now())
