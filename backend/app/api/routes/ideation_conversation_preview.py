@@ -60,6 +60,7 @@ from graph import (  # noqa: E402
     configure_ideation_llm_log,
     configure_ideation_trace,
     continue_ideation_expert_turn,
+    continue_ideation_validation_turn,
     finalize_ideation_conversation,
     generate_application_form_draft,
     is_late_request_event,
@@ -575,7 +576,19 @@ def _trace_evidence_lookup(lookup, *, project_id: str, top_k: int):
         user_answer_target_count = sum(
             1 for item in target_items if item.get("ideation_source_type") == "user_session_answer"
         )
-        expected_roles = {"criteria", "target"}
+        pre_target_phases = {
+            "problem_discovery",
+            "awaiting_problem_focus_selection",
+            "problem_focus_selection",
+            "idea_divergence",
+            "idea_conflict_and_merge",
+            "awaiting_conflict_resolution",
+            "conflict_resolution",
+            "candidate_generation",
+            "awaiting_candidate_selection",
+        }
+        current_phase = (runtime_scope or {}).get("phase")
+        expected_roles = {"criteria"} if current_phase in pre_target_phases else {"criteria", "target"}
         found_roles = {item.get("document_role") for item in evidence if isinstance(item, dict)}
         missing_document_roles = sorted(expected_roles - found_roles)
         trace_event(
@@ -1411,11 +1424,18 @@ async def continue_expert_turn_stream(
         raise HTTPException(status_code=409, detail="이 세션은 이미 다른 요청을 처리하고 있습니다.")
     previous_state = record.state
 
-    if previous_state.get("phase") != "expert_discussion":
+    # 용준/Claude(2026-07-28, 요청: "위원들이 순서대로 대화하는 것처럼 보여야 한다") —
+    # idea_validation도 expert_discussion과 같은 "위원 발언 1건만 이어서 만든다" 패턴을
+    # 쓴다(continue_ideation_validation_turn, ideation_conv_run.py). 아래 worker에서
+    # phase로 두 함수 중 하나를 고른다.
+    if previous_state.get("phase") not in ("expert_discussion", "idea_validation"):
         _store.release(session_id)
         raise HTTPException(
             status_code=400,
-            detail=f"continue-turn은 phase가 'expert_discussion'일 때만 호출할 수 있습니다(현재: {previous_state.get('phase')!r}).",
+            detail=(
+                "continue-turn은 phase가 'expert_discussion' 또는 'idea_validation'일 때만 "
+                f"호출할 수 있습니다(현재: {previous_state.get('phase')!r})."
+            ),
         )
 
     model = _effective_model(request.model)
@@ -1459,15 +1479,24 @@ async def continue_expert_turn_stream(
             )
             sink({"type": "request_started", "request_id": request_id})
             trace_event("IDEATION_REQUEST_STARTED", mode="continue_turn")
-            state = continue_ideation_expert_turn(
-                previous_state=previous_state,
-                llm_call=llm_call,
-                evidence_lookup=evidence_lookup,
-                ground_claims=ground_claims,
-                index_target_evidence=index_target_evidence,
-                evidence_planner=evidence_planner,
-                external_evidence_lookup=external_evidence_lookup,
-            )
+            if previous_state.get("phase") == "idea_validation":
+                state = continue_ideation_validation_turn(
+                    previous_state=previous_state,
+                    llm_call=llm_call,
+                    evidence_lookup=evidence_lookup,
+                    ground_claims=ground_claims,
+                    external_evidence_lookup=external_evidence_lookup,
+                )
+            else:
+                state = continue_ideation_expert_turn(
+                    previous_state=previous_state,
+                    llm_call=llm_call,
+                    evidence_lookup=evidence_lookup,
+                    ground_claims=ground_claims,
+                    index_target_evidence=index_target_evidence,
+                    evidence_planner=evidence_planner,
+                    external_evidence_lookup=external_evidence_lookup,
+                )
             _store.update(session_id, state)
             _persist_from_worker(record, persistence_loop)
             sink({"type": "state", "state": _serialize_state(state)})

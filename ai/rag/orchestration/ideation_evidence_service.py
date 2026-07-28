@@ -24,6 +24,7 @@ import logging
 import re
 from typing import Callable, Optional
 
+from ai.rag.domain.document_types import normalize_document_type, preferred_document_types
 from ai.rag.integration.meeting_evidence_adapter import build_meeting_retrieved_evidence
 from ai.rag.integration.schemas import PersonaRoleSearchResponse
 from ai.rag.role_retrieval.service import RoleAwareRetrievalService
@@ -77,6 +78,20 @@ _ISSUE_FOCUSED_QUERY_TERMS: dict[str, str] = {
     "AI 활용 방식": "AI 기술 활용 도시 문제 해결 운영 혁신",
     "확장 로드맵": "확장성 확산 가능성 지속 가능성 추진 전략",
 }
+
+_PRE_TARGET_PHASES = frozenset(
+    {
+        "problem_discovery",
+        "awaiting_problem_focus_selection",
+        "problem_focus_selection",
+        "idea_divergence",
+        "idea_conflict_and_merge",
+        "awaiting_conflict_resolution",
+        "conflict_resolution",
+        "candidate_generation",
+        "awaiting_candidate_selection",
+    }
+)
 _CURRENT_ISSUE_PATTERN = re.compile(r"(?:^|\|)\s*현재 쟁점:\s*([^|]+)")
 
 
@@ -122,6 +137,71 @@ def _search_issue_focused_criteria(
     return [dict(item) for item in items if item.get("document_role") == "criteria"]
 
 
+def _search_plain_query_candidates(
+    role_retrieval_service: RoleAwareRetrievalService,
+    *,
+    persona_id: str,
+    topic_query: str,
+    project_id: str,
+    top_k: int,
+) -> list[dict]:
+    """Search the original query without role expansion.
+
+    Exact administrative questions (schedule, email, eligibility, score) can
+    lose their key terms when the planning/technology role instruction is
+    prepended.  This second, small candidate search preserves those terms; the
+    normal role-aware result still participates in final composition.
+    """
+    try:
+        response = role_retrieval_service.search_by_role(
+            query=topic_query,
+            project_id=project_id,
+            role_id=None,
+            top_k=top_k,
+        )
+    except Exception:
+        logger.exception(
+            "[IDEATION_PLAIN_QUERY_SEARCH_FAILED] persona_id=%s project_id=%s",
+            persona_id,
+            project_id,
+        )
+        return []
+    return [
+        dict(item)
+        for item in build_meeting_retrieved_evidence(
+            [PersonaRoleSearchResponse(persona_id=persona_id, response=response, role_id=None)]
+        )
+    ]
+
+
+def _rank_by_document_type(items: list[dict], topic_query: str) -> list[dict]:
+    """Annotate legacy chunks and prefer the document type implied by query."""
+    preferred = preferred_document_types(topic_query)
+    preference_rank = {document_type: index for index, document_type in enumerate(preferred)}
+    annotated: list[dict] = []
+    for position, item in enumerate(items):
+        typed_item = dict(item)
+        typed_item["document_type"] = normalize_document_type(
+            typed_item.get("document_type"),
+            document_name=typed_item.get("document_name"),
+            text=typed_item.get("text"),
+        )
+        typed_item["_retrieval_position"] = position
+        annotated.append(typed_item)
+
+    if preferred:
+        annotated.sort(
+            key=lambda item: (
+                preference_rank.get(item["document_type"], len(preferred)),
+                -(item.get("final_score") or item.get("score") or 0.0),
+                item["_retrieval_position"],
+            )
+        )
+    for item in annotated:
+        item.pop("_retrieval_position", None)
+    return annotated
+
+
 def _scope_target_evidence(
     items: list[dict], *, session_id: Optional[str], selected_candidate_document_id: Optional[str]
 ) -> list[dict]:
@@ -155,7 +235,7 @@ def _scope_target_evidence(
 
 
 def _compose_by_document_role(
-    items: list[dict], *, persona_id: str, top_k: int
+    items: list[dict], *, persona_id: str, top_k: int, phase: Optional[str] = None
 ) -> tuple[list[dict], list[str]]:
     """검색된 후보(items, final_score 내림차순 정렬 상태 유지)를 persona별
     _DOCUMENT_ROLE_QUOTAS에 맞춰 재구성한다. 원하는 role의 후보가 전혀 없으면
@@ -163,7 +243,13 @@ def _compose_by_document_role(
     — 부족한 만큼만 다른 role/미분류 후보로 보충한다).
 
     반환값: (구성된 top_k개 이하의 리스트, missing_document_roles)."""
-    quotas = _DOCUMENT_ROLE_QUOTAS.get(persona_id)
+    # Before a candidate exists, target evidence is not merely missing: it is
+    # conceptually inapplicable.  Do not reserve quota or emit a false warning.
+    quotas = (
+        {"criteria": top_k}
+        if phase in _PRE_TARGET_PHASES and persona_id in _DOCUMENT_ROLE_QUOTAS
+        else _DOCUMENT_ROLE_QUOTAS.get(persona_id)
+    )
     if not quotas:
         return items[:top_k], []
 
@@ -263,6 +349,7 @@ def search_ideation_evidence(
     *,
     session_id: Optional[str] = None,
     selected_candidate_document_id: Optional[str] = None,
+    phase: Optional[str] = None,
 ) -> list[dict]:
     """전문가 1명의 이번 턴 근거를 검색해 회의 그래프가 바로 쓸 수 있는 plain dict 목록으로
     반환한다. 검색 결과가 없거나 검색 자체가 실패하면 빈 리스트를 반환한다(fail-closed) —
@@ -319,6 +406,13 @@ def search_ideation_evidence(
         project_id=project_id,
         top_k=top_k,
     )
+    plain_query_items = _search_plain_query_candidates(
+        role_retrieval_service,
+        persona_id=persona_id,
+        topic_query=topic_query,
+        project_id=project_id,
+        top_k=top_k,
+    )
 
     candidate_direct_items: list[dict] = []
     if selected_candidate_document_id:
@@ -332,24 +426,31 @@ def search_ideation_evidence(
             top_k=top_k,
         )
 
-    priority_items = candidate_direct_items + issue_focused_criteria_items
+    priority_items = candidate_direct_items + issue_focused_criteria_items + plain_query_items
     priority_keys = {(item.get("document_id", ""), item.get("chunk_id", "")) for item in priority_items}
     merged_items = priority_items + [
         item for item in scoped_items if (item.get("document_id", ""), item.get("chunk_id", "")) not in priority_keys
     ]
 
-    composed, missing_document_roles = _compose_by_document_role(merged_items, persona_id=persona_id, top_k=top_k)
+    merged_items = _rank_by_document_type(merged_items, topic_query)
+    composed, missing_document_roles = _compose_by_document_role(
+        merged_items,
+        persona_id=persona_id,
+        top_k=top_k,
+        phase=phase,
+    )
     final_target_count = sum(1 for item in composed if item.get("document_role") == "target")
 
     logger.info(
         "[IDEATION_EVIDENCE_SEARCH_DEBUG] persona_id=%s project_id=%s session_id=%s "
-        "selected_candidate_document_id=%s raw_target_count=%d scoped_target_count=%d "
+        "selected_candidate_document_id=%s phase=%s raw_target_count=%d scoped_target_count=%d "
         "candidate_target_direct_search_count=%d issue_focused_criteria_count=%d "
         "final_target_count=%d missing_document_roles=%s",
         persona_id,
         project_id,
         session_id,
         selected_candidate_document_id,
+        phase,
         raw_target_count,
         scoped_target_count,
         len(candidate_direct_items),
@@ -400,19 +501,23 @@ def make_ideation_evidence_lookup(
     def lookup(persona_id: str, topic_query: str, *, runtime_scope: Optional[dict] = None) -> list[dict]:
         effective_session_id = session_id
         effective_selected_candidate_document_id = selected_candidate_document_id
+        effective_phase = None
         scope_source = "closure_snapshot"
         if runtime_scope:
             if "session_id" in runtime_scope:
                 effective_session_id = runtime_scope["session_id"]
             if "selected_candidate_document_id" in runtime_scope:
                 effective_selected_candidate_document_id = runtime_scope["selected_candidate_document_id"]
+            if "phase" in runtime_scope:
+                effective_phase = runtime_scope["phase"]
             scope_source = "runtime_graph_state"
         logger.info(
             "[IDEATION_EVIDENCE_LOOKUP_SCOPE] persona_id=%s session_id=%s "
-            "selected_candidate_document_id=%s selected_candidate_document_id_source=%s",
+            "selected_candidate_document_id=%s phase=%s selected_candidate_document_id_source=%s",
             persona_id,
             effective_session_id,
             effective_selected_candidate_document_id,
+            effective_phase,
             scope_source,
         )
         return search_ideation_evidence(
@@ -423,6 +528,7 @@ def make_ideation_evidence_lookup(
             top_k=top_k,
             session_id=effective_session_id,
             selected_candidate_document_id=effective_selected_candidate_document_id,
+            phase=effective_phase,
         )
 
     return lookup

@@ -30,6 +30,14 @@ class IndexingContext(BaseModel):
             "호출자가 아는 경우에만 전달하는 선택 필드로, 없으면 청크 메타데이터에 저장되지 않는다."
         ),
     )
+    document_type: Optional[str] = Field(
+        None,
+        description=(
+            "검색 시 문서 성격을 구분하는 canonical type "
+            "(announcement/evaluation_criteria/application_form_poc/"
+            "application_form_best_practice/other)."
+        ),
+    )
     # 용준/Claude(2026-07-22, 요청: 선택된 아이디어/사용자 답변을 target evidence로 색인) —
     # 특정 호출자(현재는 아이디어 회의 target evidence 색인)만 필요로 하는 부가 메타데이터를
     # 청크 메타데이터에 그대로 실어 보내는 범용 통로. document_role처럼 매번 새 전용 필드를

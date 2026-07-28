@@ -247,6 +247,7 @@ def _build_raw_metadata(
         "indexable": chunk.indexable,
         "document_title": context.document_title,
         "document_role": context.document_role,
+        "document_type": context.document_type,
         # 용준/Claude(2026-07-22, 요청: 선택된 아이디어/사용자 답변을 target evidence로 색인)
         # — IndexingContext.extra_metadata를 그대로 펼쳐 넣는다. 일반 파일/URL 업로드는 이
         # 필드를 쓰지 않으므로(항상 None) 기존 색인 경로는 전혀 영향받지 않는다. 여기서

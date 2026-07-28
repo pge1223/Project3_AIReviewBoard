@@ -16,11 +16,13 @@ search_ideation_evidence`)와, 그 근거로 실제로 생성되는 페르소나
 `role_id`(`planning`/`technology`, persona_id로부터 자동 결정)뿐이다. 자세한 조사
 결과는 계획 문서(대화 세션의 plan mode 기록)를 참고.
 
-## 4개 지표
+## 핵심 지표
 
 - **Recall@K / Hit@K**: `ai/rag/evaluation/metrics.py`의 순수 함수를 그대로 재사용.
   `retrieval_eval.py`가 청크 단위 결과를 문서 단위로 접어(`_dedupe_by_document`)
   `gold_document_ids`와 비교한다.
+- **MRR@K**: 첫 번째 정답 문서 순위의 역수. Recall이 같아도 정답 근거가 앞쪽에
+  배치되는지를 확인한다.
 - **Faithfulness**: `(supported + 0.5*partially_supported) / (supported+partially_supported
   +unsupported+contradicted)`. `non_factual`은 분모에서 제외. 분모가 0이면
   `faithfulness_score=None`(not_applicable)로 남긴다.

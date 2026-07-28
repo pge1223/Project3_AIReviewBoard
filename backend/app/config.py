@@ -8,6 +8,15 @@ from pydantic_settings import BaseSettings
 # backend/.env 를 uvicorn 실행 위치(CWD)와 무관하게 항상 찾도록 절대경로 사용
 # __file__ = backend/app/config.py  →  .parent.parent = backend/
 _ENV_FILE = Path(__file__).parent.parent / ".env"
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+
+
+def resolve_chroma_persist_dir(configured_value: str) -> str:
+    """Resolve Chroma storage independently of the process working directory."""
+    configured_path = Path(configured_value).expanduser()
+    if not configured_path.is_absolute():
+        configured_path = _REPOSITORY_ROOT / configured_path
+    return str(configured_path.resolve())
 
 
 class Settings(BaseSettings):
@@ -60,7 +69,7 @@ class Settings(BaseSettings):
     MEDIA_SERVICE_WS_URL: str = ""
 
     # RAG (Chroma)
-    CHROMA_PERSIST_DIR: str = "./chroma_db"
+    CHROMA_PERSIST_DIR: str = str((_REPOSITORY_ROOT / "chroma_db").resolve())
     RAG_EMBEDDING_DEVICE: Literal["cpu", "cuda", "auto"] = "auto"
     RAG_EMBEDDING_BATCH_SIZE: int = Field(default=32, ge=1)
     RAG_TORCH_NUM_THREADS: int | None = Field(default=None, ge=1)

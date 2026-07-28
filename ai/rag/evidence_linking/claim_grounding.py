@@ -81,25 +81,6 @@ def _claim_evidence_alignment_failure(claim: Claim, evidence_item: dict) -> str 
     if document_role == "target" and claim_type == "document_fact":
         return "claim_type_document_role_mismatch"
 
-    # 공모전명·문서명에 포함된 연도(예: "WSCE 2026 Awards")는 quote 본문이 아니라
-    # source/document_name에만 남을 수 있다. 이를 제품 수치 주장으로 오인하면 실제
-    # 평가항목 quote가 있어도 evidence_missing_numeric_detail로 탈락한다. 수치 정합성
-    # 검사에 출처 메타데이터를 함께 사용하되, 아래 핵심어 coverage에는 quote 본문만 써서
-    # 파일명 하나로 사실 주장이 통과하는 일은 막는다.
-    numeric_evidence_text = " ".join(
-        str(value)
-        for value in (
-            evidence_text,
-            evidence_item.get("document_name"),
-            evidence_item.get("source"),
-            evidence_item.get("section"),
-        )
-        if value
-    )
-    missing_numbers = _normalized_numbers(claim_text) - _normalized_numbers(numeric_evidence_text)
-    if missing_numbers:
-        return "evidence_missing_numeric_detail"
-
     # "AI 기술 활용 여부를 평가하는가?" 같은 criteria 문장은 AI가 실제로 문제를 해결하거나
     # 성능을 낸다는 사실을 증명하지 않는다. 문서의 평가/요건 자체를 설명하는 주장만 허용한다.
     if (
@@ -110,16 +91,6 @@ def _claim_evidence_alignment_failure(claim: Claim, evidence_item: dict) -> str 
         and not any(term in claim_text for term in _CRITERIA_SCOPE_TERMS)
     ):
         return "criteria_scope_overreach"
-
-    # 사실형 주장은 핵심어 절반 이상이 인용문 본문에 있어야 한다. 기존 relevance의
-    # "한 키워드만 겹쳐도 통과" 규칙은 검색 후보에는 적절하지만 claim 증명에는 너무 느슨하다.
-    if claim_type in ("document_fact", "user_provided_fact"):
-        claim_stems = _keyword_stems(claim_text)
-        evidence_stems = _keyword_stems(evidence_text)
-        if len(claim_stems) >= 2:
-            covered = len(claim_stems & evidence_stems) / len(claim_stems)
-            if covered < 0.5:
-                return "insufficient_claim_coverage"
 
     return None
 
@@ -321,6 +292,49 @@ def ground_claims(
                 supported_count += 1
             continue
 
+        # 용준/Claude(2026-07-28, 요청: "개발위원 근거가 유독 안 붙는다" 실측 재현) — claim이
+        # 수치를 언급하면, 그 수치가 이번 claim이 인용한 근거들(refs) 전체 중 어딘가에는
+        # 있어야 한다. 예전에는 이 검사를 인용된 청크 하나하나와 개별 대조해서, 수치가
+        # 다른 청크에 있어도 그 청크 하나만 보면 "없다"고 걸렸다(위 커버리지 버그와 동일한
+        # 원인). 청크 존재 여부(unknown_chunk_id)만 걸러낸 뒤, 실제로 존재하는 근거 전체를
+        # 합쳐 한 번만 검사한다 — 단일 근거만 인용한 claim은 기존과 동일하게 그 근거
+        # 하나만으로 검사되므로 기존 동작을 보존한다.
+        if claim_type in ("document_fact", "user_provided_fact"):
+            existing_numeric_texts = [
+                " ".join(
+                    str(value)
+                    for value in (
+                        item.get("text") or item.get("quote") or "",
+                        item.get("document_name"),
+                        item.get("source"),
+                        item.get("section"),
+                    )
+                    if value
+                )
+                for ref in refs
+                if (item := evidence_by_id.get(ref)) is not None
+            ]
+            # 인용한 ref가 전부 존재하지 않으면(unknown_chunk_id) 이 검사를 건너뛰고 아래
+            # per-ref 루프가 정확한 사유(unknown_chunk_id)를 보고하게 둔다 — 존재하는 근거가
+            # 하나도 없는데 "수치가 없다"고 보고하면 실제 원인을 가린다.
+            missing_numbers = (
+                _normalized_numbers(claim["text"]) - _normalized_numbers(" ".join(existing_numeric_texts))
+                if existing_numeric_texts
+                else set()
+            )
+            if missing_numbers:
+                unsupported_claims.append(
+                    UnsupportedClaim(
+                        claim_id=claim["claim_id"],
+                        text=claim["text"],
+                        claim_type=claim_type,
+                        reason="evidence_missing_numeric_detail",
+                    )
+                )
+                if claim_type == "document_fact":
+                    missing_information.append(claim["text"])
+                continue
+
         # claim_linked_refs/claim_linked_chunk_ids는 인덱스가 서로 대응하는 병렬 리스트다 —
         # claim_linked_refs[i]가 claim_linked_chunk_ids[i]로 연결됐다(LLM이 실제로 인용한
         # ref와 그 ref가 가리키는 실제 chunk_id의 짝, 용준/Claude(2026-07-23, 요청:
@@ -328,6 +342,7 @@ def ground_claims(
         claim_linked_refs: list[str] = []
         claim_linked_chunk_ids: list[str] = []
         claim_reason: str | None = None
+        matched_evidence_texts: list[str] = []
         for ref in refs:
             evidence_item = evidence_by_id.get(ref)
             if evidence_item is None:
@@ -337,11 +352,12 @@ def ground_claims(
             if alignment_failure:
                 claim_reason = claim_reason or alignment_failure
                 continue
+            evidence_text = evidence_item.get("text") or evidence_item.get("quote") or ""
             relevant = is_relevant_candidate(
                 claim["text"],
                 # MeetingRetrievedEvidence(운영)는 "text", 일부 옛 fixture/호출부는 "quote"를
                 # 쓴다 — 둘 다 청크 본문을 뜻하므로 둘 다 받는다.
-                evidence_item.get("text") or evidence_item.get("quote") or "",
+                evidence_text,
                 section_title=evidence_item.get("section"),
                 document_title=evidence_item.get("document_name"),
                 role_keywords=role_keywords,
@@ -356,8 +372,24 @@ def ground_claims(
                 if chunk_id not in claim_linked_chunk_ids:
                     claim_linked_refs.append(ref)
                     claim_linked_chunk_ids.append(chunk_id)
+                    matched_evidence_texts.append(evidence_text)
             else:
                 claim_reason = claim_reason or "evidence_not_relevant"
+
+        # 용준/Claude(2026-07-28, 요청: "개발위원 근거가 유독 안 붙는다" 실측 재현 — 여러
+        # 평가 항목(E1+E3 등)을 한 문장으로 종합한 claim이 청크 하나하나와 개별 대조되면서
+        # 매번 절반 미만 커버리지로 탈락했다) — 핵심어 커버리지는 claim이 실제로 인용한
+        # 근거 전체(matched_evidence_texts)를 합쳐서 한 번만 검사한다. 근거 1개만 인용한
+        # claim은 기존과 동일하게 그 근거 하나만으로 검사되므로 기존 동작을 그대로 보존한다.
+        if claim_linked_chunk_ids and claim_type in ("document_fact", "user_provided_fact"):
+            claim_stems = _keyword_stems(claim["text"])
+            combined_stems = _keyword_stems(" ".join(matched_evidence_texts))
+            if len(claim_stems) >= 2:
+                covered = len(claim_stems & combined_stems) / len(claim_stems)
+                if covered < 0.5:
+                    claim_reason = claim_reason or "insufficient_claim_coverage"
+                    claim_linked_chunk_ids = []
+                    claim_linked_refs = []
 
         if claim_linked_chunk_ids:
             supported_count += 1

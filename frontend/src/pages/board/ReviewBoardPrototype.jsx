@@ -1809,7 +1809,7 @@ function overallPercent(snapshot) {
 function analyzeStageLabel(snapshot) {
   if (!snapshot) return '문서 피드백 준비중'
   if (snapshot.chair_done || snapshot.score_done) return '분석 완료 — 피드백을 확인할 수 있어요'
-  if (snapshot.reviews_total) return `AI 위원 검토 중 (${snapshot.reviews_done}/${snapshot.reviews_total}명 완료)`
+  if (snapshot.reviews_total) return 'AI 위원 검토 중'
   if (snapshot.stage === '근거 검색') return '공고 자료에서 평가 근거 검색 중'
   if (snapshot.stage === '평가 기준 추출') return '공고문에서 평가 기준 추출 중'
   return '문서 피드백 준비중'
@@ -1857,8 +1857,72 @@ function UploadAndAnalyzeScreen({ projectId, onFeedbackReady, onBack, initialDoc
     }
   }, [])
 
+  // pge/Claude(2026-07-28, 실측: "프로그레스바가 뚝뚝 끊긴다") — overallPercent(snapshot)는
+  // 폴링(1초 간격)으로 받은 stage/reviews_done 기준 계단식 값이라, 위원 한 명이 검토를
+  // 끝낼 때까지(수십 초) 값이 아예 안 바뀌다가 한 번에 크게 뛴다. CSS transition만으로는
+  // "오래 멈춰있다가 갑자기 점프"하는 인상 자체를 못 없앤다 — 실제 값(targetPercent)에는
+  // 못 미치는 선에서 화면 표시값을 계속 아주 조금씩 앞으로 당겨서(trickle), 항상 조금씩
+  // 나아가고 있는 것처럼 보이게 한다. 실제 값이 갱신되면 그쪽을 향해 다시 부드럽게
+  // 따라잡는다 — 표시값이 실제 값을 앞지르지는 않는다(100%는 chair_done/score_done일
+  // 때만 실제로 도달).
+  const targetPercent = overallPercent(snapshot)
+  // pge/Claude(2026-07-28, 실측: "쭉 올라갔다가 아래로 내려간다") — 이전 버전은 useEffect의
+  // deps에 targetPercent를 넣어서 매 폴링(1초)마다 interval을 통째로 지우고 새로 만들었다.
+  // targetPercent를 ref로만 참조하고 effect deps에서 빼서, interval 하나가 analyzing이
+  // 끝날 때까지 끊기지 않고 계속 돈다 — 또한 매 계산마다 Math.max(next, current)로
+  // 절대 감소하지 않음을 코드로 보장한다(이전엔 로직상 감소할 리 없다고만 가정했었다).
+  const targetPercentRef = useRef(targetPercent)
+  targetPercentRef.current = targetPercent
+  const [displayPercent, setDisplayPercent] = useState(targetPercent)
+  const displayPercentRef = useRef(targetPercent)
+  useEffect(() => {
+    if (!analyzing) {
+      displayPercentRef.current = targetPercentRef.current
+      setDisplayPercent(targetPercentRef.current)
+      return
+    }
+    const timer = setInterval(() => {
+      const current = displayPercentRef.current
+      const target = targetPercentRef.current
+      let next = current
+      if (current < target) {
+        next = Math.min(target, current + Math.max(0.4, (target - current) * 0.12))
+      } else if (target < 100) {
+        // 실제 값을 이미 따라잡았으면, 다음 갱신이 올 때까지 아주 조금씩만 더
+        // 전진시킨다(멈춰 보이지 않게) — 다음 단계 문턱은 넘지 않는다.
+        const trickleCeiling = Math.min(target + 5, 99)
+        next = current < trickleCeiling ? current + 0.15 : current
+      }
+      next = Math.max(next, current)
+      if (next !== current) {
+        displayPercentRef.current = next
+        setDisplayPercent(next)
+      }
+    }, 150)
+    return () => clearInterval(timer)
+  }, [analyzing])
+
   function updateDoc(id, patch) {
     setDocuments((prev) => prev.map((doc) => (doc.id === id ? { ...doc, ...patch } : doc)))
+  }
+
+  // pge/Claude(2026-07-28, 요청: "메인의 파일 업로드 리스트랑 같은 형식으로 휴지통
+  // 버튼·삭제 기능 추가") — EntryScreen(공고문·평가기준 문서 목록)의 handleDeleteDoc과
+  // 같은 패턴. backendId(실제 DB document_id)가 아직 없으면(업로드/색인 중) 서버 삭제는
+  // 건너뛰고 목록에서만 뺀다.
+  const [deletingIds, setDeletingIds] = useState([])
+  async function handleDeleteDoc(doc) {
+    if (deletingIds.includes(doc.id)) return
+    setDeletingIds((prev) => [...prev, doc.id])
+    try {
+      if (doc.backendId && projectId) {
+        await deleteDocument(projectId, doc.backendId)
+      }
+      setDocuments((prev) => prev.filter((d) => d.id !== doc.id))
+    } catch (err) {
+      setFileError(err.message)
+      setDeletingIds((prev) => prev.filter((id) => id !== doc.id))
+    }
   }
 
   async function uploadOne(file) {
@@ -1952,7 +2016,6 @@ function UploadAndAnalyzeScreen({ projectId, onFeedbackReady, onBack, initialDoc
   }
 
   const reviewsDone = !!snapshot && snapshot.reviews_total > 0 && snapshot.reviews_done >= mentorCount
-  const analyzePercent = overallPercent(snapshot)
 
   return (
     <div style={{ maxWidth: 720 }}>
@@ -1966,60 +2029,86 @@ function UploadAndAnalyzeScreen({ projectId, onFeedbackReady, onBack, initialDoc
         {analyzing ? '평가 대상 문서를 분석중이에요' : '평가 대상 문서를 업로드하세요'}
       </h2>
 
+      {/* pge/Claude(2026-07-28, 요청: "업로드 파일 화면 없애지 말고 그 아래로 [진행률
+          카드를] 옮겨줘") — 분석이 시작되면(analyzing) 드롭존과 "분석 시작" 버튼만
+          숨기고, 업로드된 문서 목록 카드는 그대로 남겨서 분석 진행 카드 위에 계속
+          보이게 한다. */}
+      {!analyzing && (
+        <div
+          className="card glass"
+          style={{
+            borderStyle: 'dashed',
+            borderColor: isDragging ? 'var(--coral)' : 'var(--glass-border)',
+            padding: 40, textAlign: 'center',
+          }}
+          {...dropHandlers}
+        >
+          <Upload size={26} color="var(--coral)" style={{ marginBottom: 14 }} />
+          <div style={{ fontWeight: 600, marginBottom: 6 }}>{isDragging ? '여기에 놓으세요' : '기획서를 업로드하세요'}</div>
+          <div style={{ fontSize: 12.5, color: 'var(--text-2)', marginBottom: 20 }}>PDF, DOCX, PPTX, HWP, HWPX</div>
+          <button className="btn-primary" onClick={() => fileInputRef.current?.click()}>파일 선택</button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept={ACCEPTED_DOCUMENT_EXTENSIONS.join(',')}
+            multiple
+            style={{ display: 'none' }}
+            onChange={(e) => { addFiles(e.target.files); e.target.value = '' }}
+          />
+        </div>
+      )}
+
+      {!analyzing && fileError && <p style={{ color: 'var(--coral)', fontSize: 13, marginTop: 12 }}>{fileError}</p>}
+
+      {documents.length > 0 && (
+        <div className="card glass" style={{ marginTop: 16 }}>
+          {documents.map((doc, i) => (
+            <div key={doc.id} style={{
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              padding: '10px 0', borderTop: i > 0 ? '1px solid var(--glass-border)' : 'none',
+            }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 13.5, fontWeight: 600 }}>{doc.name}</div>
+                <div style={{ fontSize: 12, color: 'var(--text-2)' }}>{doc.meta}</div>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                {(doc.status === 'uploading' || doc.status === 'embedding') && (
+                  <ProgressBar
+                    percent={doc.progress}
+                    label={doc.status === 'uploading' ? '업로드 중' : '색인 중'}
+                    color="linear-gradient(135deg, #7c5cea, #8b6ef0)"
+                    trackColor="var(--bg-2)"
+                  />
+                )}
+                {doc.status === 'done' && <span className="badge green mono">✓ 완료</span>}
+                {doc.status === 'warning' && <span className="badge amber mono">확인 필요</span>}
+                {doc.status === 'error' && <span className="badge coral mono">실패</span>}
+                {/* pge/Claude(2026-07-28, 요청: "메인 파일 업로드 리스트랑 같은 형식으로
+                    휴지통 버튼") — 분석 진행 중에는 목록을 바꾸면 안 되므로 숨긴다. */}
+                {!analyzing && (
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteDoc(doc)}
+                    disabled={deletingIds.includes(doc.id)}
+                    aria-label={`${doc.name} 삭제`}
+                    style={{
+                      background: 'none', border: 'none', padding: 6,
+                      cursor: deletingIds.includes(doc.id) ? 'default' : 'pointer',
+                      color: 'var(--text-2)', display: 'flex',
+                      opacity: deletingIds.includes(doc.id) ? 0.4 : 1,
+                    }}
+                  >
+                    <Trash2 size={15} />
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       {!analyzing && (
         <>
-          <div
-            className="card glass"
-            style={{
-              borderStyle: 'dashed',
-              borderColor: isDragging ? 'var(--coral)' : 'var(--glass-border)',
-              padding: 40, textAlign: 'center',
-            }}
-            {...dropHandlers}
-          >
-            <Upload size={26} color="var(--coral)" style={{ marginBottom: 14 }} />
-            <div style={{ fontWeight: 600, marginBottom: 6 }}>{isDragging ? '여기에 놓으세요' : '기획서를 업로드하세요'}</div>
-            <div style={{ fontSize: 12.5, color: 'var(--text-2)', marginBottom: 20 }}>PDF, DOCX, PPTX, HWP, HWPX</div>
-            <button className="btn-primary" onClick={() => fileInputRef.current?.click()}>파일 선택</button>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept={ACCEPTED_DOCUMENT_EXTENSIONS.join(',')}
-              multiple
-              style={{ display: 'none' }}
-              onChange={(e) => { addFiles(e.target.files); e.target.value = '' }}
-            />
-          </div>
-
-          {fileError && <p style={{ color: 'var(--coral)', fontSize: 13, marginTop: 12 }}>{fileError}</p>}
-
-          {documents.length > 0 && (
-            <div className="card glass" style={{ marginTop: 16 }}>
-              {documents.map((doc, i) => (
-                <div key={doc.id} style={{
-                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                  padding: '10px 0', borderTop: i > 0 ? '1px solid var(--glass-border)' : 'none',
-                }}>
-                  <div>
-                    <div style={{ fontSize: 13.5, fontWeight: 600 }}>{doc.name}</div>
-                    <div style={{ fontSize: 12, color: 'var(--text-2)' }}>{doc.meta}</div>
-                  </div>
-                  {(doc.status === 'uploading' || doc.status === 'embedding') && (
-                    <ProgressBar
-                      percent={doc.progress}
-                      label={doc.status === 'uploading' ? '업로드 중' : '색인 중'}
-                      color="linear-gradient(135deg, #7c5cea, #8b6ef0)"
-                      trackColor="var(--bg-2)"
-                    />
-                  )}
-                  {doc.status === 'done' && <span className="badge green mono">✓ 완료</span>}
-                  {doc.status === 'warning' && <span className="badge amber mono">확인 필요</span>}
-                  {doc.status === 'error' && <span className="badge coral mono">실패</span>}
-                </div>
-              ))}
-            </div>
-          )}
-
           {candidatesError && <p style={{ color: 'var(--coral)', fontSize: 13, marginTop: 12 }}>{candidatesError}</p>}
 
           <button
@@ -2035,14 +2124,14 @@ function UploadAndAnalyzeScreen({ projectId, onFeedbackReady, onBack, initialDoc
       )}
 
       {analyzing && (
-        <div className="card glass">
+        <div className="card glass" style={{ marginTop: 16 }}>
           <p style={{ fontSize: 13, color: 'var(--text-1)', marginBottom: 16 }}>
             {analyzeStageLabel(snapshot)}
           </p>
           <div className="progress-track" style={{ marginBottom: 6 }}>
-            <div className="progress-fill" style={{ width: `${analyzePercent}%` }} />
+            <div className="progress-fill" style={{ width: `${displayPercent}%` }} />
           </div>
-          <p style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 20 }}>{Math.round(analyzePercent)}%</p>
+          <p style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 20 }}>{Math.round(displayPercent)}%</p>
 
           {reviewsReady && (
             <button className="btn-primary" style={{ width: '100%' }} onClick={() => onFeedbackReady(projectId)}>
@@ -2086,23 +2175,17 @@ export default function ReviewBoardPrototype() {
   // 않는다.
   const [ideationConv, setIdeationConv] = useState(null);
 
-  // 용준/Claude(2026-07-28, 요청: "후보 선택부터 주제 확정까지 추가 입력 없이 한 번의
-  // 흐름으로") — 대화 화면(ideation)에 머무는 동안 phase가 awaiting_concept_confirmation에
-  // 도달하면(후보 선택 -> 전문가 검증까지는 IdeationScreen이 이미 자동으로 진행해 둔
-  // 상태) 사용자가 버튼을 누르지 않아도 "주제 확정" 단계로 즉시 넘어간다. ref로 "이번
-  // 진입에서 이미 자동 이동했는지"를 기억해 뒀다가 phase가 바뀌면 풀어준다 — 그래야
-  // "다른 후보 선택"으로 되돌아가 다시 검증을 통과했을 때도 매번 자동 이동이 다시 걸린다.
-  const autoNavigatedToConfirmRef = useRef(false);
-  useEffect(() => {
-    if (ideationConv?.phase !== 'awaiting_concept_confirmation') {
-      autoNavigatedToConfirmRef.current = false;
-      return;
-    }
-    if (stage === 'ideation' && !autoNavigatedToConfirmRef.current) {
-      autoNavigatedToConfirmRef.current = true;
-      setStage('ideation_result');
-    }
-  }, [ideationConv?.phase, stage]);
+  // 용준/Claude(2026-07-28, 요청: "주제 확정은 진짜 확정됐을 때만 넘어가야 한다") — 예전엔
+  // phase가 awaiting_concept_confirmation(전문가 검증 완료, 아직 사용자가 확정 버튼을
+  // 누르기 전 "검토 대기" 상태)에 도달하기만 해도 자동으로 "주제 확정" 단계로 화면을
+  // 넘겼다. 문제는 사용자가 아직 아무것도 확정하지 않았는데 화면이 튀어 나가고, "다른
+  // 후보 선택"/"검증 결과 반영해 다시 수정"을 눌러 회의로 돌아오면 검증을 다시 통과하는
+  // 순간 또 튀어 나가는 것을 반복해 혼란스러웠다. awaiting_concept_confirmation 검토·확정
+  // UI는 대화 화면 안 인라인 카드(ConceptConfirmationBlock, IdeationConversationScreen.jsx)
+  // 로 이미 충분히 제공되므로, 자동 화면 전환 자체를 없앤다 — 사용자가 실제로 "이
+  // 아이디어로 최종 확정"을 누르고 회의를 마무리(finalize)해 phase가 진짜
+  // "finalized"가 됐을 때만(기존 onFinalized -> handleConfirmIdeaProject -> goNext()
+  // 경로, 아래 참고) "주제 확정" 단계로 넘어간다.
 
   const goNext = () => {
     const seq = (mode && FLOW_BY_MODE[mode]) || ["entry"];
@@ -2311,8 +2394,8 @@ export default function ReviewBoardPrototype() {
       {stage === "upload" && (
         <UploadAndAnalyzeScreen projectId={projectId} onFeedbackReady={handleFeedbackReady} onBack={goPrev} initialDocuments={targetDocuments} />
       )}
-      {stage === "workbench" && <WorkbenchScreen projectId={projectId} onNext={goNext} />}
-      {stage === "report" && <VersionTrackerTestPage embedded projectId={projectId} />}
+      {stage === "workbench" && <WorkbenchScreen projectId={projectId} onNext={goNext} onBack={goPrev} />}
+      {stage === "report" && <VersionTrackerTestPage embedded projectId={projectId} onBack={goPrev} />}
     </Shell>
   );
 }
