@@ -1743,7 +1743,9 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
             {noticeAvailable && noticeOpen && (
               <div className="vt-fade" style={{ position: 'absolute', top: 'calc(100% + 8px)', left: '50%', transform: 'translateX(-50%)', zIndex: 60, width: 'min(560px, 86vw)', textAlign: 'left', background: '#fff', border: '1px solid rgba(184,131,11,0.35)', borderLeft: '4px solid #b8830b', borderRadius: 12, boxShadow: '0 14px 34px rgba(28,26,46,0.16)', padding: '12px 16px', display: 'flex', alignItems: 'flex-start', gap: 10 }}>
                 <Info size={16} style={{ color: '#b8830b', flexShrink: 0, marginTop: 2 }} />
-                <div style={{ fontSize: 12.5, lineHeight: 1.7, color: '#5b5770' }}>
+                {/* wordBreak keep-all — "채점하며,"가 줄 경계에서 "채점하/며,"로 쪼개지지 않게
+                    단어(어절) 단위로만 줄바꿈(경이 요청 2026-07-28). 글씨도 한 단계 확대. */}
+                <div style={{ fontSize: 13.5, lineHeight: 1.75, color: '#5b5770', wordBreak: 'keep-all' }}>
                   <b style={{ color: '#8a6508' }}>제시된 총점은 참고용입니다.</b>{' '}
                   공고문 평가 항목 중 <b>문서 내용으로 측정 가능한 항목만</b> 근거를 들어 채점하며,
                   정성 판단이 필요한 <b>주관적 항목</b>과 공모전마다 기준이 달라지는 <b>가점 요소</b>는
@@ -1802,16 +1804,16 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
             {/* 버전별 상세 리포트 — 클릭하면 v1.0 → v1.1 → … 목록이 펼쳐지고, 버전을 고르면 그 버전 상세 화면으로 이동 */}
             <div style={{ position: 'relative' }}>
               <button type="button" onClick={() => setVersionListOpen((v) => !v)}
-                style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 14px', borderRadius: 10, border: '1.5px solid rgba(28,26,46,0.18)', background: 'rgba(255,255,255,0.85)', fontSize: 12.5, fontWeight: 800, color: '#1c1a2e', cursor: 'pointer' }}>
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '10px 18px', borderRadius: 11, border: '1.5px solid rgba(28,26,46,0.18)', background: 'rgba(255,255,255,0.85)', fontSize: 14, fontWeight: 800, color: '#1c1a2e', cursor: 'pointer' }}>
                 버전별 상세 리포트
-                <ChevronDown size={14} style={{ color: '#918d9f', transition: 'transform 0.2s', transform: versionListOpen ? 'rotate(180deg)' : 'none' }} />
+                <ChevronDown size={16} style={{ color: '#918d9f', transition: 'transform 0.2s', transform: versionListOpen ? 'rotate(180deg)' : 'none' }} />
               </button>
               {versionListOpen && (
-                <div className="vt-fade" style={{ position: 'absolute', top: 'calc(100% + 6px)', right: 0, zIndex: 60, minWidth: 210, background: '#fff', border: '1px solid rgba(28,26,46,0.12)', borderRadius: 12, boxShadow: '0 14px 34px rgba(28,26,46,0.16)', padding: 6, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                <div className="vt-fade" style={{ position: 'absolute', top: 'calc(100% + 6px)', right: 0, zIndex: 60, minWidth: 230, background: '#fff', border: '1px solid rgba(28,26,46,0.12)', borderRadius: 12, boxShadow: '0 14px 34px rgba(28,26,46,0.16)', padding: 6, display: 'flex', flexDirection: 'column', gap: 2 }}>
                   {versions.map((v, i) => (
                     <button key={v.version} type="button" className="btn-ghost"
                       onClick={() => { setSelectedIndex(i); setDetailOpen(true); setStatusFilter('all'); setVersionListOpen(false) }}
-                      style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '8px 10px', borderRadius: 8, fontSize: 12.5, textAlign: 'left' }}>
+                      style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '9px 11px', borderRadius: 8, fontSize: 13.5, textAlign: 'left' }}>
                       <span className="mono" style={{ fontWeight: 800, color: '#7c5cea', flexShrink: 0 }}>{v.version}</span>
                       <span style={{ color: '#5b5770', flex: 1, whiteSpace: 'nowrap' }}>{v.label}</span>
                       <span className="mono" style={{ fontWeight: 700, color: '#918d9f', flexShrink: 0 }}>{v.total_score}점</span>
