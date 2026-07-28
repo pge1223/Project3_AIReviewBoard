@@ -25,6 +25,7 @@ _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 class ExternalEvidenceType(str, Enum):
     """외부자료 유형. 실제 데이터가 없는 유형의 결과를 임의로 만들어내지 않는다."""
 
+    NEWS = "news"
     STATISTICS = "statistics"
     MARKET = "market"
     POLICY = "policy"

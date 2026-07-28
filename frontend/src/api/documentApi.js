@@ -66,6 +66,14 @@ export async function getDocumentStatus(projectId, documentId) {
   return parseApiResponse(res, '문서 상태를 확인하지 못했습니다.')
 }
 
+export async function retryDocumentIndexing(projectId, documentId) {
+  const res = await fetch(`${API_BASE_URL}/documents/${projectId}/${documentId}/retry-indexing`, {
+    method: 'POST',
+    headers: { ...authHeaders() },
+  })
+  return parseApiResponse(res, '문서 재색인을 시작하지 못했습니다.')
+}
+
 // 가은/Claude(2026-07-21): "공모전 분석" 화면(ReviewBoardPrototype.jsx) — 이미 수집된
 // criteria 문서(공고문)를 근거로 official_facts(공고문에 실제 있는 사실)/
 // strategic_analysis(AI 추론)/evidence를 분리해서 받는다. 공고문을 하나도 안 넣었으면

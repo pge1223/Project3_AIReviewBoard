@@ -15,6 +15,7 @@ import {
   getContestWorksByTitle,
   deleteDocument,
   getDocuments,
+  retryDocumentIndexing,
 } from "../../api/documentApi";
 import { analyzeProject, getAnalyzeProgress, getMentorCandidates } from "../../api/projectApi";
 import { isAcceptedDocument, formatFileSize, ACCEPTED_DOCUMENT_EXTENSIONS } from "../../utils/file";
@@ -360,6 +361,7 @@ function EntryScreen({ onEnter, onModeSelect, loading, error, projectId, ensureP
   const [criteriaError, setCriteriaError] = useState('');
   const [isCriteriaDragging, setIsCriteriaDragging] = useState(false);
   const [deletingIds, setDeletingIds] = useState([]);
+  const [retryingIds, setRetryingIds] = useState([]);
   const criteriaFileInputRef = useRef(null);
 
   function updateDoc(id, patch) {
@@ -381,6 +383,37 @@ function EntryScreen({ onEnter, onModeSelect, loading, error, projectId, ensureP
     } catch (err) {
       setCriteriaError(err.message)
       setDeletingIds((prev) => prev.filter((id) => id !== doc.id))
+    }
+  }
+
+  async function handleRetryDoc(doc) {
+    if (!doc.backendId || !projectId || retryingIds.includes(doc.id)) return
+    setRetryingIds((prev) => [...prev, doc.id])
+    setCriteriaError('')
+    try {
+      await retryDocumentIndexing(projectId, doc.backendId)
+      updateDoc(doc.id, {
+        status: 'embedding',
+        progress: 70,
+        meta: '문서를 다시 색인하는 중...',
+      })
+      const completedStatus = doc.unsupportedLinks?.length ? 'warning' : 'done'
+      const completedMeta = completedStatus === 'warning'
+        ? '본문은 색인했지만 일부 첨부파일은 직접 확인이 필요합니다.'
+        : '재색인이 완료되었습니다.'
+      pollDocumentIndexing(
+        projectId,
+        doc.backendId,
+        doc.id,
+        completedStatus,
+        completedMeta,
+        updateDoc,
+      )
+    } catch (err) {
+      updateDoc(doc.id, { status: 'error', meta: err.message })
+      setCriteriaError(err.message)
+    } finally {
+      setRetryingIds((prev) => prev.filter((id) => id !== doc.id))
     }
   }
 
@@ -719,6 +752,17 @@ function EntryScreen({ onEnter, onModeSelect, loading, error, projectId, ensureP
                           {doc.status === 'done' && <span className="badge green mono">분석 준비 완료</span>}
                           {doc.status === 'warning' && <span className="badge amber mono">확인 필요</span>}
                           {doc.status === 'error' && <span className="badge coral mono">처리 실패</span>}
+                          {doc.status === 'error' && doc.backendId && (
+                            <button
+                              type="button"
+                              className="btn-ghost"
+                              onClick={() => handleRetryDoc(doc)}
+                              disabled={retryingIds.includes(doc.id)}
+                              style={{ padding: '5px 9px', fontSize: 12.5 }}
+                            >
+                              {retryingIds.includes(doc.id) ? '재시도 중...' : '다시 시도'}
+                            </button>
+                          )}
                           <button
                             type="button"
                             onClick={() => handleDeleteDoc(doc)}
@@ -2171,6 +2215,7 @@ export default function ReviewBoardPrototype() {
         setTargetDocuments(
           targetDocs.map((d) => ({
             id: d.id,
+            backendId: d.id,
             name: d.original_filename,
             meta: formatFileSize(d.file_size),
             status: _resumedDocStatus(d.status),
