@@ -306,6 +306,27 @@ function FacilitatorSummaryCard({ structured }) {
   )
 }
 
+// 전문가 발언의 judgment/reason은 "이 방향이 맞다/틀리다"는 판단이지, 실제로 무엇을
+// 만들지에 대한 구체적 실행안은 아니다. structured.proposal(백엔드가 이미 요구해 받고
+// 있던 필드)이 채워져 있으면 판단과 분리해 눈에 띄는 카드로 보여준다 — 사용자가
+// "다들 ~해야 합니다만 하고 구체적인 제안이 안 보인다"고 느끼는 문제를, 실제로 proposal이
+// 비어 있는지와 무관하게 "있어도 안 보였던" 절반은 여기서 해결한다.
+function ProposalCard({ proposal }) {
+  const text = (proposal || '').trim()
+  if (!text) return null
+  return (
+    <div
+      style={{
+        marginTop: 6, padding: '8px 10px', borderRadius: 10,
+        background: 'var(--purple-dim)', border: '1px solid var(--glass-border)', fontSize: 14.5,
+      }}
+    >
+      <strong style={{ color: 'var(--text-2)', fontWeight: 600 }}>제안</strong>
+      <div style={{ marginTop: 2, lineHeight: 1.6 }}>{humanizeExpertIdentifiers(text)}</div>
+    </div>
+  )
+}
+
 function MessageBubble({ message, streaming = false, interrupted = false, allMessages = [], isLatest = false }) {
   const meta = speakerMetaFor(message)
   const isRight = meta.align === 'right'
@@ -401,6 +422,7 @@ function MessageBubble({ message, streaming = false, interrupted = false, allMes
             claims={message.claims}
           />
         )}
+        {!streaming && <ProposalCard proposal={message.structured?.proposal} />}
         {isFacilitatorSummary && <FacilitatorSummaryCard structured={message.structured} />}
       </div>
     </div>
@@ -1079,6 +1101,15 @@ export function IdeationScreen({
     let currentSessionId = ideationConv.session_id
 
     ;(async () => {
+      // pge/Claude(2026-07-28, 실측: 위 클린업의 ref-null 수정만으로는 부족 — StrictMode의
+      // 동기 "실행 → 클린업 → 재실행"이 끝난 뒤에도 1차 실행의 fetch가 이미 네트워크로
+      // 나가버려, 2차 실행의 새 요청과 겹쳐 백엔드 세션 락 409가 났다) — 여기서 한 틱
+      // 양보한다. StrictMode의 클린업+재실행은 전부 동기적으로 끝나므로, 이 마이크로태스크가
+      // 재개되는 시점엔 클린업이 이미 cancelled를 true로 바꿔놓은 뒤다 — 1차 실행은 fetch를
+      // 한 번도 안 부르고 조용히 끝나고, 살아남은 재실행(자기 cancelled는 아직 false)만
+      // 실제 요청을 보낸다.
+      await Promise.resolve()
+      if (cancelled) return
       try {
         // eslint-disable-next-line no-constant-condition
         while (true) {
@@ -1123,6 +1154,15 @@ export function IdeationScreen({
     return () => {
       cancelled = true
       controller.abort()
+      // pge/Claude(2026-07-28, 실측: "continue-turn 성공했는데 화면이 안 바뀜") — StrictMode
+      // 개발 모드는 이 effect를 마운트 시 "실행 → 클린업 → 재실행" 순서로 동기 이중 호출한다.
+      // 클린업이 도는 시점엔 위 async IIFE의 finally(avatarTurnAbortRef.current = null)가
+      // 아직 못 돈 상태라(abort로 인한 reject는 마이크로태스크 이후) 곧바로 이어지는
+      // 재실행이 "avatarTurnAbortRef.current가 남아있으니 이미 진행 중"으로 오판해 아무
+      // 요청도 안 보내고 조용히 끝났다 — 이후 deps가 다시 안 바뀌면 아무도 재시도하지
+      // 않아 화면이 그 phase에 영원히 멈춘다(백엔드는 abort와 무관하게 완료·저장함).
+      // 여기서 즉시 ref를 비워 재실행이 새 요청을 정상적으로 시작하게 한다.
+      if (avatarTurnAbortRef.current === controller) avatarTurnAbortRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ideationConv?.session_id, ideationConv?.phase, sending, interrupting])

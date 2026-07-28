@@ -5055,6 +5055,93 @@ def make_discussion_facilitator_node(llm_call: LLMCall) -> Callable[[IdeationCon
         else:
             decided_next_action = "continue_round"
 
+        # pge/Claude(2026-07-28, 실측 요청: "회의가 다시 문제 정의로 돌아간다") — 여기서
+        # decided_next_action이 "continue_round"인 경우는 위 분기표에서 experts_just_spoke도
+        # is_first_facilitator_turn도 아닌, 즉 "사용자가 방금 진행자의 결정 질문에 답하고
+        # 돌아온" 경우뿐이다(그 외 다른 경로로 continue_round가 되는 경우는 이 아래에서
+        # decided_next_action을 재대입하는 fallback 분기들뿐이라 이 시점 값에는 안 잡힌다).
+        # 그런데 정작 그 답을 이끌어낸 active_issue_id는 지금까지 open_issues에 그대로
+        # 남아 있었다 — parked_issue_id(발언 상한/반복 감지로 닫히는 경우)만 resolved_issues로
+        # 옮기고 있었기 때문이다. 그 결과 _select_next_issue_family가 "이미 열려 있는 다른
+        # open_issues의 family"를 최우선으로 재선택하면서, 사용자가 이미 답한 쟁점(대개 가장
+        # 먼저 열리는 "문제 정의")으로 회의가 되돌아갔다. 여기서 그 쟁점을 사용자 결정으로
+        # 명시적으로 종료하고, parked_issue_id와 동일한 방식으로 다음 공식 쟁점을 확정한다.
+        user_decided_issue_id: str | None = None
+        if decided_next_action == "continue_round" and not parked_issue_id and active_issue_id:
+            resolved_record = next(
+                (issue for issue in open_issues if issue["issue_id"] == active_issue_id), None
+            )
+            if resolved_record is not None:
+                user_decided_issue_id = active_issue_id
+                resolved_family = resolved_record.get("family") or resolve_canonical_issue_family(
+                    resolved_record.get("title")
+                )
+                resolved_record = {
+                    **resolved_record,
+                    "status": "resolved",
+                    "resolution": (user_msg.get("content", "") if user_msg else "") or "사용자 결정으로 종료",
+                    "family": resolved_family,
+                    "closed_reason": "user_decision",
+                    "resolution_kind": "user_decision",
+                }
+                open_issues = [issue for issue in open_issues if issue["issue_id"] != active_issue_id]
+                resolved_issues = resolved_issues + [resolved_record]
+                trace_event(
+                    "IDEATION_ISSUE_RESOLVED",
+                    session_id=state.get("session_id"),
+                    issue=user_decided_issue_id,
+                    title=resolved_record.get("title"),
+                    updated_by="user",
+                    previous_status="open",
+                    new_status="resolved",
+                    resolution="user_decision",
+                    closed_reason="user_decision",
+                    resolution_kind="user_decision",
+                    remaining_open_issue_count=len(open_issues),
+                )
+                next_issue_family = _select_next_issue_family(
+                    excluded_family=resolved_family,
+                    open_issues=open_issues,
+                    resolved_issues=resolved_issues,
+                    resolved_topics=state.get("resolved_topics") or [],
+                )
+                trace_event(
+                    "IDEATION_ISSUE_ROTATED",
+                    session_id=state.get("session_id"),
+                    previous_issue_id=user_decided_issue_id,
+                    previous_issue_family=resolved_family,
+                    next_issue_id=(f"topic_{next_issue_family}" if next_issue_family and not open_issues else None),
+                    next_issue_family=next_issue_family,
+                    rotation_reason="user_decision",
+                    skipped_duplicate_count=0,
+                )
+                existing_next_issue = next(
+                    (issue for issue in open_issues if issue.get("family") == next_issue_family), None
+                )
+                if existing_next_issue is not None:
+                    next_active_issue_id = existing_next_issue["issue_id"]
+                    next_active_issue_title = existing_next_issue.get("title") or next_active_issue_id
+                elif next_issue_family is not None:
+                    next_active_issue_id = f"topic_{next_issue_family}"
+                    next_active_issue_title = _TOPIC_TITLE_KO.get(next_issue_family, next_issue_family)
+                    open_issues = open_issues + [
+                        {
+                            "issue_id": next_active_issue_id,
+                            "title": next_active_issue_title,
+                            "status": "open",
+                            "planning_position": None,
+                            "development_position": None,
+                            "resolution": None,
+                            "turns": 0,
+                            "family": next_issue_family,
+                            "closed_reason": None,
+                            "resolution_kind": None,
+                        }
+                    ]
+                else:
+                    next_active_issue_id = None
+                    next_active_issue_title = None
+
         facilitator_context = _isolate_discussion_evidence_context(conversation_context_for(state))
         context_anchors = _facilitator_context_anchors(
             state.get("selected_idea"),
@@ -5381,13 +5468,14 @@ def make_discussion_facilitator_node(llm_call: LLMCall) -> Callable[[IdeationCon
             "facilitator_decision_repeat_count": facilitator_decision_repeat_count,
             "stop_reason": stop_reason,
         }
-        if parked_issue_id:
-            # 발언 상한으로 강제 종료한 쟁점은 다음 라운드에 다시 등장하지 않는다 —
-            # open_issues/resolved_issues와 active_issue_id를 함께 갱신해야 다음 라운드가
-            # 다른(아직 열려 있는) 쟁점을 다룬다. active_issue_id는 None이 아니라 위에서
-            # 확정한 next_active_issue_id(공식 다음 쟁점, 더 다룰 쟁점이 없으면 None)로
-            # 설정한다 — None으로 비우기만 하면 다음 전문가가 이전 쟁점을 그대로 이어갈 수
-            # 있다.
+        if parked_issue_id or user_decided_issue_id:
+            # 발언 상한/반복 감지로 강제 종료했거나(parked_issue_id), 사용자가 방금 결정
+            # 질문에 답해 종료된(user_decided_issue_id) 쟁점은 다음 라운드에 다시 등장하지
+            # 않는다 — open_issues/resolved_issues와 active_issue_id를 함께 갱신해야 다음
+            # 라운드가 다른(아직 열려 있는) 쟁점을 다룬다. active_issue_id는 None이 아니라
+            # 위에서 확정한 next_active_issue_id(공식 다음 쟁점, 더 다룰 쟁점이 없으면
+            # None)로 설정한다 — None으로 비우기만 하면 다음 전문가가 이전 쟁점을 그대로
+            # 이어갈 수 있다.
             update["open_issues"] = open_issues
             update["resolved_issues"] = resolved_issues
             update["active_issue_id"] = next_active_issue_id

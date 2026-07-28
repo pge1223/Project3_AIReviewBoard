@@ -55,13 +55,17 @@ class _FacilitatorLLM:
         )
 
 
-def _facilitator_state(*, active_issue_id, open_issues, resolved_issues) -> dict:
+def _facilitator_state(
+    *, active_issue_id, open_issues, resolved_issues, messages=None, round=1, max_rounds=5
+) -> dict:
     return {
         "session_id": "ROTATE-TEST",
         "phase": "expert_discussion",
-        "round": 1,
-        "max_rounds": 5,
-        "messages": [
+        "round": round,
+        "max_rounds": max_rounds,
+        "messages": messages
+        if messages is not None
+        else [
             {
                 "message_id": "MSG-LAST",
                 "speaker_id": "dev_expert",
@@ -162,6 +166,110 @@ def test_facilitator_clears_active_issue_when_no_official_topics_remain():
 
     assert update["active_issue_id"] is None
     assert update.get("next_route") != "continue_round"
+
+
+def test_facilitator_resolves_user_decided_issue_and_rotates_to_next_official_topic():
+    """pge/Claude(2026-07-28, 실측: "회의가 다시 문제 정의로 돌아간다") — 진행자가 결정
+    질문을 던지고 사용자가 답한 뒤(마지막 메시지가 user이고, 진행자 자신도 이미 실제 턴을
+    낸 적 있어 experts_just_spoke도 is_first_facilitator_turn도 아님 → continue_round로
+    재진입) 그 답을 이끌어낸 active_issue_id는 open_issues에 무기한 남지 않고
+    resolved_issues로 넘어가야 한다. 이전에는 발언 상한/반복 감지(parked_issue_id)로 닫힌
+    쟁점만 이렇게 처리해서, 사용자가 이미 답한 쟁점이 _select_next_issue_family의 "이미
+    열려 있는 다른 쟁점" 우선순위에 계속 걸려 회의가 그 쟁점(흔히 가장 먼저 열리는 "문제
+    정의")으로 되돌아갔다."""
+    llm = _FacilitatorLLM()
+    node = make_discussion_facilitator_node(llm)
+    open_problem_issue = {
+        "issue_id": "issue_problem_1",
+        "title": "문제 정의",
+        "family": "problem",
+        "status": "open",
+        "turns": 1,
+    }
+    state = _facilitator_state(
+        active_issue_id="issue_problem_1",
+        open_issues=[open_problem_issue],
+        resolved_issues=[],
+        messages=[
+            {
+                "message_id": "MSG-FACILITATOR-1",
+                "speaker_id": "ideation_facilitator",
+                "structured": {"needs_user_decision": True, "user_question": "문제 정의 괜찮을까요?"},
+            },
+            {
+                "message_id": "MSG-USER-1",
+                "speaker_id": "user",
+                "structured": {},
+            },
+        ],
+    )
+
+    update = node(state)
+
+    assert update["active_issue_id"] == "topic_target_user"
+    assert all(issue["issue_id"] != "issue_problem_1" for issue in update["open_issues"])
+    resolved = update["resolved_issues"]
+    assert any(
+        issue["issue_id"] == "issue_problem_1"
+        and issue["status"] == "resolved"
+        and issue["resolution_kind"] == "user_decision"
+        for issue in resolved
+    )
+
+
+def test_facilitator_does_not_resolve_issue_when_continue_round_is_a_no_actionable_question_fallback():
+    """위 테스트와 대칭되는 경계 조건 — 전문가가 방금 발언을 마쳤고(experts_just_spoke) 이미
+    세션 라운드 한도에 도달했는데(round==max_rounds) 진행자가 실행 가능한 질문을 못 만들면,
+    기존 fallback 경로가 decided_next_action을 나중에(초기 판정 이후) "continue_round"로
+    재대입한다 — 실제 사용자 결정은 없었으므로 이 경로에서는 active_issue_id를
+    resolved_issues로 넘기면 안 된다(그 쟁점은 여전히 열려 있어야 함). 새 user_decided_
+    issue_id 분기는 초기(override 이전) decided_next_action 값만 보므로 이 fallback
+    재대입에는 반응하지 않아야 한다 — 이 테스트는 그 경계를 명시적으로 고정한다."""
+
+    class _NoQuestionLLM:
+        def __call__(self, prompt: str) -> str:
+            return json.dumps(
+                {
+                    "agreements": [],
+                    "disagreements": [],
+                    "facilitator_summary": "지금까지 나온 의견을 계속 이어갑니다.",
+                    "spoken_text": "계속 논의를 이어가겠습니다.",
+                    "needs_user_decision": False,
+                    "user_question": None,
+                },
+                ensure_ascii=False,
+            )
+
+    node = make_discussion_facilitator_node(_NoQuestionLLM())
+    open_problem_issue = {
+        "issue_id": "issue_problem_1",
+        "title": "문제 정의",
+        "family": "problem",
+        "status": "open",
+        "turns": 1,
+    }
+    state = _facilitator_state(
+        active_issue_id="issue_problem_1",
+        open_issues=[open_problem_issue],
+        resolved_issues=[],
+        round=5,
+        max_rounds=5,
+        messages=[
+            {
+                "message_id": "MSG-DEV-2",
+                "speaker_id": "dev_expert",
+                "structured": {"needs_user_input": False},
+            },
+        ],
+    )
+
+    update = node(state)
+
+    assert update.get("next_route") == "continue_round"
+    assert update.get("active_issue_id") is None or update.get("active_issue_id") == "issue_problem_1"
+    assert "resolved_issues" not in update or all(
+        issue["issue_id"] != "issue_problem_1" for issue in update["resolved_issues"]
+    )
 
 
 def test_facilitator_prompt_receives_local_resolved_issues_with_closed_reason_and_next_hint():
