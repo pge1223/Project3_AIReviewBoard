@@ -93,7 +93,9 @@ const CHANGED_BY_LABEL = {
   user: '사용자',
 }
 
-export default function IdeationProgressPanel({ ideationConv }) {
+// pge/Claude(2026-07-28, 요청: "탭이랑 패널이 붙어있어야 해") — IdeaCanvasPanel과 같은
+// 이유로 bare 옵션을 추가한다(그 파일 주석 참고).
+export default function IdeationProgressPanel({ ideationConv, bare = false }) {
   if (!ideationConv) return null
 
   const {
@@ -120,7 +122,7 @@ export default function IdeationProgressPanel({ ideationConv }) {
   const lastQuestionMessage = [...(messages || [])].reverse().find((m) => m?.message_type === 'question')
 
   return (
-    <div className="card glass" style={{ padding: 14 }}>
+    <div className={bare ? undefined : 'card glass'} style={{ padding: 14 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
         <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-0)' }}>아이디어 진행 상황</div>
         <span className={`badge ${ideaLocked ? 'green' : 'amber'} mono`} style={{ fontSize: 12 }}>

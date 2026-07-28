@@ -1,4 +1,3 @@
-import { ClipboardList } from 'lucide-react'
 import { FEASIBILITY_LABEL } from './ideationConversationHelpers'
 
 // 작성자: 가은/Claude(2026-07-22)
@@ -98,7 +97,12 @@ function groupByCategory(value) {
   return groups
 }
 
-export default function IdeaCanvasPanel({ ideationConv, analysis }) {
+// pge/Claude(2026-07-28, 요청: "탭이랑 패널이 붙어있어야 해") — bare=true면 이 컴포넌트
+// 자신의 card glass 외곽 박스(테두리·그림자·둥근 모서리)를 그리지 않고 내용만 반환한다.
+// 호출부(IdeationConversationScreen.jsx)가 탭 줄과 이 내용을 하나의 outer card 안에
+// 같이 넣어서, 탭과 패널이 별개의 박스 두 개로 떠 보이지 않고 물리적으로 같은 박스
+// 안에 있게 한다.
+export default function IdeaCanvasPanel({ ideationConv, analysis, bare = false }) {
   if (!ideationConv) return null
 
   // idea_canvas(매 라운드 canvas_update 노드가 갱신한 최신 값)가 있으면 그것을, 아직
@@ -119,11 +123,9 @@ export default function IdeaCanvasPanel({ ideationConv, analysis }) {
   const criteriaGroups = groupByCategory(analysis?.official_facts?.evaluation_criteria)
 
   return (
-    <div className="card glass" style={{ marginBottom: 12, padding: 18 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 4 }}>
-        <ClipboardList size={17} color="var(--purple)" />
-        <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text-0)' }}>아이디어 기획 캔버스</div>
-      </div>
+    <div className={bare ? undefined : 'card glass'} style={bare ? { padding: 18 } : { marginBottom: 12, padding: 18 }}>
+      {/* pge/Claude(2026-07-28, 요청: "탭에 로고 박고 패널 안 타이틀은 지워줘") — 아이콘·
+          제목 줄은 이제 탭 버튼(IdeationConversationScreen.jsx)이 보여주므로 중복 제거. */}
       <div style={{ fontSize: 14.5, fontWeight: 500, color: '#625d72', lineHeight: 1.65, marginBottom: 12 }}>
         위원 발언과 공모전 분석을 바탕으로 자동으로 정리돼요.
       </div>
