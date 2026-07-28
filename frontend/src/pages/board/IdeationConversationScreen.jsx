@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from 'react'
-import { AlertCircle, ArrowRight, CheckCircle2, ChevronDown, ChevronUp, Circle, ClipboardList, Download, ExternalLink, History, Lightbulb, ListChecks, Newspaper, RefreshCw, Send, Sparkles, Users } from 'lucide-react'
+import { AlertCircle, ArrowRight, CheckCircle2, ChevronDown, ChevronUp, Circle, ClipboardList, ExternalLink, History, Lightbulb, ListChecks, Newspaper, RefreshCw, Send, Sparkles, Users } from 'lucide-react'
 import {
   cancelIdeationConversation,
   continueIdeationExpertTurnStream,
@@ -2106,53 +2106,6 @@ export function IdeationScreen({
     }
   }
 
-  // 가은/Claude(2026-07-24, 요청: 분석용 JSON 내보내기) — 아이디어 기획 캔버스(idea_canvas),
-  // 대화 전체(발화자·내용, UI 토글로 숨겨진 발언도 전부 포함 — 분석 목적이라 화면 표시
-  // 필터를 따르지 않는다), 신청서 양식 항목을 한 파일로 내려받는다. 세션 루프·회귀
-  // 디버깅용으로 실제 대화 로그를 그대로 봐야 할 때 쓴다(구두 요청, 2026-07-26 dev
-  // #131-167 merge 후 재이식 — merge 전 이 함수가 참조하던 confirmed_plan/
-  // application_form_draft/candidate_seed 등 form_coach_v2 전용 필드는 dev 쪽 데이터
-  // 모델에 없어 뺐다. message.structured는 스키마가 계속 바뀌므로 가공하지 않고
-  // 그대로 담는다).
-  function handleExportAnalysisJson() {
-    if (!ideationConv) return
-    const payload = {
-      exported_at: new Date().toISOString(),
-      session_id: ideationConv.session_id,
-      competition_name: ideationConv.competition_name || null,
-      phase: ideationConv.phase || null,
-      round: ideationConv.round || null,
-      stop_reason: ideationConv.stop_reason || null,
-      idea_canvas: ideationConv.idea_canvas || null,
-      last_user_selection: ideationConv.user_selection_message || null,
-      conversation: (ideationConv.messages || []).map((m) => ({
-        round: m.round ?? null,
-        speaker: speakerMetaFor(m).label,
-        speaker_id: m.speaker_id,
-        role: m.role || null,
-        message_type: m.message_type,
-        content: m.content,
-        structured: m.structured || null,
-      })),
-      application_form_items: applicationFormItems,
-    }
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    // 가은/Claude(2026-07-24, 요청: "저장 제목 기준이 뭐야? 시간 넣어줘") — 이전엔
-    // session_id만 써서 같은 세션을 여러 번 내보내면 파일명이 계속 같았다(다운로드 폴더에서
-    // 몇 번째로 내보낸 건지 구분 불가). 내보낸 시각(로컬 시간, YYYYMMDD-HHmmss)을 붙인다.
-    const now = new Date()
-    const pad = (n) => String(n).padStart(2, '0')
-    const timestamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
-    a.download = `ideation-${ideationConv.session_id || 'export'}-${timestamp}.json`
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    URL.revokeObjectURL(url)
-  }
-
   function handleRestart() {
     const key = ideationSessionStorageKey(projectId)
     if (key) sessionStorage.removeItem(key)
@@ -2226,13 +2179,6 @@ export function IdeationScreen({
       ]
     : []
 
-  // TEMP DEBUG (RAG 연결 확인용, 확인 끝나면 삭제) — useRag는 이번 세션이 RAG를 "요청"
-  // 했는지만 말해준다(criteriaDocuments 색인 완료 여부 기준). 실제로 근거가 붙었는지는
-  // 지금까지 나온 위원 발언 중 linked_evidence_refs가 있는 메시지 수로 판단한다.
-  const ragDebugRequested = resolveUseRag(projectId, criteriaDocuments)
-  const ragDebugLinkedCount = visibleMessages.filter((m) => (m.linked_evidence_refs || []).length > 0).length
-  const ragDebugExpertCount = visibleMessages.filter((m) => m.speaker_id !== 'ideation_facilitator' && m.speaker_id !== 'user').length
-
   return (
     <div className="rb-ideation-layout">
       <StreamingCursorStyle />
@@ -2248,32 +2194,6 @@ export function IdeationScreen({
             <button type="button" className="rb-back-button" onClick={onBack} disabled={busy} aria-label="이전 화면으로 이동">
               {'←'}
             </button>
-          )}
-          {ideationConv && (
-            <button
-              type="button"
-              className="btn-ghost"
-              style={{ padding: '5px 10px', fontSize: 12.5, display: 'inline-flex', alignItems: 'center', gap: 5 }}
-              onClick={handleExportAnalysisJson}
-              title="분석용 JSON 내보내기"
-            >
-              <Download size={13} /> JSON 내보내기
-            </button>
-          )}
-          {ideationConv && (
-            // TEMP DEBUG (RAG 연결 확인용, 확인 끝나면 삭제)
-            <span
-              title="RAG 요청 여부 / 근거 연결된 위원 발언 수 (임시 디버그)"
-              style={{
-                fontSize: 11,
-                padding: '3px 7px',
-                borderRadius: 999,
-                border: '1px solid var(--glass-border)',
-                color: ragDebugRequested ? 'var(--purple)' : 'var(--text-2)',
-              }}
-            >
-              RAG {ragDebugRequested ? 'ON' : 'OFF'} · 근거 {ragDebugLinkedCount}/{ragDebugExpertCount}
-            </span>
           )}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 2 }}>
