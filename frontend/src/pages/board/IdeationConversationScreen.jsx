@@ -2133,8 +2133,8 @@ export function IdeationScreen({
       <div>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
           {onBack && (
-            <button type="button" className="btn-ghost" style={{ padding: '5px 10px', fontSize: 13.5 }} onClick={onBack} disabled={busy}>
-              ← 이전
+            <button type="button" className="rb-back-button" onClick={onBack} disabled={busy} aria-label="이전 화면으로 이동">
+              {'←'}
             </button>
           )}
           {ideationConv && (
@@ -2819,12 +2819,14 @@ export function IdeationResultScreen({ ideationConv, setIdeationConv, onBack, on
   if (ideationConv?.phase === 'awaiting_concept_confirmation') {
     return (
       <div style={{ maxWidth: 780 }}>
-        <div className="badge purple mono" style={{ marginBottom: 12 }}>주제 확정 대기 · 전문가 검증 완료</div>
-        {onBack && (
-          <button type="button" className="btn-ghost" style={{ marginBottom: 12, padding: '5px 10px', fontSize: 13.5 }} onClick={onBack}>
-            ← 이전
-          </button>
-        )}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12 }}>
+          {onBack && (
+            <button type="button" className="rb-back-button" onClick={onBack} aria-label="이전 화면으로 이동">
+              {'←'}
+            </button>
+          )}
+          <div className="badge purple mono">주제 확정 대기 · 전문가 검증 완료</div>
+        </div>
         {confirmError && <p style={{ color: 'var(--coral)', fontSize: 14.5, marginBottom: 12 }}>{confirmError.message}</p>}
         <ConceptConfirmationSummary
           provisionalIdea={ideationConv?.provisional_idea}
@@ -2853,12 +2855,14 @@ export function IdeationResultScreen({ ideationConv, setIdeationConv, onBack, on
 
   return (
     <div style={{ maxWidth: 780 }}>
-      <div className="badge green mono" style={{ marginBottom: 12 }}>주제 확정 · 기획서 작성 출발점</div>
-      {onBack && (
-        <button type="button" className="btn-ghost" style={{ marginBottom: 12, padding: '5px 10px', fontSize: 13.5 }} onClick={onBack}>
-          ← 이전
-        </button>
-      )}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12 }}>
+        {onBack && (
+          <button type="button" className="rb-back-button" onClick={onBack} aria-label="이전 화면으로 이동">
+            {'←'}
+          </button>
+        )}
+        <div className="badge green mono">주제 확정 · 기획서 작성 출발점</div>
+      </div>
       <h2 style={{ fontSize: 23, fontWeight: 700, marginBottom: 20 }}>{proposal.idea_name || '확정된 주제'}</h2>
 
       <div className="card glass">
@@ -2901,16 +2905,18 @@ export function ApplicationFormDraftScreen({ ideationConv, onBack }) {
   if (!ideationConv || items.length === 0) {
     return (
       <div style={{ maxWidth: 760 }}>
-        <div className="badge amber mono" style={{ marginBottom: 12 }}>신청서 항목 없음</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12 }}>
+          {onBack && (
+            <button type="button" className="rb-back-button" onClick={onBack} aria-label="이전 화면으로 이동">
+              {'←'}
+            </button>
+          )}
+          <div className="badge amber mono">신청서 항목 없음</div>
+        </div>
         <h2 style={{ fontSize: 21, fontWeight: 700, marginBottom: 16 }}>이 세션에는 선택된 신청서 항목이 없어요</h2>
         <p style={{ fontSize: 14.5, color: 'var(--text-2)' }}>
           회의를 시작하기 전 신청서 양식 항목을 선택해야 초안을 만들 수 있어요.
         </p>
-        {onBack && (
-          <button type="button" className="btn-ghost" style={{ marginTop: 16, padding: '5px 10px', fontSize: 13.5 }} onClick={onBack}>
-            ← 이전
-          </button>
-        )}
       </div>
     )
   }
@@ -2927,12 +2933,14 @@ export function ApplicationFormDraftScreen({ ideationConv, onBack }) {
 
   return (
     <div style={{ maxWidth: 780 }}>
-      <div className="badge green mono" style={{ marginBottom: 12 }}>신청서 초안</div>
-      {onBack && (
-        <button type="button" className="btn-ghost" style={{ marginBottom: 12, padding: '5px 10px', fontSize: 13.5 }} onClick={onBack}>
-          ← 이전
-        </button>
-      )}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12 }}>
+        {onBack && (
+          <button type="button" className="rb-back-button" onClick={onBack} aria-label="이전 화면으로 이동">
+            {'←'}
+          </button>
+        )}
+        <div className="badge green mono">신청서 초안</div>
+      </div>
       <h2 style={{ fontSize: 23, fontWeight: 700, marginBottom: 8 }}>
         {ideationConv.idea_proposal?.idea_name || '신청서 초안'}
       </h2>

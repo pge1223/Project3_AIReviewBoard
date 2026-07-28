@@ -1372,7 +1372,7 @@ function ScoringSchemeCard({ rubric, open, onToggle }) {
 // embedded: true면 /board 플로우("종합 리포트" 단계) 안에 끼워 넣는 모드 — 상단 나가기/
 // 실험 배지 바를 숨긴다(사이드바가 이미 단계 이동을 제공하므로). 기본(false)은 /version-test
 // 단독 페이지로 동작. projectId가 오면(embedded) 그 프로젝트의 실제 /report를 렌더한다.
-export default function VersionTrackerTestPage({ embedded = false, projectId = null }) {
+export default function VersionTrackerTestPage({ embedded = false, projectId = null, onBack = null }) {
   const navigate = useNavigate()
   const [revealed, setRevealed] = useState(1)
   const [selectedIndex, setSelectedIndex] = useState(0)
@@ -1715,13 +1715,23 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
   return (
     <div className="vt-root">
       <div style={{ maxWidth: 920, margin: '0 auto', padding: '28px 24px 64px' }}>
-        {/* 상단 — 단독 페이지일 때만. 플로우 임베드 시엔 사이드바가 이동을 담당. */}
+        {/* 상단 — 단독 페이지일 때만. 플로우 임베드 시엔 사이드바가 이동을 담당하지만,
+            pge/Claude(2026-07-28, 요청: "이전 화면 버튼 없는 곳은 생성, 위치도 통일")에
+            따라 다른 마법사 화면과 같은 rb-back-button을 여기도 추가한다. */}
         {!embedded && (
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
             <button className="btn-ghost" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }} onClick={() => navigate('/board')}>
               <ArrowLeft size={15} /> 나가기
             </button>
             <span className="badge purple mono"><FlaskConical size={12} /> User RAG · 실험 화면</span>
+          </div>
+        )}
+        {embedded && onBack && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12 }}>
+            <button type="button" className="rb-back-button" onClick={onBack} aria-label="이전 화면으로 이동">
+              {'←'}
+            </button>
+            <div className="badge purple mono">종합 리포트</div>
           </div>
         )}
 
