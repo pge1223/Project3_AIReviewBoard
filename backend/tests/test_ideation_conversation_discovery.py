@@ -44,6 +44,105 @@ def _topic_from_prompt(prompt: str) -> str:
 
 def _stub_llm_call(session_id: str, model: str):
     def llm_call(prompt: str) -> str:
+        # 용준/Claude(2026-07-27, 요청: "발산 전에 완성, 선택 즉시 확정" 구조 개편) —
+        # candidate_planning보다 앞선 신규 단계 5종의 stub. 최소 조건(방향 3개 이상/반론
+        # 1회 이상/수정·결합 1회 이상)을 1라운드 안에 채워, 아래 기존 [후보 생성 규칙] 이하
+        # 스텁으로 곧바로 이어지게 한다(기존 테스트가 기대하는 후보 내용/개수는 그대로 유지).
+        if "[문제 영역 생성 규칙]" in prompt:
+            return json.dumps(
+                {
+                    "problem_areas": [
+                        {"area_id": "area_1", "title": "문제 영역 1", "summary": "요약1", "who_is_affected": "대상1"},
+                        {"area_id": "area_2", "title": "문제 영역 2", "summary": "요약2", "who_is_affected": "대상2"},
+                    ]
+                },
+                ensure_ascii=False,
+            )
+        if "[문제 정의 규칙]" in prompt:
+            return json.dumps(
+                {
+                    "problem_definition": {
+                        "problem": "문제 정의",
+                        "target_user": "대상 사용자",
+                        "user_context": "사용자 상황",
+                        "root_cause": "원인",
+                        "existing_solution": "기존 방식",
+                        "existing_limitations": "기존 한계",
+                    }
+                },
+                ensure_ascii=False,
+            )
+        if "[발산 규칙]" in prompt:
+            return json.dumps(
+                {
+                    "solution_directions": [
+                        {
+                            "direction_id": f"direction_{i}",
+                            "title": f"방향 {i}",
+                            "core_principle": f"원리 {i}",
+                            "mechanism": f"작동 방식 {i}",
+                            "target_user_fit": f"적합성 {i}",
+                        }
+                        for i in (1, 2, 3, 4)
+                    ]
+                },
+                ensure_ascii=False,
+            )
+        if "[반론·결합 규칙]" in prompt:
+            return json.dumps(
+                {
+                    "round_events": [
+                        {
+                            "issued_by": "dev_expert",
+                            "action_type": "critique",
+                            "target_direction_ids": ["direction_1", "direction_3"],
+                            "spoken_text": "방향 1과 3은 그대로 구현하기 어렵습니다.",
+                            "detail": "상세",
+                        },
+                        {
+                            "issued_by": "planning_expert",
+                            "action_type": "merge",
+                            "target_direction_ids": ["direction_1", "direction_3"],
+                            "spoken_text": "방향 1과 3을 결합하겠습니다.",
+                            "detail": "상세",
+                        },
+                    ],
+                    "resulting_direction": {
+                        "direction_id": "direction_merged_1",
+                        "title": "결합 방향",
+                        "core_principle": "결합 원리",
+                        "mechanism": "결합 작동 방식",
+                        "target_user_fit": "결합 적합성",
+                        "parent_direction_ids": ["direction_1", "direction_3"],
+                        "strengths": ["결합 장점"],
+                        "open_assumptions": ["검증 가정"],
+                    },
+                },
+                ensure_ascii=False,
+            )
+        if "[검증 규칙]" in prompt:
+            return json.dumps(
+                {
+                    "planning": {
+                        "value_worth_solving": "가치 있음",
+                        "target_user_clarity": "명확함",
+                        "differentiation": "차별성 있음",
+                        "usage_motivation": "동기 있음",
+                        "contest_alignment": "기준 부합",
+                        "concerns": [],
+                    },
+                    "technical": {
+                        "data_availability": "확보 가능",
+                        "feasibility": "가능",
+                        "ai_necessity": "필요",
+                        "privacy_or_security_risks": "낮음",
+                        "prototype_feasibility": "가능",
+                        "concerns": [],
+                    },
+                    "unresolved_assumptions": [],
+                },
+                ensure_ascii=False,
+            )
         if "[후보 생성 규칙]" in prompt:
             return json.dumps(
                 {
@@ -68,6 +167,8 @@ def _stub_llm_call(session_id: str, model: str):
                             "differentiation": "차별1",
                             "contest_fit": "적합1",
                             "success_metrics": ["지표1"],
+                            "source_direction_ids": ["direction_2"],
+                            "reflected_evolution_ids": [],
                         },
                         {
                             "candidate_id": "candidate_2",
@@ -81,6 +182,8 @@ def _stub_llm_call(session_id: str, model: str):
                             "differentiation": "차별2",
                             "contest_fit": "적합2",
                             "success_metrics": ["지표2"],
+                            "source_direction_ids": ["direction_merged_1"],
+                            "reflected_evolution_ids": [],
                         },
                     ],
                 },
@@ -301,6 +404,23 @@ def client() -> TestClient:
     return TestClient(app)
 
 
+def _start_discovery_and_select_problem(client: TestClient, **start_json_overrides) -> dict:
+    """용준/Claude(2026-07-27, 요청: "발산 전에 완성, 선택 즉시 확정" 구조 개편) — discovery
+    모드는 이제 /start가 곧바로 후보를 만들지 않고 "problem_discovery"에서 멈춘다. 이
+    헬퍼는 문제 영역 1번을 선택해 기존 계약(즉 /start 직후 후보 2개가 있던 지점)까지
+    자동으로 진행시킨다."""
+    body = {"competition_name": "데모 공모전", "competition_document": "실현가능성을 평가한다."}
+    body.update(start_json_overrides)
+    start_resp = client.post("/ideation-conversation/start", json=body)
+    assert start_resp.status_code == 200
+    assert start_resp.json()["phase"] == "awaiting_problem_focus_selection"
+    session_id = start_resp.json()["session_id"]
+    reply_resp = client.post(f"/ideation-conversation/{session_id}/reply", json={"message": "1번"})
+    assert reply_resp.status_code == 200
+    assert reply_resp.json()["phase"] == "awaiting_candidate_selection"
+    return reply_resp.json()
+
+
 def _force_session_to_awaiting_planning_answer(session_id: str, llm_call) -> None:
     """용준/Claude(2026-07-21, 요청: 전문가 라운드테이블 전환) 보존 검증용 헬퍼 — 새 세션은
     더 이상 phase="awaiting_planning_answer"(1:1 인터뷰 진입점)로 시작하지 않지만
@@ -334,31 +454,36 @@ def test_start_without_user_idea_returns_200_and_discovery_mode(client: TestClie
     assert resp.status_code == 200
     body = resp.json()
     assert body["ideation_mode"] == "discovery"
-    assert body["phase"] == "awaiting_candidate_selection"
-    assert len(body["idea_candidates"]) >= 2
+    # 용준/Claude(2026-07-27, 요청: "발산 전에 완성, 선택 즉시 확정" 구조 개편) — discovery
+    # 모드는 이제 candidate_generation 이전에 문제 발견 단계(problem_discovery)부터
+    # 시작한다 — /start만으로는 아직 후보가 만들어지지 않는다.
+    assert body["phase"] == "awaiting_problem_focus_selection"
     assert body["active_stage"] == "candidate_discovery"
+
+    selected_body = _start_discovery_and_select_problem(client)
+    assert len(selected_body["idea_candidates"]) >= 2
+    assert selected_body["active_stage"] == "candidate_discovery"
 
 
 def test_active_stage_switches_to_refinement_after_candidate_selection(client: TestClient):
-    """discovery로 시작해 후보를 선택하면 ideation_mode는 "discovery"로 유지되지만
-    active_stage는 "candidate_discovery" -> "refinement"로 바뀌어야 한다(프론트 배지가
-    "아이디어 발굴 모드"에서 "아이디어 발전 모드"로 전환되는 근거)."""
-    start_resp = client.post(
-        "/ideation-conversation/start",
-        json={"competition_name": "데모 공모전", "competition_document": "실현가능성을 평가한다."},
-    )
-    assert start_resp.status_code == 200
-    session_id = start_resp.json()["session_id"]
-    assert start_resp.json()["active_stage"] == "candidate_discovery"
+    """discovery로 시작해 후보를 선택하면 ideation_mode는 "discovery"로 유지되지만,
+    확정 전(잠정 선택)에는 active_stage가 "candidate_selection"이고, 사용자가 실제로
+    확정해야만 "refinement"로 바뀐다(요청 2·3번 — 선택 즉시 확정되지 않는다)."""
+    body = _start_discovery_and_select_problem(client)
+    session_id = body["session_id"]
 
     reply_resp = client.post(f"/ideation-conversation/{session_id}/reply", json={"message": "1번"})
     assert reply_resp.status_code == 200
     body = reply_resp.json()
     assert body["ideation_mode"] == "discovery"
-    # 용준/Claude(2026-07-21, 요청: 전문가 라운드테이블 전환) — 후보 확정 직후 라운드테이블이
-    # 같은 요청 안에서 곧바로 끝까지 실행돼 "awaiting_user_decision"으로 멈춘다.
-    assert body["phase"] == "discussion_complete"
-    assert body["active_stage"] == "refinement"
+    assert body["phase"] == "awaiting_concept_confirmation"
+    assert body["active_stage"] == "candidate_selection"
+
+    confirm_resp = client.post(f"/ideation-conversation/{session_id}/reply", json={"message": "확정할게요"})
+    assert confirm_resp.status_code == 200
+    confirm_body = confirm_resp.json()
+    assert confirm_body["phase"] == "discussion_complete"
+    assert confirm_body["active_stage"] == "refinement"
 
 
 def test_start_with_whitespace_only_user_idea_returns_200_and_discovery_mode(client: TestClient):
@@ -457,12 +582,7 @@ def test_reply_response_includes_topic_fields_after_first_answer(client: TestCli
 
 
 def test_start_response_includes_original_candidates_field(client: TestClient):
-    resp = client.post(
-        "/ideation-conversation/start",
-        json={"competition_name": "데모 공모전", "competition_document": "실현가능성을 평가한다."},
-    )
-    assert resp.status_code == 200
-    body = resp.json()
+    body = _start_discovery_and_select_problem(client)
     assert len(body["original_idea_candidates"]) >= 2
     assert body["selection_intent"] is None
     assert body["source_candidates"] == []
@@ -538,11 +658,8 @@ def test_start_without_application_form_items_defaults_to_empty_list(client: Tes
 
 
 def test_reply_response_includes_merge_context_fields_after_combine(client: TestClient):
-    start_resp = client.post(
-        "/ideation-conversation/start",
-        json={"competition_name": "데모 공모전", "competition_document": "실현가능성을 평가한다."},
-    )
-    session_id = start_resp.json()["session_id"]
+    body = _start_discovery_and_select_problem(client)
+    session_id = body["session_id"]
 
     reply_resp = client.post(
         f"/ideation-conversation/{session_id}/reply", json={"message": "1번과 2번 결합해줘"}
@@ -555,10 +672,21 @@ def test_reply_response_includes_merge_context_fields_after_combine(client: Test
     assert {c["candidate_id"] for c in body["source_candidates"]} == {"candidate_1", "candidate_2"}
     assert body["merge_analysis"]["fit"] == "high"
     assert body["merge_analysis"]["common_problem"] == "반복 업무 부담"
-    assert body["selected_idea"]["title"] == "결합 아이디어"
-    # 용준/Claude(2026-07-21, 요청: 전문가 라운드테이블 전환) — 결합 확정 직후 라운드테이블이
-    # 같은 요청 안에서 곧바로 끝까지 실행돼 "awaiting_user_decision"으로 멈춘다.
-    assert body["phase"] == "discussion_complete"
+    # 용준/Claude(2026-07-27, 요청: "발산 전에 완성, 선택 즉시 확정" 구조 개편) — 결합
+    # 확정 직후에도 selected_idea는 아직 None이다(provisional_idea만 채워진다). 사용자가
+    # 실제로 확정해야 selected_idea가 채워지고 라운드테이블이 시작된다.
+    assert body["selected_idea"] is None
+    assert body["provisional_idea"]["title"] == "결합 아이디어"
+    assert body["phase"] == "awaiting_concept_confirmation"
+
+    confirm_resp = client.post(f"/ideation-conversation/{session_id}/reply", json={"message": "확정할게요"})
+    assert confirm_resp.status_code == 200
+    confirm_body = confirm_resp.json()
+    assert confirm_body["selected_idea"]["title"] == "결합 아이디어"
+    assert confirm_body["idea_locked"] is True
+    # 용준/Claude(2026-07-21, 요청: 전문가 라운드테이블 전환) — 확정 직후 라운드테이블이
+    # 같은 요청 안에서 곧바로 끝까지 실행돼 "discussion_complete"로 멈춘다.
+    assert confirm_body["phase"] == "discussion_complete"
 
 
 # ---------------------------------------------------------------------------
@@ -607,17 +735,18 @@ def test_reply_with_dont_know_advances_instead_of_repeating_question(client: Tes
 
 def test_session_recovery_preserves_discussion_rounds_and_message_order(client: TestClient):
     """요청 2026-07-21 후속 5번 — 세션 복구(GET /ideation-conversation/{session_id}) 후에도
-    discussion_rounds와 메시지 순서가 그대로 보존되는지 확인한다. 후보 선택 -> 기획/개발
-    질문에 정상 답변 -> expert_discussion(기획 최초 의견 -> 개발 검토 -> 진행자 정리)까지
-    실제로 진행한 뒤, GET 응답이 마지막 POST /reply 응답과 완전히 동일한지 비교한다."""
-    start_resp = client.post(
-        "/ideation-conversation/start",
-        json={"competition_name": "데모 공모전", "competition_document": "실현가능성을 평가한다."},
-    )
-    assert start_resp.status_code == 200
-    session_id = start_resp.json()["session_id"]
+    discussion_rounds와 메시지 순서가 그대로 보존되는지 확인한다. 문제 선택 -> 후보 선택 ->
+    확정(concept_confirmation, 요청 2·3번 — 선택만으로는 라운드테이블이 열리지 않는다) ->
+    자유 발언 두 번(expert_discussion 라운드 반복)까지 실제로 진행한 뒤, GET 응답이 마지막
+    POST /reply 응답과 완전히 동일한지 비교한다."""
+    body = _start_discovery_and_select_problem(client)
+    session_id = body["session_id"]
 
-    client.post(f"/ideation-conversation/{session_id}/reply", json={"message": "1번"})
+    candidate_selected = client.post(f"/ideation-conversation/{session_id}/reply", json={"message": "1번"}).json()
+    assert candidate_selected["phase"] == "awaiting_concept_confirmation"
+    confirmed = client.post(f"/ideation-conversation/{session_id}/reply", json={"message": "확정할게요"}).json()
+    assert confirmed["idea_locked"] is True
+
     client.post(f"/ideation-conversation/{session_id}/reply", json={"message": "타깃은 동네 카페 사장님입니다"})
     reply_resp = client.post(
         f"/ideation-conversation/{session_id}/reply", json={"message": "카카오톡 채널 API를 쓰려 합니다"}
@@ -636,6 +765,124 @@ def test_session_recovery_preserves_discussion_rounds_and_message_order(client: 
     assert [m["speaker_id"] for m in get_body["messages"]] == [m["speaker_id"] for m in reply_body["messages"]]
     assert get_body["discussion_rounds"] == reply_body["discussion_rounds"]
     assert get_body["phase"] == reply_body["phase"]
+
+
+# ---------------------------------------------------------------------------
+# 후속 요청(2026-07-27) 4번 — /reply의 action_code/action_payload가 실제로 그래프까지
+# 전달돼 자연어 파싱보다 우선 적용되는지 확인한다.
+# ---------------------------------------------------------------------------
+
+
+def test_reply_action_code_confirm_concept_locks_idea_via_api(client: TestClient):
+    body = _start_discovery_and_select_problem(client)
+    session_id = body["session_id"]
+
+    selected_resp = client.post(f"/ideation-conversation/{session_id}/reply", json={"message": "1번"})
+    assert selected_resp.json()["phase"] == "awaiting_concept_confirmation"
+
+    # 텍스트만 보면 확정 키워드가 전혀 없지만, action_code가 우선 적용돼 확정된다.
+    confirm_resp = client.post(
+        f"/ideation-conversation/{session_id}/reply",
+        json={"message": "음...", "action_code": "confirm_concept"},
+    )
+    assert confirm_resp.status_code == 200
+    assert confirm_resp.json()["idea_locked"] is True
+
+
+def test_reply_action_code_invalid_payload_returns_400(client: TestClient):
+    start_resp = client.post(
+        "/ideation-conversation/start",
+        json={"competition_name": "데모 공모전", "competition_document": "실현가능성을 평가한다."},
+    )
+    session_id = start_resp.json()["session_id"]
+
+    resp = client.post(
+        f"/ideation-conversation/{session_id}/reply",
+        json={"message": "1번", "action_code": "select_problem_focus", "action_payload": {"indices": [99]}},
+    )
+    assert resp.status_code == 400
+    assert "action_payload" in resp.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# 용준/Claude(2026-07-27, 요청: "구버전 후보 화면이 브라우저 세션 재개로 계속 다시 뜬다 —
+# 자동 폐기") — 문제 발견 단계 개편(2026-07-27) 이전에는 discovery 세션이 candidate_generation
+# 부터 곧바로 시작해 problem_definition을 전혀 채우지 않았다. 그런 구버전 세션이
+# MongoDB/메모리 캐시에 남아 있으면, session_id 기반 재개(GET /{session_id})와 프로젝트
+# 최근 회의 재개(GET /project/{id}/latest) 둘 다 사용자를 그 구버전 후보 화면으로 돌려보내야
+# 했다. 이제는 두 조회 API가 problem_definition이 비어 있는 candidate_generation/
+# awaiting_candidate_selection 세션을 "없는 세션"(404)처럼 취급해, 프론트가 새
+# problem_discovery 세션을 자동으로 시작하게 한다 — 반대로 problem_definition을 거쳐
+# 정상적으로 같은 phase에 도달한 신규 세션은 그대로 재개돼야 한다(오탐 방지).
+# ---------------------------------------------------------------------------
+
+
+def _seed_session(session_id: str, *, phase: str, problem_definition, project_id: str = "proj-legacy-test"):
+    from app.api.routes.meetings import GUEST_USER_EMAIL
+
+    state = {
+        "session_id": session_id,
+        "ideation_mode": "discovery",
+        "phase": phase,
+        "problem_definition": problem_definition,
+        "idea_candidates": [{"title": "AI 기반 민원 처리 자동화 시스템"}],
+        "messages": [],
+        "round": 1,
+        "max_rounds": 3,
+        "notice_and_criteria": {},
+        "user_idea": {},
+        "consensus": [],
+        "unresolved_issues": [],
+    }
+    conv_route._store.create(state, use_rag=False, project_id=project_id, user_email=GUEST_USER_EMAIL)
+    return state
+
+
+def test_get_session_hides_legacy_pre_problem_stage_discovery_session(client: TestClient):
+    _seed_session("LEGACY-CANDIDATE-SESSION", phase="awaiting_candidate_selection", problem_definition=None)
+    resp = client.get("/ideation-conversation/LEGACY-CANDIDATE-SESSION")
+    assert resp.status_code == 404
+
+
+def test_get_session_still_resumes_new_pipeline_session_at_same_phase(client: TestClient):
+    _seed_session(
+        "REAL-CANDIDATE-SESSION",
+        phase="awaiting_candidate_selection",
+        problem_definition={"problem": "실제 문제 정의"},
+    )
+    resp = client.get("/ideation-conversation/REAL-CANDIDATE-SESSION")
+    assert resp.status_code == 200
+    assert resp.json()["phase"] == "awaiting_candidate_selection"
+
+
+def test_get_latest_project_conversation_hides_legacy_session(client: TestClient, monkeypatch):
+    _seed_session(
+        "LEGACY-LATEST-SESSION", phase="candidate_generation", problem_definition=None, project_id="proj-legacy-latest"
+    )
+
+    async def fake_find_latest(project_id, user_email):
+        return {"session_id": "LEGACY-LATEST-SESSION"}
+
+    monkeypatch.setattr(conv_route._session_repo, "find_latest_by_project", fake_find_latest)
+    resp = client.get("/ideation-conversation/project/proj-legacy-latest/latest")
+    assert resp.status_code == 404
+
+
+def test_get_latest_project_conversation_still_resumes_new_pipeline_session(client: TestClient, monkeypatch):
+    _seed_session(
+        "REAL-LATEST-SESSION",
+        phase="awaiting_candidate_selection",
+        problem_definition={"problem": "실제 문제 정의"},
+        project_id="proj-real-latest",
+    )
+
+    async def fake_find_latest(project_id, user_email):
+        return {"session_id": "REAL-LATEST-SESSION"}
+
+    monkeypatch.setattr(conv_route._session_repo, "find_latest_by_project", fake_find_latest)
+    resp = client.get("/ideation-conversation/project/proj-real-latest/latest")
+    assert resp.status_code == 200
+    assert resp.json()["phase"] == "awaiting_candidate_selection"
 
 
 if __name__ == "__main__":

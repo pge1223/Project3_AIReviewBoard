@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings
@@ -60,6 +61,7 @@ class Settings(BaseSettings):
 
     # RAG (Chroma)
     CHROMA_PERSIST_DIR: str = "./chroma_db"
+    RAG_EMBEDDING_DEVICE: Literal["cpu", "cuda", "auto"] = "auto"
     RAG_EMBEDDING_BATCH_SIZE: int = Field(default=32, ge=1)
     RAG_TORCH_NUM_THREADS: int | None = Field(default=None, ge=1)
 

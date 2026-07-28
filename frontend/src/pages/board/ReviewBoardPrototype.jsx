@@ -2086,6 +2086,24 @@ export default function ReviewBoardPrototype() {
   // 않는다.
   const [ideationConv, setIdeationConv] = useState(null);
 
+  // 용준/Claude(2026-07-28, 요청: "후보 선택부터 주제 확정까지 추가 입력 없이 한 번의
+  // 흐름으로") — 대화 화면(ideation)에 머무는 동안 phase가 awaiting_concept_confirmation에
+  // 도달하면(후보 선택 -> 전문가 검증까지는 IdeationScreen이 이미 자동으로 진행해 둔
+  // 상태) 사용자가 버튼을 누르지 않아도 "주제 확정" 단계로 즉시 넘어간다. ref로 "이번
+  // 진입에서 이미 자동 이동했는지"를 기억해 뒀다가 phase가 바뀌면 풀어준다 — 그래야
+  // "다른 후보 선택"으로 되돌아가 다시 검증을 통과했을 때도 매번 자동 이동이 다시 걸린다.
+  const autoNavigatedToConfirmRef = useRef(false);
+  useEffect(() => {
+    if (ideationConv?.phase !== 'awaiting_concept_confirmation') {
+      autoNavigatedToConfirmRef.current = false;
+      return;
+    }
+    if (stage === 'ideation' && !autoNavigatedToConfirmRef.current) {
+      autoNavigatedToConfirmRef.current = true;
+      setStage('ideation_result');
+    }
+  }, [ideationConv?.phase, stage]);
+
   const goNext = () => {
     const seq = (mode && FLOW_BY_MODE[mode]) || ["entry"];
     const i = seq.indexOf(stage);
@@ -2286,6 +2304,7 @@ export default function ReviewBoardPrototype() {
           setIdeationConv={setIdeationConv}
           onBack={goPrev}
           onNext={goNext}
+          onReturnToConversation={() => setStage('ideation')}
         />
       )}
       {stage === "form_draft" && <ApplicationFormDraftScreen ideationConv={ideationConv} onBack={goPrev} />}

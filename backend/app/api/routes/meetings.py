@@ -290,6 +290,10 @@ _external_research_service = ExternalResearchService(
     _external_dataset_provider,
     public_api_provider=_external_public_api_provider,
     config=_external_research_config,
+    # 용준/Claude(2026-07-28, 요청: 관련 없는 네이버 뉴스 노출 수정) — NAVER 결과에
+    # semantic_score를 매겨 min_similarity_score로 걸러내려면 임베더가 필요하다.
+    # 새 SentenceTransformer를 만들지 않고 documents.py 싱글턴 KUREEmbedder를 재사용한다.
+    embedder=_kure_embedder,
 )
 
 _CHAIR_MARKER = "위원장(review_chair)입니다"

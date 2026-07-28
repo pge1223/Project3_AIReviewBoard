@@ -11,6 +11,7 @@ External Research Search Service (RAG-007)
 RAG-005 코드는 이 패키지 어디에서도 import하지 않는다).
 """
 
+import dataclasses
 import logging
 import math
 import time
@@ -22,6 +23,7 @@ from ai.rag.external_research.exceptions import (
     ExternalResearchError,
 )
 from ai.rag.external_research.freshness import compute_freshness
+from ai.rag.external_research.indexing_service import EmbedderLike
 from ai.rag.external_research.providers.base import ExternalEvidenceCandidate, ExternalResearchProvider
 from ai.rag.external_research.providers.dataset_provider import DatasetProvider
 from ai.rag.external_research.query_builder import build_external_research_query
@@ -39,11 +41,29 @@ def _is_finite(value: Optional[float]) -> bool:
     return value is not None and not math.isnan(value) and not math.isinf(value)
 
 
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(y * y for y in b))
+    if norm_a == 0.0 or norm_b == 0.0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
 _LIVE_QUERY_SUFFIX = {
     "planning": "최근 뉴스 정책 동향",
     "marketing": "최근 뉴스 시장 동향",
     "technology": "최신 기술 동향 도입 사례",
 }
+
+# 용준/Claude(2026-07-28, RAG-007 NAVER 0건 버그 수정): NAVER 뉴스 검색은 질의어의
+# 모든 단어를 AND 조건으로 취급한다 — 실측(NAVER API HUB, 같은 문맥으로 단어 수만
+# 늘려가며 확인) 결과 문맥 단어가 8개를 넘어가면 total=0으로 무너진다(2단어=84102건,
+# 6단어=444건, 10단어=0건). 기존 코드는 문자 수(300자, 한글 기준 60~100단어)로만
+# 잘랐기 때문에 실제 회의에서 쓰이는 문장형 검색 문맥은 항상 이 임계값을 넘어 실전에서
+# 늘 0건이었다(문제 발견 경위: 실제 세션 로그에서 result_count=0이 반복 확인됨). 접미사
+# 단어까지 포함해 총 단어 수가 임계값 아래로 유지되도록 문맥은 단어 수 기준으로 자른다.
+_LIVE_QUERY_CONTEXT_WORD_LIMIT = 5
 
 
 def _build_live_api_query(request: ExternalResearchRequest, fallback_query: str) -> str:
@@ -51,9 +71,11 @@ def _build_live_api_query(request: ExternalResearchRequest, fallback_query: str)
     context = " ".join((request.query_context or "").split())
     if not context:
         context = " ".join(fallback_query.split())
+    # NAVER 검색에서 공고문 전체가 그대로 질의가 되지 않도록 검색 문맥을 제한한다
+    # (문자 수가 아니라 단어 수로 자른다 — 위 주석 참고).
+    context_words = context.split(" ")[:_LIVE_QUERY_CONTEXT_WORD_LIMIT]
     suffix = _LIVE_QUERY_SUFFIX.get(request.reviewer_role, "최근 동향")
-    # NAVER 검색에서 공고문 전체가 그대로 질의가 되지 않도록 검색 문맥을 제한한다.
-    return f"{context[:300]} {suffix}".strip()
+    return f"{' '.join(context_words)} {suffix}".strip()
 
 
 class ExternalResearchService:
@@ -68,11 +90,20 @@ class ExternalResearchService:
         public_api_provider: Optional[ExternalResearchProvider] = None,
         config: Optional[ExternalResearchConfig] = None,
         freshness_config: Optional[FreshnessConfig] = None,
+        # 용준/Claude(2026-07-28, 요청: 관련 없는 뉴스가 그대로 노출되는 문제 수정) —
+        # PublicApiProvider(NAVER 등)는 자체 유사도 점수를 주지 않아(semantic_score=None,
+        # public_api_provider.py 참고) 출처(publisher/URL/날짜)만 확인되면 검색 문맥과
+        # 전혀 무관한 기사도 그대로 통과했다(실측: "공공기관 AI 혁신 챌린지" 문맥에서
+        # 무관한 금융 감사 기사가 노출됨). embedder가 주어지면 KURE로 문맥-기사 유사도를
+        # 계산해 semantic_score를 채운다 — DatasetProvider와 같은 embedder를 재사용해야
+        # 하므로(새 SentenceTransformer 로딩 금지) 호출자가 주입한다.
+        embedder: Optional[EmbedderLike] = None,
     ):
         self._dataset_provider = dataset_provider
         self._public_api_provider = public_api_provider
         self._config = config or ExternalResearchConfig()
         self._freshness_config = freshness_config or FreshnessConfig()
+        self._embedder = embedder
 
     def search(self, request: ExternalResearchRequest) -> ExternalResearchResponse:
         start = time.monotonic()
@@ -114,6 +145,7 @@ class ExternalResearchService:
                     request,
                     _build_live_api_query(request, query_text),
                     warnings,
+                    relevance_query=query_text,
                 )
             )
 
@@ -198,7 +230,12 @@ class ExternalResearchService:
         return found
 
     def _call_public_api_provider(
-        self, request: ExternalResearchRequest, query_text: str, warnings: list[str]
+        self,
+        request: ExternalResearchRequest,
+        query_text: str,
+        warnings: list[str],
+        *,
+        relevance_query: str,
     ) -> list[ExternalEvidenceCandidate]:
         provider = self._public_api_provider
         logger.info(
@@ -233,7 +270,52 @@ class ExternalResearchService:
             provider.name,
             len(found),
         )
-        return found
+        return self._score_public_api_relevance(found, relevance_query, request.trace_id)
+
+    def _score_public_api_relevance(
+        self,
+        candidates: list[ExternalEvidenceCandidate],
+        relevance_query: str,
+        trace_id: Optional[str],
+    ) -> list[ExternalEvidenceCandidate]:
+        """PublicApiProvider 후보는 semantic_score=None으로 들어온다 — embedder가 있으면
+        검색 문맥(relevance_query, 라벨 포함 원본 질의) 대비 기사(title+content) 유사도를
+        계산해 semantic_score를 채운다. 이후 _filter_candidates()가 기존
+        min_similarity_score 임계값으로 데이터셋 결과와 동일하게 걸러낸다 — 새 필터
+        경로를 따로 만들지 않는다. embedder가 없으면(주입 안 됨) 기존 동작 그대로
+        candidates를 그대로 반환한다(하위 호환)."""
+        if self._embedder is None or not candidates:
+            return candidates
+        try:
+            query_vector = self._embedder.embed_query(relevance_query)
+        except Exception:
+            logger.warning(
+                "[EXTERNAL_RELEVANCE_SCORING_FAILED] trace_id=%s reason=query_embedding_failed", trace_id
+            )
+            return candidates
+
+        scored: list[ExternalEvidenceCandidate] = []
+        for candidate in candidates:
+            if candidate.semantic_score is not None:
+                scored.append(candidate)
+                continue
+            text = f"{candidate.title} {candidate.content}".strip()
+            if not text:
+                scored.append(dataclasses.replace(candidate, semantic_score=0.0))
+                continue
+            try:
+                doc_vector = self._embedder.embed_query(text)
+            except Exception:
+                logger.warning(
+                    "[EXTERNAL_RELEVANCE_SCORING_FAILED] trace_id=%s source_id=%s reason=doc_embedding_failed",
+                    trace_id,
+                    candidate.source_id,
+                )
+                scored.append(candidate)
+                continue
+            score = _cosine_similarity(query_vector, doc_vector)
+            scored.append(dataclasses.replace(candidate, semantic_score=score))
+        return scored
 
     @staticmethod
     def _filter_candidates(

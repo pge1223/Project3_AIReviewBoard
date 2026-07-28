@@ -86,7 +86,7 @@ def test_candidate_selection_indexing_failure_does_not_corrupt_state():
 
     assert state["phase"] != "failed"
     assert state["selected_idea_document_id"] is None
-    assert state["selected_idea"]["candidate_id"] == "candidate_1"  # 선택 자체는 정상 반영됨.
+    assert state["provisional_idea"]["candidate_id"] == "candidate_1"  # 선택 자체는 정상 반영됨.
 
 
 # ---------------------------------------------------------------------------
@@ -111,6 +111,12 @@ def test_user_answer_calls_index_target_evidence_before_next_expert_turn():
     indexer = _RecordingIndexer()
     state = reply_ideation_conversation(
         previous_state=state, user_message="1번", llm_call=llm, index_target_evidence=indexer
+    )
+    assert state["phase"] == "awaiting_concept_confirmation"
+    # 용준/Claude(2026-07-27) — 잠정 선택만으로는 라운드테이블이 시작되지 않는다. 사용자가
+    # 실제로 확정해야(concept_confirmation) idea_locked=True가 되고 라운드테이블이 열린다.
+    state = reply_ideation_conversation(
+        previous_state=state, user_message="확정할게요", llm_call=llm, index_target_evidence=indexer
     )
     # 라운드테이블 한 라운드가 끝나 awaiting_user_decision에서 멈췄다 — 이제 사용자가
     # 자유롭게 한 마디 더 남기면(구체적인 개입) 그 답변이 색인 대상이다.

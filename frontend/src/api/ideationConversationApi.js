@@ -51,11 +51,36 @@ export async function startIdeationConversation({
   return handleResponse(res)
 }
 
-export async function replyIdeationConversation(sessionId, message, model) {
+// 용준/Claude(2026-07-27, 요청: discovery 모드 구조화 액션 버튼) — actionCode/actionPayload는
+// ai/meeting/graph/ideation_conv_problem.py 등이 정의하는 9종 action_code 계약
+// (select_problem_focus/combine_problem_focus/add_solution_direction/merge_directions/
+// drop_direction/proceed_to_validation/revise_candidate/confirm_concept/
+// return_to_problem_definition)을 백엔드가 message 파싱 없이 그대로 신뢰하고 처리하게 하는
+// 선택 파라미터다. 기존 호출부(순수 텍스트 reply)는 두 값을 안 넘기므로 undefined로
+// 직렬화에서 빠져 동작이 그대로다.
+export async function replyIdeationConversation(sessionId, message, model, actionCode, actionPayload) {
   const res = await fetch(`${API_BASE_URL}/ideation-conversation/${sessionId}/reply`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
-    body: JSON.stringify({ message, model: model || undefined }),
+    body: JSON.stringify({
+      message,
+      model: model || undefined,
+      action_code: actionCode || undefined,
+      action_payload: actionPayload || undefined,
+    }),
+  })
+  return handleResponse(res)
+}
+
+// 용준/Claude(2026-07-28, 요청: "다시 시도"가 전체 회의를 처음부터 다시 실행하지 않게) —
+// POST /{sessionId}/retry-failed-node(backend/app/api/routes/ideation_conversation_preview.py::
+// retry_failed_node). phase="failed"인 세션 전용이라 message가 없다 — replyIdeationConversation
+// (/reply)은 phase가 REPLYABLE_PHASES에 있어야만 받아주므로 "failed"에는 쓸 수 없다.
+export async function retryFailedIdeationConversationNode(sessionId, model) {
+  const res = await fetch(`${API_BASE_URL}/ideation-conversation/${sessionId}/retry-failed-node`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ model: model || undefined }),
   })
   return handleResponse(res)
 }
@@ -83,7 +108,7 @@ export async function replyIdeationConversation(sessionId, message, model) {
 export async function replyIdeationConversationStream(
   sessionId,
   message,
-  { model, signal, onEvent, activeIssueId, singleTurn } = {},
+  { model, signal, onEvent, activeIssueId, singleTurn, actionCode, actionPayload } = {},
 ) {
   const res = await fetch(`${API_BASE_URL}/ideation-conversation/${sessionId}/reply/stream`, {
     method: 'POST',
@@ -93,6 +118,8 @@ export async function replyIdeationConversationStream(
       model: model || undefined,
       active_issue_id: activeIssueId || undefined,
       single_turn: singleTurn || undefined,
+      action_code: actionCode || undefined,
+      action_payload: actionPayload || undefined,
     }),
     signal,
   })
@@ -170,6 +197,13 @@ async function readNdjsonStream(res, onEvent) {
   const reader = res.body.getReader()
   const decoder = new TextDecoder('utf-8')
   let buffer = ''
+  let sawDone = false
+
+  function dispatchEvent(event) {
+    if (!event) return
+    if (event.type === 'done') sawDone = true
+    onEvent?.(event)
+  }
 
   try {
     for (;;) {
@@ -179,16 +213,17 @@ async function readNdjsonStream(res, onEvent) {
       const { lines, remainder } = splitNdjsonLines(buffer)
       buffer = remainder
       for (const line of lines) {
-        const event = parseNdjsonLine(line)
-        if (event) onEvent?.(event)
+        dispatchEvent(parseNdjsonLine(line))
       }
     }
     // 마지막 남은 버퍼(정상 흐름에서는 서버가 항상 줄 끝에 개행을 붙이므로 비어 있어야
     // 하지만, 방어적으로 마지막 조각도 확인한다) + 디코더에 남아있을 수 있는 잔여 바이트를
     // 마저 비운다.
     buffer += decoder.decode()
-    const event = parseNdjsonLine(buffer)
-    if (event) onEvent?.(event)
+    dispatchEvent(parseNdjsonLine(buffer))
+    if (!sawDone) {
+      throw new Error('스트리밍 응답이 완료 신호 없이 종료되었습니다.')
+    }
   } finally {
     try {
       reader.releaseLock()
