@@ -106,6 +106,7 @@ def test_write_csv_has_one_row_per_case_with_four_metrics_and_failure_reason(tmp
     row = rows[0]
     assert row["case_id"] == "rag_eval_001"
     assert row["recall_at_k"] == "0.0"
+    assert row["reciprocal_rank"] == "0.0"
     assert row["faithfulness"] == "0.0"
     assert row["hallucination_rate"] == "1.0"
     assert row["persona_evidence_fit"] == "0.25"
@@ -119,6 +120,7 @@ def test_write_markdown_includes_summary_and_worst_cases_sections(tmp_path):
     assert "# RAG Evaluation" in text
     assert "## Summary" in text
     assert "Recall@5" in text
+    assert "MRR@5" in text
     assert "Faithfulness" in text
     assert "Hallucination Rate" in text
     assert "Persona Evidence Fit" in text

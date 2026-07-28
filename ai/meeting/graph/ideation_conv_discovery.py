@@ -43,6 +43,7 @@ def _runtime_scope_for(state: IdeationConvState) -> dict[str, Any]:
     return {
         "session_id": state.get("session_id"),
         "selected_candidate_document_id": state.get("selected_idea_document_id"),
+        "phase": state.get("phase"),
     }
 
 # 용준/Claude(2026-07-22, 요청: 선택된 아이디어를 target 문서로 생성) — ai/meeting/graph는
@@ -296,30 +297,44 @@ def _candidate_planning_retry_note_for(
 # 실패 지점을 만들지 않기 위함이다(요청: "무한 재시도는 금지"와 같은 원칙 — 폴백은
 # 반드시 성공해야 하므로 LLM을 타지 않는다). 최대 3개까지만 쓴다(정상 경로와 동일한
 # candidates_count 제약, _validate_candidate_planning_response 참고).
-def _build_fallback_candidates(state: IdeationConvState, active_directions: list[dict]) -> list[dict]:
-    problem_definition = state.get("problem_definition") or {}
+def solution_direction_to_idea(problem_definition: dict | None, direction: dict, *, label: str) -> dict:
+    """problem_definition + 해결 방향(direction) 하나를 candidate/provisional_idea가 공유하는
+    형태(problem/target_user/solution 등)로 결정론적으로 변환한다(LLM 미사용). 용준/Claude
+    (2026-07-28, 요청: "위원들이 결합하는 방식으로" 카드 선택 단계 없이 검증으로 바로
+    진입) — 원래 이 함수(당시 이름 없이 인라인) 로직은 candidate_planning 재시도 실패
+    시의 안전 폴백(`_build_fallback_candidates`)에만 쓰였는데, 지금은
+    `ideation_conv_problem.py::make_provisional_from_merge_node`도 공유해서 쓴다."""
+    problem_definition = problem_definition or {}
     fallback_problem = problem_definition.get("problem") or "공고문에서 확인되지 않음"
     fallback_target_user = problem_definition.get("target_user") or "공고문에서 확인되지 않음"
+    title = direction.get("title") or label
+    mechanism = direction.get("mechanism") or "공고문에서 확인되지 않음"
+    core_principle = direction.get("core_principle") or "공고문에서 확인되지 않음"
+    target_user = direction.get("target_user_fit") or fallback_target_user
+    return {
+        "title": title,
+        "problem": fallback_problem,
+        "target_user": target_user,
+        "usage_scenario": f"'{title}' 방향을 그대로 적용해 {target_user}의 문제 상황을 해결합니다.",
+        "core_value": core_principle,
+        "solution": mechanism,
+        "main_features": [mechanism],
+        "differentiation": f"'{title}' 해결 방향의 핵심 원리를 그대로 반영한 안전 후보입니다.",
+        "contest_fit": "공모전 적합성은 다음 검증 단계에서 위원들이 다시 확인합니다.",
+        "success_metrics": ["검증 단계에서 확정 예정"],
+    }
+
+
+def _build_fallback_candidates(state: IdeationConvState, active_directions: list[dict]) -> list[dict]:
+    problem_definition = state.get("problem_definition") or {}
     candidates: list[dict] = []
     for index, direction in enumerate(active_directions[:3], start=1):
-        title = direction.get("title") or f"해결 방향 {index}"
-        mechanism = direction.get("mechanism") or "공고문에서 확인되지 않음"
-        core_principle = direction.get("core_principle") or "공고문에서 확인되지 않음"
-        target_user = direction.get("target_user_fit") or fallback_target_user
+        idea = solution_direction_to_idea(problem_definition, direction, label=f"해결 방향 {index}")
         direction_id = direction.get("direction_id")
         candidates.append(
             {
                 "candidate_id": f"candidate_{index}",
-                "title": title,
-                "problem": fallback_problem,
-                "target_user": target_user,
-                "usage_scenario": f"'{title}' 방향을 그대로 적용해 {target_user}의 문제 상황을 해결합니다.",
-                "core_value": core_principle,
-                "solution": mechanism,
-                "main_features": [mechanism],
-                "differentiation": f"'{title}' 해결 방향의 핵심 원리를 그대로 반영한 안전 후보입니다.",
-                "contest_fit": "공모전 적합성은 다음 검증 단계에서 위원들이 다시 확인합니다.",
-                "success_metrics": ["검증 단계에서 확정 예정"],
+                **idea,
                 "source_direction_ids": [direction_id] if direction_id else [],
                 "reflected_evolution_ids": [],
             }

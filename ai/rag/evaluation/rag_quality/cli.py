@@ -74,7 +74,7 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 def main(argv: Optional[Sequence[str]] = None) -> EvalReport:
     args = _parse_args(argv)
 
-    from app.config import settings
+    from app.config import resolve_chroma_persist_dir, settings
     from ai.rag.domain.config import DEFAULT_COLLECTION_NAME
 
     dataset = load_cases(args.dataset)
@@ -88,12 +88,9 @@ def main(argv: Optional[Sequence[str]] = None) -> EvalReport:
     if not cases:
         raise SystemExit("필터 조건에 맞는 케이스가 없습니다.")
 
-    # settings.CHROMA_PERSIST_DIR은 상대경로 기본값("./chroma_db")이고, FastAPI 앱은 항상
-    # backend/를 CWD로 실행되므로 그 기준으로 해석된다 — 이 CLI는 저장소 어디서 실행되든
-    # (보통 repo 루트) 같은 실제 데이터를 가리키도록, 상대경로면 backend/ 기준으로 고정한다.
+    # FastAPI와 평가 CLI가 반드시 같은 실제 저장소를 사용하게 공통 resolver를 쓴다.
     chroma_path = args.chroma_path or settings.CHROMA_PERSIST_DIR
-    if not args.chroma_path and not Path(chroma_path).is_absolute():
-        chroma_path = str(_BACKEND_DIR / chroma_path)
+    chroma_path = resolve_chroma_persist_dir(chroma_path)
     role_retrieval_service, _ = _build_real_retriever(chroma_path, DEFAULT_COLLECTION_NAME)
 
     generation_model = settings.DEV_LLM_REVIEWER_MODEL

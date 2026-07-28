@@ -25,7 +25,8 @@ from typing import Any, Callable
 from prompts import (
     build_ideation_conv_conflict_merge_prompt,
     build_ideation_conv_idea_divergence_prompt,
-    build_ideation_conv_idea_validation_prompt,
+    build_ideation_conv_idea_validation_planning_prompt,
+    build_ideation_conv_idea_validation_technical_prompt,
     build_ideation_conv_problem_definition_prompt,
     build_ideation_conv_problem_discovery_prompt,
 )
@@ -35,14 +36,23 @@ from .ideation_conv_discovery import (
     _call_external_evidence_lookup,
     _contest_query,
     _external_evidence_query,
+    _index_selected_candidate,
     _merge_external_evidence_results,
     is_regenerate_request,
     make_candidate_selection_node,
+    solution_direction_to_idea,
 )
-from .ideation_conv_nodes import _blank, _build_message, _last_user_answer, _safe_call_structured_json
+from .ideation_conv_nodes import (
+    ClaimGroundingFn,
+    _blank,
+    _build_message,
+    _last_user_answer,
+    _safe_call_structured_json,
+)
 from .ideation_conv_state import (
     MAX_CONFLICT_ROUNDS,
     MAX_PROBLEM_REGENERATIONS,
+    MAX_VALIDATION_REVISE_ROUNDS,
     IdeationConvState,
     critique_count,
     meets_conflict_and_merge_min_conditions,
@@ -80,6 +90,7 @@ def _runtime_scope_for(state: IdeationConvState) -> dict[str, Any]:
     return {
         "session_id": state.get("session_id"),
         "selected_candidate_document_id": state.get("selected_idea_document_id"),
+        "phase": state.get("phase"),
     }
 
 
@@ -742,10 +753,16 @@ def make_idea_conflict_and_merge_node(
 
 def _route_after_conflict_merge(state: IdeationConvState) -> str:
     """요청 6번 — 최소 조건(해결 방향 3개 이상/반론 1회 이상/수정·결합 1회 이상)을
-    충족하면 후보 압축(candidate_generation)으로 자동 진행한다. 라운드 상한
+    충족하면 곧바로 검증 단계로 자동 진행한다. 라운드 상한
     (MAX_CONFLICT_ROUNDS)에 도달했는데도 조건을 못 채우면 자동 진행하지 않고 사용자에게
     결합/방향추가/방향폐기/검증진행 중 하나를 요청한다(awaiting_conflict_resolution) —
-    상한 도달만으로 조건 없이 다음 단계로 넘기지 않는다."""
+    상한 도달만으로 조건 없이 다음 단계로 넘기지 않는다.
+
+    용준/Claude(2026-07-28, 요청: "위원들이 결합하는 방식으로" 카드 선택 단계 제거) —
+    "proceed"의 그래프 목적지가 기존 candidate_planning(후보 카드 나열 → 사용자 선택)에서
+    provisional_from_merge(위원들이 이미 결합한 방향을 카드 없이 바로 검증 대상으로
+    채택)로 바뀌었다. 이 함수 자체의 반환값("proceed" 문자열)은 바뀌지 않는다 — 그래프
+    배선(ideation_conv_build.py)만 그 값을 다른 노드로 매핑한다."""
     if state.get("phase") == "failed":
         route = "failed"
     elif meets_conflict_and_merge_min_conditions(state):
@@ -759,7 +776,7 @@ def _route_after_conflict_merge(state: IdeationConvState) -> str:
         source="idea_conflict_and_merge",
         target={
             "failed": "end",
-            "proceed": "candidate_planning",
+            "proceed": "provisional_from_merge",
             "ask_user": "await_conflict_resolution",
             "continue": "idea_conflict_and_merge",
         }[route],
@@ -770,6 +787,97 @@ def _route_after_conflict_merge(state: IdeationConvState) -> str:
         conflict_round_count=state.get("conflict_round_count", 0),
     )
     return route
+
+
+# ============================================================================
+# 5.5. provisional_from_merge — 위원들이 결합한 해결 방향을 카드 선택 없이 곧바로
+#      provisional_idea로 채택(결정론적, LLM 미사용)
+# ============================================================================
+
+
+def make_provisional_from_merge_node(
+    index_target_evidence: IndexTargetEvidenceFn | None = None,
+) -> Callable[[IdeationConvState], dict]:
+    """용준/Claude(2026-07-28, 요청: "예전에는 후보 카드를 나열해서 사용자가 고르면
+    회의를 했는데, 이제는 위원들이 결합하는 방식으로") — idea_conflict_and_merge가
+    최소 조건(해결 방향 3개 이상/반론 1회 이상/수정·결합 1회 이상)을 충족해 "proceed"로
+    라우팅되면, 더 이상 candidate_planning/candidate_feasibility로 후보 카드를 나열하고
+    사용자 선택을 기다리지 않는다 — 위원들이 이미 반론·결합까지 끝낸 결과를 그대로
+    검증 대상(provisional_idea)으로 채택하고 곧바로 validate_planning으로 이어간다.
+
+    active 방향이 라운드 반복(1회 초과, conflict_resolution의 "결합/추가" 요청 등)으로
+    여러 개 남을 수 있다 — `_materialize_direction_change`(ideation_conv_problem.py)가
+    매 라운드 결합/수정 결과를 항상 solution_directions 리스트 끝에 append하므로, 리스트의
+    마지막 active 방향이 항상 "가장 최근에 결합·수정된 방향"이다. 사용자 확인: 그 방향만
+    자동 채택하고 나머지 active 방향은 별도 라운드 반복이나 사용자 개입 없이 조용히
+    버린다(다만 idea_evolution에 기록은 남긴다 — 감사 이력 보존)."""
+
+    def node(state: IdeationConvState) -> dict:
+        all_directions = state.get("solution_directions") or []
+        active_directions = [d for d in all_directions if d.get("status") == "active"]
+        if not active_directions:
+            # 이론상 idea_divergence가 항상 3개 이상을 만들고 나서만 이 노드에 도달하므로
+            # 발생하지 않아야 하지만(방어적 처리), 안전하게 실패 처리한다.
+            return {"phase": "failed", "failed_node": "provisional_from_merge"}
+
+        adopted = active_directions[-1]
+        remaining = active_directions[:-1]
+        problem_definition = state.get("problem_definition")
+        idea = solution_direction_to_idea(problem_definition, adopted, label=adopted.get("title") or "채택된 방향")
+        idea["source"] = "committee_merge"
+        idea["source_direction_ids"] = [adopted.get("direction_id")] if adopted.get("direction_id") else []
+
+        evolution_records = []
+        if remaining:
+            evolution_records.append(
+                _new_evolution_record(
+                    state,
+                    stage="provisional_from_merge",
+                    action_type="auto_adopted",
+                    title=f"'{idea['title']}' 방향을 검증 대상으로 자동 채택",
+                    content=(
+                        "결합 조건 충족 후 가장 최근에 결합·수정된 방향을 검증 대상으로 자동 "
+                        f"채택했습니다. 함께 남아있던 다른 방향({', '.join(d.get('title', '') for d in remaining)})은 "
+                        "이번 검증에는 반영하지 않습니다."
+                    ),
+                    changed_by="ideation_facilitator",
+                    target_direction_ids=[adopted.get("direction_id")] if adopted.get("direction_id") else [],
+                )
+            )
+
+        selected_idea_document_id = _index_selected_candidate(
+            state=state,
+            idea=idea,
+            source_ids=idea["source_direction_ids"],
+            index_target_evidence=index_target_evidence,
+        )
+
+        bridge_message = _build_message(
+            persona_id="ideation_facilitator",
+            round_number=state["round"],
+            message_type="summary",
+            content=f"위원회가 결합한 '{idea['title']}' 방향을 검증 대상으로 채택했습니다.",
+            referenced_message_ids=[],
+            evidence=[],
+        )
+
+        return {
+            "provisional_idea": idea,
+            "selected_idea_document_id": selected_idea_document_id,
+            "selected_idea": None,
+            "idea_locked": False,
+            "validation_result": None,
+            # 용준/Claude(2026-07-28) — 여기서 validation_revise_count를 리셋하지 않는다.
+            # 이 노드는 idea_conflict_and_merge가 "proceed"할 때마다 실행되는데, 그 "proceed"가
+            # 검증 실패 후 재결합 라운드에서 온 것일 수도 있다(정확히 그 경우를 위해 이
+            # 카운터가 존재한다) — 여기서 0으로 되돌리면 make_technical_validation_node가
+            # 늘려놓은 값이 매 재결합마다 지워져 자동 반복 상한이 무력화된다.
+            "idea_evolution": evolution_records,
+            "messages": [bridge_message],
+            "phase": "idea_validation",
+        }
+
+    return node
 
 
 # ============================================================================
@@ -1005,6 +1113,7 @@ def make_provisional_selection_node(
         result["selected_idea"] = None
         result["idea_locked"] = False
         result["validation_result"] = None
+        result["validation_revise_count"] = 0
         result["phase"] = "idea_validation"
         return result
 
@@ -1016,13 +1125,14 @@ def make_provisional_selection_node(
 # ============================================================================
 
 
-def _validate_idea_validation_response(raw: dict) -> str | None:
-    for section in ("planning", "technical"):
-        value = raw.get(section)
-        if not isinstance(value, dict):
-            return f"{section}_missing"
-        # 세부 필드 누락과 허용값 이탈은 아래 정규화 단계에서 안전하게 보정한다.
-        # 두 관점 섹션 자체가 없는 경우에만 재시도한다.
+def _validate_validation_section_response(raw: dict) -> str | None:
+    """용준/Claude(2026-07-28, 요청: "위원들이 순서대로 대화하는 것처럼 보여야 한다") —
+    기획/개발 검증 프롬프트가 이제 각각 flat한 단일 섹션(status/passed_items/issues/
+    revision_suggestions/message/claims)을 반환한다. 세부 필드 누락과 허용값 이탈은
+    아래 정규화 단계(_normalize_validation_section)에서 안전하게 보정하므로, 응답 자체가
+    JSON 객체가 아닌 경우에만 재시도한다."""
+    if not isinstance(raw, dict):
+        return "response_not_object"
     return None
 
 
@@ -1151,12 +1261,57 @@ def _route_after_idea_validation(state: IdeationConvState) -> str:
     return "revise" if state.get("phase") == "idea_conflict_and_merge" else "confirm"
 
 
-def make_idea_validation_node(
+def _effective_validation_status(section: dict) -> str:
+    """용준/Claude(2026-07-28, 요청: "blocking 이슈가 있을 때만 수정 단계로 복귀") — 모델이
+    명시한 status(needs_revision 등)를 severity와 무관하게 그대로 존중하면, 검증 프롬프트가
+    "major도 반드시 수정해야 하는 문제"라고 가르쳐서 모델이 major 이슈만 있어도 스스로
+    status를 needs_revision으로 써버린다. LLM이 지시를 어겨도 결과가 흔들리지 않도록 여기서
+    severity를 최종 판단 기준으로 삼는다 — 모델이 뭐라고 쓰든 blocking 이슈가 없으면
+    needs_revision으로 취급하지 않는다. 이 override가 곧 "표시되는 status"이기도 해서,
+    blocking이 없는 이슈(minor/major)는 passed_with_caution으로 내려가 프론트의 "남은
+    주의사항"에 그대로 노출된다(status==='passed_with_caution'일 때만 issues를 보여주는
+    기존 프론트 로직과 맞물림)."""
+    if any(issue.get("severity") == "blocking" for issue in section["issues"]):
+        return "needs_revision"
+    if section["issues"] or section["status"] == "passed_with_caution":
+        return "passed_with_caution"
+    return "passed"
+
+
+def _validation_unavailable_fallback(section: str, label: str) -> dict:
+    return {
+        "status": "needs_revision",
+        "passed_items": [],
+        "issues": [
+            {
+                "code": f"{section}_validation_unavailable",
+                "description": f"{label} 검증 응답 형식을 확인할 수 없어 재검증이 필요합니다.",
+                # 용준/Claude(2026-07-28) — 검증 자체가 불가능했던 경우라 severity를 major가
+                # 아니라 blocking으로 둔다. needs_revision 판정이 blocking 유무만 보므로,
+                # major였다면 이 안전장치가 무력화되어 파싱 실패에도 그냥 주제 확정으로
+                # 넘어가 버린다.
+                "severity": "blocking",
+            }
+        ],
+        "revision_suggestions": [f"{label} 검증 항목을 유지한 상태로 다시 검증"],
+        "message": f"{label} 검증 응답 형식을 확인하지 못해 안전하게 수정 필요로 판정했습니다.",
+    }
+
+
+def make_planning_validation_node(
     llm_call: LLMCall,
     evidence_lookup: EvidenceLookup | None = None,
     external_evidence_lookup: ExternalEvidenceLookupFn | None = None,
+    ground_claims: ClaimGroundingFn | None = None,
 ) -> Callable[[IdeationConvState], dict]:
-    """provisional_idea를 두 관점에서 검증하고 코드가 수정/확정 대기 분기를 결정한다."""
+    """용준/Claude(2026-07-28, 요청: "위원들이 순서대로 대화하는 것처럼 보여야 한다" — 기존
+    make_idea_validation_node(기획+개발 동시 1회 호출)를 두 노드로 분리) — provisional_idea를
+    기획 관점에서 검증하고 회의 시작 발언 + 기획위원 발언을 만든다. phase는 그대로
+    "idea_validation"에 머문다 — make_technical_validation_node가 이어서 실행되어야 다음
+    phase(idea_conflict_and_merge/awaiting_concept_confirmation)로 넘어간다.
+
+    ground_claims는 옵션이다(None이면 use_rag=False 세션 등 — grounding 없이 메시지를
+    만든다, 하위 호환)."""
 
     def node(state: IdeationConvState) -> dict:
         retrieved = call_evidence_lookup(
@@ -1167,67 +1322,27 @@ def make_idea_validation_node(
         planning_external_result = _call_external_evidence_lookup(
             external_evidence_lookup, "planning_expert", external_query
         )
-        technical_external_result = _call_external_evidence_lookup(
-            external_evidence_lookup, "dev_expert", external_query
-        )
         planning_external_evidence = [
             item for item in planning_external_result.get("external_evidence") or [] if isinstance(item, dict)
         ]
-        technical_external_evidence = [
-            item for item in technical_external_result.get("external_evidence") or [] if isinstance(item, dict)
-        ]
-        prompt = build_ideation_conv_idea_validation_prompt(
+        prompt = build_ideation_conv_idea_validation_planning_prompt(
             state["notice_and_criteria"],
             retrieved,
             provisional_idea,
-            planning_external_evidence=planning_external_evidence,
-            technical_external_evidence=technical_external_evidence,
+            external_research=planning_external_evidence,
         )
         raw, ok, attempts = _safe_call_structured_json(
             llm_call,
             prompt,
-            _validate_idea_validation_response,
-            "idea_validation",
+            _validate_validation_section_response,
+            "idea_validation_planning",
             retry_note_for=_idea_validation_retry_note,
         )
         used = state.get("llm_calls_used", 0) + attempts
         if not ok:
-            raw = {
-                "planning": {
-                    "status": "needs_revision",
-                    "passed_items": [],
-                    "issues": [
-                        {
-                            "code": "planning_validation_unavailable",
-                            "description": "기획 검증 응답 형식을 확인할 수 없어 재검증이 필요합니다.",
-                            # 용준/Claude(2026-07-28) — 검증 자체가 불가능했던 경우라 severity를
-                            # major가 아니라 blocking으로 둔다. 아래 needs_revision 판정이
-                            # blocking 유무만 보므로, major였다면 이 안전장치가 무력화되어
-                            # 파싱 실패에도 그냥 주제 확정으로 넘어가 버린다.
-                            "severity": "blocking",
-                        }
-                    ],
-                    "revision_suggestions": ["기획 검증 항목을 유지한 상태로 다시 검증"],
-                    "message": "기획 검증 응답 형식을 확인하지 못해 안전하게 수정 필요로 판정했습니다.",
-                },
-                "technical": {
-                    "status": "needs_revision",
-                    "passed_items": [],
-                    "issues": [
-                        {
-                            "code": "technical_validation_unavailable",
-                            "description": "개발 검증 응답 형식을 확인할 수 없어 재검증이 필요합니다.",
-                            "severity": "blocking",
-                        }
-                    ],
-                    "revision_suggestions": ["개발 검증 항목을 유지한 상태로 다시 검증"],
-                    "message": "개발 검증 응답 형식을 확인하지 못해 안전하게 수정 필요로 판정했습니다.",
-                },
-                "unresolved_assumptions": ["기획·개발 검증 응답을 다시 확인해야 합니다."],
-            }
+            raw = {**_validation_unavailable_fallback("planning", "기획"), "unresolved_assumptions": ["기획 검증 응답을 다시 확인해야 합니다."]}
 
-        planning = _normalize_validation_section(raw["planning"], "planning")
-        technical = _normalize_validation_section(raw["technical"], "technical")
+        planning = _normalize_validation_section(raw, "planning")
         normalized_evidence = [
             {
                 **item,
@@ -1240,39 +1355,126 @@ def make_idea_validation_node(
             {**item, "quote": str(item.get("quote") or item.get("text") or "").strip()}
             for item in planning_external_evidence
         ]
-        normalized_technical_external = [
-            {**item, "quote": str(item.get("quote") or item.get("text") or "").strip()}
-            for item in technical_external_evidence
-        ]
+        # 용준/Claude(2026-07-28, 요청: "위원들이 RAG를 근거로 회의를 진행" + 화면 "근거 보기"
+        # 복구) — claims(위 프롬프트 [근거 인용 규칙]로 요구)를 실제 검색된 근거
+        # (normalized_evidence, "ref" 보존됨)와 대조 검증한다. ground_claims가 None이면
+        # (use_rag=False 세션 등) 기존과 동일하게 grounding 없이 진행한다 — 외부 참고자료는
+        # 이 claims 검증 대상이 아니다.
+        planning_grounding = ground_claims("planning_expert", raw.get("claims"), normalized_evidence) if ground_claims else None
         planning["message"] = _safe_validation_message(
             planning["message"],
             "기획 관점의 검증 항목과 보완 필요 여부를 확인했습니다.",
             normalized_evidence + normalized_planning_external,
         )
+        planning["status"] = _effective_validation_status(planning)
+        unresolved = [a for a in (raw.get("unresolved_assumptions") or []) if a]
+        start_message = _build_message(
+            persona_id="ideation_facilitator",
+            round_number=state["round"],
+            message_type="summary",
+            content=(
+                "선택한 후보는 아직 최종 확정되지 않았습니다. "
+                "기획 관점과 개발 관점에서 차례로 검증하겠습니다."
+            ),
+            referenced_message_ids=[],
+            evidence=[],
+        )
+        planning_message = _build_message(
+            persona_id="planning_expert",
+            round_number=state["round"],
+            message_type="opinion",
+            content=planning["message"],
+            referenced_message_ids=[start_message["message_id"]],
+            evidence=normalized_evidence + normalized_planning_external,
+            structured={"validation": planning},
+            grounding=planning_grounding,
+        )
+        merged_external = _merge_external_evidence_results(
+            {"external_evidence": state.get("external_evidence", []), **(state.get("external_evidence_meta") or {})},
+            planning_external_result,
+        )
+        return {
+            "validation_result": {"planning": planning},
+            "unresolved_issues": list(state["unresolved_issues"]) + [a for a in unresolved if a not in state["unresolved_issues"]],
+            "messages": [start_message, planning_message],
+            "selected_idea": None,
+            "idea_locked": False,
+            "llm_calls_used": used,
+            "external_evidence": merged_external["external_evidence"],
+            "external_evidence_meta": {
+                "used_dataset_search": merged_external["used_dataset_search"],
+                "used_public_api_search": merged_external["used_public_api_search"],
+                "warnings": merged_external["warnings"],
+            },
+        }
+
+    return node
+
+
+def make_technical_validation_node(
+    llm_call: LLMCall,
+    evidence_lookup: EvidenceLookup | None = None,
+    external_evidence_lookup: ExternalEvidenceLookupFn | None = None,
+    ground_claims: ClaimGroundingFn | None = None,
+) -> Callable[[IdeationConvState], dict]:
+    """용준/Claude(2026-07-28) — make_planning_validation_node 직후 실행되어 provisional_idea를
+    개발 관점에서 검증한다. 방금 만들어진 planning 검증 결과(state["validation_result"]
+    ["planning"])를 프롬프트에 주입해 "기획위원 발언을 보고 이어 말하는" 순서를 만든다. 두
+    관점이 모두 준비된 뒤에야(이 노드가 끝난 뒤에야) needs_revision/확정 대기 라우팅을
+    결정한다 — _route_after_idea_validation은 이 노드의 조건부 엣지로만 연결한다."""
+
+    def node(state: IdeationConvState) -> dict:
+        retrieved = call_evidence_lookup(
+            evidence_lookup, "dev_expert", _contest_query(state), runtime_scope=_runtime_scope_for(state)
+        )
+        provisional_idea = state.get("provisional_idea") or {}
+        planning = (state.get("validation_result") or {}).get("planning") or {}
+        external_query = _external_evidence_query(state, [provisional_idea])
+        technical_external_result = _call_external_evidence_lookup(
+            external_evidence_lookup, "dev_expert", external_query
+        )
+        technical_external_evidence = [
+            item for item in technical_external_result.get("external_evidence") or [] if isinstance(item, dict)
+        ]
+        prompt = build_ideation_conv_idea_validation_technical_prompt(
+            state["notice_and_criteria"],
+            retrieved,
+            provisional_idea,
+            planning,
+            external_research=technical_external_evidence,
+        )
+        raw, ok, attempts = _safe_call_structured_json(
+            llm_call,
+            prompt,
+            _validate_validation_section_response,
+            "idea_validation_technical",
+            retry_note_for=_idea_validation_retry_note,
+        )
+        used = state.get("llm_calls_used", 0) + attempts
+        if not ok:
+            raw = {**_validation_unavailable_fallback("technical", "개발"), "unresolved_assumptions": ["개발 검증 응답을 다시 확인해야 합니다."]}
+
+        technical = _normalize_validation_section(raw, "technical")
+        normalized_evidence = [
+            {
+                **item,
+                "quote": str(item.get("quote") or item.get("text") or "").strip(),
+            }
+            for item in retrieved
+            if isinstance(item, dict)
+        ]
+        normalized_technical_external = [
+            {**item, "quote": str(item.get("quote") or item.get("text") or "").strip()}
+            for item in technical_external_evidence
+        ]
+        technical_grounding = ground_claims("dev_expert", raw.get("claims"), normalized_evidence) if ground_claims else None
         technical["message"] = _safe_validation_message(
             technical["message"],
             "개발 관점의 구현 가능성과 기술 위험을 확인했습니다.",
             normalized_evidence + normalized_technical_external,
         )
-        # 용준/Claude(2026-07-28, 요청: "blocking 이슈가 있을 때만 수정 단계로 복귀") — 처음엔
-        # 모델이 명시한 section status(needs_revision 등)를 severity와 무관하게 그대로
-        # 존중했는데, 실측해보니 검증 프롬프트가 "major도 반드시 수정해야 하는 문제"라고
-        # 가르쳐서 모델이 major 이슈만 있어도 스스로 status를 needs_revision으로 써버렸다
-        # (프롬프트도 함께 고쳤지만, LLM이 지시를 어겨도 결과가 흔들리지 않도록 여기서
-        # severity를 최종 판단 기준으로 삼는다 — 모델이 뭐라고 쓰든 blocking 이슈가 없으면
-        # needs_revision으로 취급하지 않는다). 이 override가 곧 "표시되는 status"이기도
-        # 해서, blocking이 없는 이슈(minor/major)는 passed_with_caution으로 내려가 프론트의
-        # "남은 주의사항"에 그대로 노출된다(status==='passed_with_caution'일 때만 issues를
-        # 보여주는 기존 프론트 로직과 맞물림).
-        def _effective_status(section: dict) -> str:
-            if any(issue.get("severity") == "blocking" for issue in section["issues"]):
-                return "needs_revision"
-            if section["issues"] or section["status"] == "passed_with_caution":
-                return "passed_with_caution"
-            return "passed"
+        technical["status"] = _effective_validation_status(technical)
 
-        planning["status"] = _effective_status(planning)
-        technical["status"] = _effective_status(technical)
         sections = (planning, technical)
         needs_revision = any(section["status"] == "needs_revision" for section in sections)
         required_changes: list[str] = []
@@ -1290,8 +1492,25 @@ def make_idea_validation_node(
             if any(section["status"] == "passed_with_caution" for section in sections)
             else "passed"
         )
-        next_phase = "idea_conflict_and_merge" if needs_revision else "awaiting_concept_confirmation"
-        if needs_revision:
+        # 용준/Claude(2026-07-28, 요청: 카드 선택 단계 제거로 사라진 자연 정지점 대체) —
+        # provisional_from_merge가 카드 선택 없이 바로 이 노드까지 이어지면서, "검증 실패 ->
+        # idea_conflict_and_merge 재실행 -> 조건 재충족 -> 검증 -> 실패 -> ..."가 사용자
+        # 개입 없이 한 그래프 호출 안에서 무한 반복될 수 있다(이전에는 candidate_feasibility가
+        # 재실행마다 항상 멈춰줬다). validation_revise_count가 MAX_VALIDATION_REVISE_ROUNDS에
+        # 도달하면 자동으로 되돌리지 않고 사용자 확인을 기다린다(overall_status는
+        # needs_revision 그대로 노출해 화면에서 확인 가능하게 한다).
+        revise_count = state.get("validation_revise_count", 0)
+        auto_revise_capped = needs_revision and revise_count >= MAX_VALIDATION_REVISE_ROUNDS
+        next_phase = (
+            "idea_conflict_and_merge" if needs_revision and not auto_revise_capped else "awaiting_concept_confirmation"
+        )
+        if auto_revise_capped:
+            summary_message = (
+                "기획·개발 검증에서 보완이 필요한 항목을 다시 확인했습니다. "
+                f"가장 중요한 수정 방향은 {required_changes[0] if required_changes else '검증 지적 사항 반영'}입니다. "
+                "자동 재검토 한도에 도달해 이번에는 직접 확정하거나 재검토를 요청해 주세요."
+            )
+        elif needs_revision:
             summary_message = (
                 "기획·개발 검증에서 보완이 필요한 항목을 확인했습니다. "
                 f"가장 중요한 수정 방향은 {required_changes[0] if required_changes else '검증 지적 사항 반영'}입니다. "
@@ -1323,66 +1542,48 @@ def make_idea_validation_node(
             before=provisional_idea,
             after=validation_result,
         )
-        start_message = _build_message(
-            persona_id="ideation_facilitator",
-            round_number=state["round"],
-            message_type="summary",
-            content=(
-                "선택한 후보는 아직 최종 확정되지 않았습니다. "
-                "기획 관점과 개발 관점에서 차례로 검증하겠습니다."
-            ),
-            referenced_message_ids=[],
-            evidence=[],
-        )
-        planning_message = _build_message(
-            persona_id="planning_expert",
-            round_number=state["round"],
-            message_type="opinion",
-            content=planning["message"],
-            referenced_message_ids=[start_message["message_id"]],
-            evidence=normalized_evidence + normalized_planning_external,
-            structured={"validation": planning},
-        )
+        planning_message_id = state["messages"][-1]["message_id"] if state.get("messages") else None
         technical_message = _build_message(
             persona_id="dev_expert",
             round_number=state["round"],
             message_type="opinion",
             content=technical["message"],
-            referenced_message_ids=[planning_message["message_id"]],
+            referenced_message_ids=[planning_message_id] if planning_message_id else [],
             evidence=normalized_evidence + normalized_technical_external,
             structured={"validation": technical},
+            grounding=technical_grounding,
         )
         summary_message_record = _build_message(
             persona_id="ideation_facilitator",
             round_number=state["round"],
             message_type="summary",
             content=summary_message,
-            referenced_message_ids=[
-                planning_message["message_id"],
-                technical_message["message_id"],
-            ],
+            referenced_message_ids=[m for m in [planning_message_id, technical_message["message_id"]] if m],
             evidence=[],
             structured={"validation_summary": validation_result},
         )
         merged_external = _merge_external_evidence_results(
             {"external_evidence": state.get("external_evidence", []), **(state.get("external_evidence_meta") or {})},
-            planning_external_result,
+            technical_external_result,
         )
-        merged_external = _merge_external_evidence_results(merged_external, technical_external_result)
         return {
             "validation_result": validation_result,
             "unresolved_issues": list(state["unresolved_issues"]) + [a for a in unresolved if a not in state["unresolved_issues"]],
             "idea_evolution": [evolution_record],
-            "messages": [
-                start_message,
-                planning_message,
-                technical_message,
-                summary_message_record,
-            ],
+            "messages": [technical_message, summary_message_record],
             "phase": next_phase,
             "selected_idea": None,
             "idea_locked": False,
+            # 용준/Claude(2026-07-28) — next_phase가 "idea_conflict_and_merge"일 때만(자동
+            # 재검토 루프를 실제로 한 번 더 도는 경우) 늘린다. 확정 대기로 넘어가면(자동
+            # 반복 없이 멈췄든 통과했든) 이번 provisional_idea에 대한 검증은 끝난 것이므로
+            # 늘리지 않는다 — 사용자가 concept_confirmation에서 수동으로 재검토를 요청하면
+            # 그건 이 자동 루프 카운터와 무관하다(그 경로는 conflict_round_count만 되돌린다).
+            "validation_revise_count": (
+                revise_count + 1 if next_phase == "idea_conflict_and_merge" else revise_count
+            ),
             "llm_calls_used": used,
+            "forced_next_speaker": None,
             "external_evidence": merged_external["external_evidence"],
             "external_evidence_meta": {
                 "used_dataset_search": merged_external["used_dataset_search"],
@@ -1434,6 +1635,28 @@ def make_concept_confirmation_node(llm_call: LLMCall) -> Callable[[IdeationConvS
                 state, text or "사용자가 문제 정의로 돌아가기를 요청했습니다."
             )
         if action_code == "choose_another_candidate":
+            # 용준/Claude(2026-07-28, 요청: 카드 선택 단계 제거) — idea_candidates가 없는
+            # 세션(provisional_from_merge를 거쳐온 새 discovery 플로우)은 고를 카드 자체가
+            # 없으므로 awaiting_candidate_selection으로 보내면 막다른 길이 된다. 이 경우
+            # "다른 후보를 보고 싶다"는 요청을 반론·결합 라운드로 되돌아가 다시 결합하라는
+            # 의미로 해석한다(concept_confirmation의 기존 "재검토" 분기와 동일한 처리).
+            # idea_candidates가 있는 레거시 세션(candidate_planning을 실제로 거친 경우)은
+            # 기존 동작(카드 선택 화면으로 복귀)을 그대로 유지한다.
+            if not state.get("idea_candidates"):
+                return {
+                    "idea_evolution": [
+                        _new_evolution_record(
+                            state,
+                            stage="concept_confirmation",
+                            action_type="revision",
+                            title="사용자 요청으로 다른 방향 재검토",
+                            content="사용자가 다른 방향을 다시 보고 싶다고 요청했습니다.",
+                            changed_by="user",
+                        )
+                    ],
+                    "conflict_round_count": max(0, state.get("conflict_round_count", 0) - 1),
+                    "next_route": "continue",
+                }
             return {
                 "provisional_idea": None,
                 "validation_result": None,

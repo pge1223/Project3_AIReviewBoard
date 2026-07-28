@@ -153,6 +153,17 @@ class TestEmbedChunkingResult:
         sanitized = sanitize_metadata_for_chroma(result.embedded_chunks[0].metadata)
         assert "document_role" not in sanitized
 
+    def test_document_type_propagated_from_indexing_context_to_metadata(self, fake_kure_embedder):
+        chunks = [_make_chunk("c1", "분석 대상")]
+        context = IndexingContext(
+            project_id="p1",
+            document_id="doc-1",
+            document_role="criteria",
+            document_type="announcement",
+        )
+        result = fake_kure_embedder.embed_chunking_result(_make_chunking_result(chunks), context)
+        assert result.embedded_chunks[0].metadata["document_type"] == "announcement"
+
     def test_zero_indexable_chunks(self, fake_kure_embedder):
         chunks = [_make_chunk("c1", indexable=False)]
         result = fake_kure_embedder.embed_chunking_result(_make_chunking_result(chunks), IndexingContext(project_id="p1", document_id="doc-1"))

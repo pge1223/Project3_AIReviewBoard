@@ -462,7 +462,17 @@ def _drive_graph(
                     # 라운드테이블에만 국한시킨다. continue_ideation_expert_turn도 정확히
                     # 같은 조건(phase == "expert_discussion")으로만 재개를 허용하므로 이
                     # 정지 지점과 재개 지점의 전제가 항상 일치한다.
-                    if last_speaker in _SINGLE_TURN_STOP_SPEAKERS and snapshot.get("phase") == "expert_discussion":
+                    # 용준/Claude(2026-07-28, 요청: "위원들이 순서대로 대화하는 것처럼
+                    # 보여야 한다") — idea_validation도 같은 정지 지점을 재사용한다.
+                    # validate_planning은 항상 [진행자 안건 소개, 기획위원 발언] 2건만
+                    # 만들고 끝나므로(ideation_conv_problem.py::make_planning_validation_node),
+                    # last_speaker가 곧바로 planning_expert라 위 discovery 모드 회피용
+                    # facilitator 전용 분기(phase=="expert_discussion"만 봄, 바로 아래)를
+                    # 새로 넓힐 필요는 없다.
+                    if last_speaker in _SINGLE_TURN_STOP_SPEAKERS and snapshot.get("phase") in (
+                        "expert_discussion",
+                        "idea_validation",
+                    ):
                         break
                     # 용준/Claude(2026-07-28, 실측 후속: "idea_divergence까지는 통과했는데
                     # 그 다음 스냅샷에서 또 멈춤") — 아래 두 facilitator 전용 정지 조건도
@@ -1211,6 +1221,48 @@ def continue_ideation_expert_turn(
         # 시작될 때 이 값이 그대로 남아있으면 _route_entry가 엉뚱하게 facilitator로 바로
         # 진입해버리므로, 여기서 확실히 지운다.
         result_state = IdeationConvState(**{**result_state, "forced_next_speaker": None})
+    return _guard_pre_lock_messages(result_state, turn_baseline)
+
+
+def continue_ideation_validation_turn(
+    *,
+    previous_state: IdeationConvState,
+    llm_call: LLMCall,
+    evidence_lookup=None,
+    ground_claims=None,
+    external_evidence_lookup=None,
+    on_progress: IdeationConvProgressCallback | None = None,
+    on_snapshot: IdeationConvSnapshotCallback | None = None,
+) -> IdeationConvState:
+    """용준/Claude(2026-07-28, 요청: "위원들이 순서대로 대화하는 것처럼 보여야 한다") —
+    continue_ideation_expert_turn과 같은 목적(새 사용자 입력 없이 다음 위원 발언 1건만 더
+    만들어 반환)이지만, idea_validation은 순서가 항상 "기획→개발" 고정이라(사용자 개입도,
+    라운드 반복도 없다) 훨씬 단순하다 — _route_next_expert_turn 같은 라운터를 재사용하지
+    않고 별도로 작게 둔다. previous_state["phase"]가 "idea_validation"이 아니거나, 마지막
+    발언자가 planning_expert가 아니면(이미 개발위원까지 끝났거나 아직 기획위원도 말하지
+    않은 상태) 호출할 수 없다 — 호출부가 먼저 걸러야 한다."""
+    if previous_state.get("phase") != "idea_validation":
+        raise ValueError(
+            "continue_ideation_validation_turn은 phase가 'idea_validation'일 때만 호출할 수 "
+            f"있습니다(현재: {previous_state.get('phase')!r})."
+        )
+    messages = previous_state.get("messages") or []
+    last_speaker = messages[-1].get("speaker_id") if messages else None
+    if last_speaker != "planning_expert":
+        raise ValueError(
+            "continue_ideation_validation_turn은 기획위원 발언 직후에만 호출할 수 있습니다"
+            f"(마지막 발언자: {last_speaker!r})."
+        )
+
+    state = IdeationConvState(**{**previous_state, "forced_next_speaker": "dev_expert"})
+    graph = assemble_ideation_conversation_graph(
+        llm_call,
+        evidence_lookup=evidence_lookup,
+        ground_claims=ground_claims,
+        external_evidence_lookup=external_evidence_lookup,
+    )
+    turn_baseline = len(state["messages"])
+    result_state = _drive_graph(graph, state, on_progress, on_snapshot, stop_after_expert_turn=True)
     return _guard_pre_lock_messages(result_state, turn_baseline)
 
 
