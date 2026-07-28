@@ -308,7 +308,7 @@ class _RepeatedRewordedIssueLLM:
                     "active_issue_id": f"issue_data_{self.expert_call_count}",
                     "active_issue_title": phrasing,
                     "new_information": [phrasing],
-                    "proposal": phrasing,
+                    "proposal": f"{phrasing}(비용 20% 절감)",
                     "changed_position": False,
                     "needs_counterpart_response": True,
                     "recommended_next_speaker": counterpart,

@@ -228,6 +228,13 @@ def is_expert_delegation_request(text: str) -> bool:
 _MAX_JUDGMENT_CHARS = 200
 _MAX_REASON_CHARS = 400
 _MAX_SUGGESTION_CHARS = 300
+# pge/Claude(2026-07-28, 실측: "이게 요약이랑 다른 게 뭔데" — proposal이 "~해야 합니다" 같은
+# 금지 어미는 피했지만 "방향으로 발전시킵니다"/"차별성을 높입니다"처럼 표면적 어미만 바꾼
+# 방향 제시형 요약에 머무는 사례가 실제로 나왔다). judgment/reason과 달리 proposal은 e60eec9
+# 방침(vague_ending/blank는 관찰 로그로만 완화)과 별개 축으로, "숫자 등 구체성 신호가 전혀
+# 없는 proposal"만 재시도 대상으로 삼는다 — proposal 자체가 비어있는 경우는 이 체크가 아니라
+# e60eec9가 이미 관찰 로그로 처리하도록 남겨둔 영역이므로 여기서는 건드리지 않는다.
+_PROPOSAL_CONCRETENESS_DIGIT_RE = re.compile(r"\d")
 _MAX_CONFIRMED_ITEMS = 3
 _MAX_UNCONFIRMED_ITEMS = 3
 # 용준/Claude(2026-07-21, 요청: 전문가 라운드테이블 전환) — interim_conclusion(임시 결론)은
@@ -1343,6 +1350,13 @@ def _discussion_retry_note(reason: str) -> str:
             "\"명확한 목표 설정이 필요합니다\"처럼 구체적 명사·조건 없이도 항상 성립하는 상투어 문장을 "
             "빼고, 실제 동의·반론·수정안(구체적 대상·조건·수치)을 spoken_text에 직접 쓰세요."
         ),
+        "proposal_lacks_concrete_signal": (
+            "proposal이 \"~하는 방향으로 발전시킵니다\"/\"차별성을 높입니다\"처럼 금지 어미만 피한 "
+            "방향 제시형 요약입니다. 구체적 대상(누구/무엇에)과 구체적 메커니즘(어떻게)에 더해, "
+            "가능하면 측정 가능한 수치(예: 시간·비율·건수)를 실제로 채워 다시 쓰세요. "
+            "예: \"지자체 재난 담당자에게 위험 지역별 6시간 내 침수 가능성과 우선 점검 대상을 "
+            "제공해 수동 모니터링 시간을 30% 줄입니다\"."
+        ),
     }.get(reason, "검증 실패 사유를 수정하되 기존 JSON 스키마와 현재 쟁점을 그대로 유지하세요.")
     return (
         "\n\n[구조화 응답 재시도]\n"
@@ -1436,6 +1450,17 @@ def _spoken_text_issue_validation_reason(
     return None
 
 
+def _proposal_lacks_concreteness(proposal: str | None) -> bool:
+    """proposal(권고안)에 숫자·수치 같은 구체성 신호가 전혀 없으면 True. 완벽한 판정 기준은
+    아니다(수치 없이도 구체적인 제안은 존재할 수 있다) — 다만 "정보를 구체화하는 방향으로
+    발전시킵니다"류의 방향 제시형 요약과, 실제 대상·측정 가능한 목표를 담은 권고안을 값싸고
+    안정적으로 가르는 신호다. 빈 값은 False를 반환한다(blank 처리는 이 함수의 책임이 아니다)."""
+    text = (proposal or "").strip()
+    if not text:
+        return False
+    return not _PROPOSAL_CONCRETENESS_DIGIT_RE.search(text)
+
+
 def _validate_discussion_response(
     raw: dict,
     discussion_stage: str = "initial_position",
@@ -1461,6 +1486,8 @@ def _validate_discussion_response(
         return "reason_too_long"
     if len(raw.get("suggestion") or "") > _MAX_SUGGESTION_CHARS:
         return "suggestion_too_long"
+    if not _blank(raw.get("proposal") or "") and _proposal_lacks_concreteness(raw.get("proposal")):
+        return "proposal_lacks_concrete_signal"
     if _blank(raw.get("spoken_text")):
         return "missing_or_empty_field:spoken_text"
     if len(raw.get("spoken_text", "")) > _MAX_SPOKEN_TEXT_CHARS:

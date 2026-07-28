@@ -104,7 +104,7 @@ def _claim_payload(
         "active_issue_id": "hardware_spec",
         "active_issue_title": "하드웨어 사양",
         "new_information": [claim_text],
-        "proposal": "제안",
+        "proposal": "제안(비용 20% 절감)",
         "changed_position": False,
         "needs_counterpart_response": needs_counterpart_response,
         "recommended_next_speaker": recommended_next_speaker,

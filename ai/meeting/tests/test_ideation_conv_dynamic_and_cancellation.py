@@ -60,7 +60,7 @@ def _discussion_payload(speaker: str, *, active_issue_id="target_user", issue_re
         "active_issue_id": active_issue_id,
         "active_issue_title": "목표 사용자",
         "new_information": [new_information],
-        "proposal": "제안",
+        "proposal": "제안(비용 20% 절감)",
         "changed_position": False,
         "needs_counterpart_response": needs_counterpart_response,
         "recommended_next_speaker": recommended_next_speaker,

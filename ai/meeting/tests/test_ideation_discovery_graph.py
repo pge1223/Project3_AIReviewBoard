@@ -345,7 +345,7 @@ class DiscoveryScriptedLLM:
                     "active_issue_id": "mvp_scope",
                     "active_issue_title": "MVP 범위",
                     "new_information": ["새로 확인된 내용"],
-                    "proposal": "제안",
+                    "proposal": "제안(비용 20% 절감)",
                     "changed_position": False,
                     "needs_counterpart_response": not is_dev,
                     "recommended_next_speaker": "ideation_facilitator" if is_dev else "dev_expert",
