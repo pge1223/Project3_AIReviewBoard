@@ -1,5 +1,26 @@
 # mky Devlog
 
+## 2026-07-28 (채점 위원회 2인 전환 — 기획·개발 전문가)
+
+- 배경: 종합 리포트 채점 위원을 아이디어 회의와 동일한 기획·개발 전문가 2인으로 통일
+  (경이 확정). 선행 조건 2건(두 카드 domain_tags에 competition 추가 + role_mapping
+  planning_expert→planning / dev_expert→technology)은 용준 PR #188로 dev 머지 완료 —
+  요청서 `docs/committee_two_reviewers_request.md` 그대로 반영됨을 diff로 확인.
+- 반영:
+  - `rubric_mapping_competition.json` committee → `[planning_expert, dev_expert]`.
+    정적 템플릿 4항목 재배정: 창의성·적정성=기획(differentiation), 실현 가능성=개발
+    (technical_feasibility)+기획 보조, 기여도=기획(impact_kpi), 콘텐츠 종합=기획
+    (criteria_persuasion)+개발 보조. default_supplementary_perspectives도 두 카드의
+    미배정 관점으로 교체. 구 4인 카드·저장된 과거 회의 결과는 legacy로 유지.
+  - `RUBRIC_EXTRACTION_VERSION` 8→9: 캐시된 동적 rubric에 구 4인 배정이 남아 있으므로
+    재추출 강제(다음 분석에서 새 위원 배정 적용).
+  - 로딩바 "AI 위원 검토 중 (n/4명)" / "재검토 중 (0/4)"의 4는 프론트 하드코딩이 아니라
+    서버 reviews_total(=len(committee))라 이 교체만으로 자동으로 2가 됨(프론트 무수정).
+- 테스트: 구 4인 "1인 1항목" 가정을 쓰던 테스트를 "주담당별 항목 리스트"로 일반화
+  (기획 3항목·개발 1항목). dynamic_rubric은 정상/교차 관점 케이스를 신 위원으로 교체.
+  터치한 8개 스위트 80 passed. 전체 실행 시 ideation·HWP 26건 실패는 dev 원본에서도
+  동일 재현되는 기존 실패(stash로 확인)로 이번 변경과 무관.
+
 ## 2026-07-27 (이어서 8 — 점수 변화 팝업 상세화: 판정 구간·위원 수·상한 사유)
 
 - 경이 요청("각 점수마다 왜 그 점수인지 + 상한이 무슨 뜻인지"): 점수 변화(+N점) 팝업을

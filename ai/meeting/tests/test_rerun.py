@@ -19,10 +19,8 @@ SCHEMA_PATH = REPO_ROOT / "contracts" / "schemas" / "review_output.schema.json"
 COMPETITION_MAPPING_PATH = MEETING_DIR / "personas" / "rubric_mapping_competition.json"
 
 _PERSONA_NAMES = {
-    "creativity_originality": "창의성·독창성 전문가",
-    "technical_feasibility": "기술·실현가능성 전문가",
-    "business_strategy": "사업전략 전문가",
-    "presentation_completeness": "완성도·전달력 전문가",
+    "planning_expert": "기획 전문가",
+    "dev_expert": "개발 전문가",
 }
 
 _RAW_CHAIR = {
@@ -48,7 +46,8 @@ _RAW_CHAIR = {
 }
 
 
-def _raw_reviewer(persona_id: str, criterion_id: str, criterion_name: str, score: int) -> dict:
+def _raw_reviewer(persona_id: str, criteria: list[tuple[str, str]], score: int) -> dict:
+    """criteria: [(criterion_id, criterion_name), ...] — 주담당 항목 전부 같은 점수로 채점."""
     return {
         "review_id": f"REV-{persona_id}",
         "meeting_id": "MTG-RERUN-001",
@@ -69,6 +68,7 @@ def _raw_reviewer(persona_id: str, criterion_id: str, criterion_name: str, score
                 "evidence_refs": [],
                 "improvement_actions": [],
             }
+            for criterion_id, criterion_name in criteria
         ],
         "cross_reviews": [],
         "priority_actions": [],
@@ -76,12 +76,15 @@ def _raw_reviewer(persona_id: str, criterion_id: str, criterion_name: str, score
     }
 
 
-def _owned(mapping: dict) -> dict[str, tuple[str, str]]:
-    """persona_id -> (criterion_id, criterion_name) (공모전 매핑은 1인 1항목)."""
-    return {
-        item["primary_persona_id"]: (item["criterion_id"], item["criterion_name"])
-        for item in mapping["rubric"]
-    }
+def _owned(mapping: dict) -> dict[str, list[tuple[str, str]]]:
+    """persona_id -> [(criterion_id, criterion_name), ...] 주담당 항목 목록.
+    2인 위원회에서는 기획 전문가가 3항목·개발 전문가가 1항목의 주담당이다."""
+    owned: dict[str, list[tuple[str, str]]] = {}
+    for item in mapping["rubric"]:
+        owned.setdefault(item["primary_persona_id"], []).append(
+            (item["criterion_id"], item["criterion_name"])
+        )
+    return owned
 
 
 def _stub(raw_by_marker: dict):
@@ -98,10 +101,10 @@ def test_rerun_reviewer_updates_only_target_and_keeps_others():
     mapping = json.loads(COMPETITION_MAPPING_PATH.read_text(encoding="utf-8"))
     owned = _owned(mapping)
 
-    # 1차: 전원 20점
+    # 1차: 전원 주담당 항목을 20점으로 채점
     initial_markers = {
-        f"{_PERSONA_NAMES[pid]}입니다": _raw_reviewer(pid, cid, cname, 20)
-        for pid, (cid, cname) in owned.items()
+        f"{_PERSONA_NAMES[pid]}입니다": _raw_reviewer(pid, criteria, 20)
+        for pid, criteria in owned.items()
     }
     initial_markers["위원장(review_chair)입니다"] = _RAW_CHAIR
 
@@ -115,15 +118,14 @@ def test_rerun_reviewer_updates_only_target_and_keeps_others():
         retrieved_evidence=[],
         llm_call=_stub(initial_markers),
     )
-    assert document["score_result"]["total_score"] == 80  # 20 * 4
+    assert document["score_result"]["total_score"] == 80  # 4항목 * 20
 
     original_by_persona = {r["persona_id"]: r for r in document["reviewer_results"]}
 
-    # 2차: creativity_originality 위원만 10점으로 재평가
-    target = "creativity_originality"
-    tcid, tcname = owned[target]
+    # 2차: dev_expert 위원만 10점으로 재평가(주담당 feasibility 1항목)
+    target = "dev_expert"
     rerun_markers = {
-        f"{_PERSONA_NAMES[target]}입니다": _raw_reviewer(target, tcid, tcname, 10),
+        f"{_PERSONA_NAMES[target]}입니다": _raw_reviewer(target, owned[target], 10),
         "위원장(review_chair)입니다": _RAW_CHAIR,
     }
 

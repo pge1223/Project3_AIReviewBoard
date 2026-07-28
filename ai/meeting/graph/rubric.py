@@ -109,7 +109,7 @@ def build_rubric(mapping: dict[str, Any]) -> dict[str, Any]:
 # 실측 사고: 판정 쪽만 v7로 올리고 저장은 3으로 남아 "저장 버전(3) < 요구 버전(7)"이
 # 항상 참 → 캐시가 영원히 무효 → 같은 프로젝트에서 매 분석마다 rubric LLM 재추출
 # (~9초/회 + 토큰 비용, 서버 로그로 확인).
-RUBRIC_EXTRACTION_VERSION = 8  # v8: 항목별 적정 위원(1~2명) 배정 규칙 강화 — 재추출로 새 배정 적용(캐시 무효화)
+RUBRIC_EXTRACTION_VERSION = 9  # v9: 채점 위원회를 기획·개발 전문가 2인으로 교체 — 재추출로 새 위원 배정 적용(캐시 무효화)
 
 
 def build_dynamic_rubric_mapping(

@@ -452,7 +452,8 @@ def _load_rubric_mapping(domain: str) -> dict:
 #     이미 mapping 변수 하나만 두 곳(evidence_service.prepare_meeting_evidence,
 #     run_meeting)에 그대로 전달하는 구조라 이 조건은 mapping을 만드는 지점만 바꾸면
 #     자동으로 만족된다(아래 analyze_project() 수정 참고).
-#   - 새 항목도 기존 4개 committee persona 중 하나에만 배정한다(새 위원 생성 금지) —
+#   - 새 항목도 base_mapping["committee"] 소속 persona(2026-07-28부터 기획·개발 전문가
+#     2인)에게만 배정한다(새 위원 생성 금지) —
 #     실제 검증은 build_dynamic_rubric_mapping()(ai/meeting/graph/rubric.py)이 한다.
 #   - DB엔 정적 rubric이 아니라 실제 실행된 동적 rubric을 저장한다 — MeetingModel.rubric은
 #     이미 build_rubric(mapping)의 결과를 그대로 쓰므로 여기서 별도 수정이 필요 없다.
@@ -887,7 +888,8 @@ async def _load_target_submission(project_id: str) -> tuple[dict, dict]:
 
 
 # 가은/Claude(2026-07-16): STEP4 "공모전 분석" 화면 — 문서를 rubric_mapping의 고정 후보
-# committee(도메인당 4명)에 매칭해 (1) 문서 성격 태그, (2) 후보별 fit_tag를 생성하는 1회성
+# committee(rubric_mapping["committee"] — competition은 2026-07-28부터 기획·개발 전문가
+# 2인)에 매칭해 (1) 문서 성격 태그, (2) 후보별 fit_tag를 생성하는 1회성
 # LLM 호출. _build_real_llm_call()과 달리 회의 전체를 도는 게 아니라 호출이 정확히 1번뿐이라
 # 호출 횟수 상한/위원장-리뷰어 모델 분기가 필요 없어 별도로 둔다 — 모델 설정(dev/quality)만
 # 재사용.

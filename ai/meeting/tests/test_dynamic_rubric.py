@@ -37,16 +37,16 @@ def _load_persona_cards() -> dict[str, dict]:
 
 
 def _valid_items() -> list[dict]:
-    """competition 4개 persona 중 두 명(creativity_originality, technical_feasibility)의
-    실제 perspective_id를 써서 만든 2개짜리 정상 추출 결과."""
+    """competition 위원회 2인(planning_expert, dev_expert)의 실제 perspective_id를 써서
+    만든 2개짜리 정상 추출 결과."""
     return [
         {
             "criterion_id": "idea_novelty_axis",
             "criterion_name": "아이디어 참신성",
             "max_score": 60,
             "required": True,
-            "primary_persona_id": "creativity_originality",
-            "primary_perspective_id": "idea_novelty",
+            "primary_persona_id": "planning_expert",
+            "primary_perspective_id": "differentiation",
             "secondary_persona_id": None,
         },
         {
@@ -54,9 +54,9 @@ def _valid_items() -> list[dict]:
             "criterion_name": "구현 가능성",
             "max_score": 40,
             "required": True,
-            "primary_persona_id": "technical_feasibility",
-            "primary_perspective_id": "implementation_feasibility",
-            "secondary_persona_id": "creativity_originality",
+            "primary_persona_id": "dev_expert",
+            "primary_perspective_id": "technical_feasibility",
+            "secondary_persona_id": "planning_expert",
         },
     ]
 
@@ -186,8 +186,8 @@ def test_duplicate_criterion_id_is_rejected():
 
 
 def test_primary_persona_id_outside_committee_is_rejected():
-    """새 위원을 만들 수 없다는 팀 요구사항 — committee(고정 4인)에 없는 persona_id는
-    거부된다."""
+    """새 위원을 만들 수 없다는 팀 요구사항 — committee(기획·개발 전문가 2인)에 없는
+    persona_id는 거부된다."""
     base_mapping = _load_base_mapping()
     persona_cards = _load_persona_cards()
     items = _valid_items()
@@ -232,11 +232,11 @@ def test_perspective_id_not_in_persona_whitelist_is_rejected():
 
 def test_perspective_id_belonging_to_a_different_persona_is_rejected():
     """다른 위원의 perspective_id를 잘못 배정한 경우도 화이트리스트 위반으로 거부된다
-    (예: technical_feasibility 담당인데 business_strategy의 perspective_id를 씀)."""
+    (예: dev_expert 담당인데 planning_expert의 perspective_id를 씀)."""
     base_mapping = _load_base_mapping()
     persona_cards = _load_persona_cards()
     items = _valid_items()
-    items[1]["primary_perspective_id"] = "marketability"  # business_strategy 소속 perspective
+    items[1]["primary_perspective_id"] = "impact_kpi"  # planning_expert 소속 perspective
     with pytest.raises(ValueError, match="evaluation_perspectives"):
         build_dynamic_rubric_mapping(
             base_mapping=base_mapping,
