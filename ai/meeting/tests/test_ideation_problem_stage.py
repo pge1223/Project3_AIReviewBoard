@@ -28,7 +28,8 @@ from graph.ideation_conv_nodes import _select_next_issue_family  # noqa: E402
 from graph.ideation_conv_problem import (  # noqa: E402
     _route_after_conflict_merge,
     _route_after_idea_validation,
-    make_idea_validation_node,
+    make_planning_validation_node,
+    make_technical_validation_node,
 )
 from graph.ideation_conv_run import _guard_pre_lock_messages, finalize_ideation_conversation  # noqa: E402
 from graph.ideation_conv_state import (  # noqa: E402
@@ -319,7 +320,13 @@ def test_single_turn_pacing_does_not_stop_discovery_before_developer_critique():
     )
     assert critique_count(state) >= 1
     assert merge_or_revision_count(state) >= 1
-    assert state["phase"] == "awaiting_candidate_selection"
+    # 용준/Claude(2026-07-28, 요청: 카드 선택 단계 제거) — 결합 조건 충족 후에는 더 이상
+    # candidate_planning/candidate_feasibility를 거쳐 awaiting_candidate_selection에서
+    # 멈추지 않는다. provisional_from_merge가 결합 결과를 곧바로 검증 대상으로 채택해
+    # validate_planning까지 이어지고, 그 기획위원 발언에서 단일 턴 페이싱이 멈춘다
+    # (idea_validation도 expert_discussion과 같은 페이싱 정지 지점을 공유한다,
+    # ideation_conv_run.py::_drive_graph 참고).
+    assert state["phase"] == "idea_validation"
 
 
 # ---------------------------------------------------------------------------
@@ -441,7 +448,13 @@ def test_revision_supersedes_original_and_creates_new_active_direction():
     assert revision["changed_by"] == "planning_expert"
     assert revision["before"][0]["direction_id"] == "direction_1"
     assert revision["after"]["direction_id"] == "direction_revised_1"
-    assert state["phase"] == "awaiting_candidate_selection"
+    # 용준/Claude(2026-07-28, 요청: 카드 선택 단계 제거) — 조건 충족 즉시
+    # provisional_from_merge가 결합 결과(마지막 active 방향)를 카드 선택 없이 바로 검증
+    # 대상으로 채택하고, validate_planning/validate_technical까지 정지 없이 이어져
+    # awaiting_concept_confirmation에서 멈춘다.
+    assert state["phase"] == "awaiting_concept_confirmation"
+    assert state["provisional_idea"]["source"] == "committee_merge"
+    assert state["provisional_idea"]["source_direction_ids"] == ["direction_revised_1"]
 
 
 def test_scenario3_4_round_cap_without_min_conditions_asks_user_instead_of_auto_advancing():
@@ -482,8 +495,13 @@ def test_scenario3_4_user_can_explicitly_proceed_despite_unmet_conditions():
     assert state["phase"] == "awaiting_conflict_resolution"
 
     state = reply_ideation_conversation(previous_state=state, user_message="이대로 검증 진행", llm_call=llm)
-    assert state["phase"] == "awaiting_candidate_selection"
-    assert any("[후보 생성 규칙]" in p for p in llm.captured_prompts)
+    # 용준/Claude(2026-07-28, 요청: 카드 선택 단계 제거) — "이대로 검증 진행"도 더 이상
+    # candidate_planning(후보 압축)을 거치지 않는다. provisional_from_merge가 현재 active
+    # 방향 중 마지막 하나를 카드 없이 바로 채택하고, validate_planning/validate_technical
+    # 까지 정지 없이 이어져 awaiting_concept_confirmation에서 멈춘다.
+    assert state["phase"] == "awaiting_concept_confirmation"
+    assert not any("[후보 생성 규칙]" in p for p in llm.captured_prompts)
+    assert state["provisional_idea"]["source"] == "committee_merge"
 
 
 # ---------------------------------------------------------------------------
@@ -574,15 +592,13 @@ def test_scenario7_only_explicit_user_confirmation_sets_idea_locked_true():
     assert planning_validation_completed(state) is True
     assert technical_validation_completed(state) is True
 
-    # 확정 대신 재검토를 요청하면 반론·결합 라운드로 되돌아가(요청 9번 시나리오 취지와
-    # 동일하게 "재검토 -> 새 후보 재압축 -> 재선택"을 거치며) 여전히 잠기지 않는다.
+    # 확정 대신 재검토를 요청하면 반론·결합 라운드로 되돌아간다. 용준/Claude(2026-07-28,
+    # 요청: 카드 선택 단계 제거) — 조건이 다시 충족되면 더 이상 카드 재압축·재선택을
+    # 거치지 않고, provisional_from_merge가 새로 결합된 방향을 곧바로 검증 대상으로
+    # 채택해 정지 없이 awaiting_concept_confirmation까지 이어간다(같은 호출 안에서).
     state = reply_ideation_conversation(previous_state=state, user_message="다시 검토해줘", llm_call=llm)
     assert state["idea_locked"] is False
-    assert state["phase"] == "awaiting_candidate_selection"
-
-    state = reply_ideation_conversation(previous_state=state, user_message="1번", llm_call=llm)
     assert state["phase"] == "awaiting_concept_confirmation"
-    assert state["idea_locked"] is False
 
     state = reply_ideation_conversation(previous_state=state, user_message="확정할게요", llm_call=llm)
     assert state["idea_locked"] is True
@@ -768,14 +784,73 @@ def _validation_payload(*, planning_status="passed", technical_status="passed", 
     }
 
 
+_PLANNING_ROLE_MARKER = "당신은 AI Review Board의 기획 전문가입니다"
+_DEV_ROLE_MARKER = "당신은 AI Review Board의 개발 전문가입니다"
+
+
 class _ValidationLLM:
+    """용준/Claude(2026-07-28, 요청: "위원들이 순서대로 대화하는 것처럼 보여야 한다") —
+    idea_validation이 기획/개발 순차 프롬프트 2개(각자 역할 마커 포함)로 분리되면서, 이
+    스텁도 어느 쪽 호출인지 역할 마커로 구분해 payload["planning"]/payload["technical"]
+    (여전히 flat한 단일 섹션 dict, 기존 테스트 payload 구성 방식과 동일)을 그대로
+    돌려준다 — payload 자체의 모양은 바꾸지 않아 기존 테스트의 payload 조립 코드
+    (_validation_payload, payload["planning"]["claims"] = [...] 등)를 그대로 재사용한다."""
+
     def __init__(self, payload):
         self.payload = payload
         self.prompts = []
 
     def __call__(self, prompt):
         self.prompts.append(prompt)
-        return json.dumps(self.payload, ensure_ascii=False)
+        section = "technical" if _DEV_ROLE_MARKER in prompt else "planning"
+        return json.dumps(self.payload[section], ensure_ascii=False)
+
+
+def _apply_node_update(state: dict, update: dict) -> dict:
+    """용준/Claude(2026-07-28) — LangGraph의 실제 병합 규칙(ideation_conv_state.py의
+    Annotated[..., operator.add] 필드는 누적, 그 외는 교체)을 테스트에서 그대로 재현한다.
+    idea_validation이 두 노드로 나뉘면서, 각 노드가 반환하는 부분 업데이트를 순서대로
+    이어 적용해야 기존처럼 "최종 4개 메시지·validation_result" 형태를 검증할 수 있다."""
+    merged = dict(state)
+    for key, value in update.items():
+        if key in ("messages", "idea_evolution"):
+            merged[key] = list(state.get(key) or []) + list(value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _run_idea_validation(
+    payload: dict,
+    *,
+    evidence_lookup=None,
+    external_evidence_lookup=None,
+    ground_claims=None,
+) -> tuple[dict, _ValidationLLM]:
+    """make_planning_validation_node -> make_technical_validation_node를 실제 그래프와
+    같은 순서로(기획 먼저, 그 결과를 본 개발이 이어서) 실행하고 병합된 최종 state를
+    반환한다. 반환값이 예전 make_idea_validation_node(...)(state) 한 번 호출의 update와
+    똑같은 모양(messages 4개, validation_result 등)이 되도록 해서 기존 테스트 단언을
+    최대한 그대로 재사용할 수 있게 한다."""
+    llm = _ValidationLLM(payload)
+    state = _validation_state()
+    planning_node = make_planning_validation_node(llm, evidence_lookup, external_evidence_lookup, ground_claims=ground_claims)
+    state = _apply_node_update(state, planning_node(state))
+    technical_node = make_technical_validation_node(llm, evidence_lookup, external_evidence_lookup, ground_claims=ground_claims)
+    state = _apply_node_update(state, technical_node(state))
+    return state, llm
+
+
+def _run_idea_validation_with_llm(llm) -> dict:
+    """페이로드 기반이 아니라 커스텀 LLM 스텁(예: 항상 잘못된 JSON을 반환)을 두 노드에
+    똑같이 재사용해야 하는 테스트용 — _run_idea_validation과 병합 로직은 같지만 LLM을
+    새로 만들지 않는다."""
+    state = _validation_state()
+    planning_node = make_planning_validation_node(llm)
+    state = _apply_node_update(state, planning_node(state))
+    technical_node = make_technical_validation_node(llm)
+    state = _apply_node_update(state, technical_node(state))
+    return state
 
 
 class _RevisionValidationDiscoveryLLM(DiscoveryScriptedLLM):
@@ -791,19 +866,18 @@ class _RevisionValidationDiscoveryLLM(DiscoveryScriptedLLM):
                 "description": "기관 전체 데이터 연계 범위가 너무 큼",
                 "severity": "blocking",
             }
-            return json.dumps(
-                _validation_payload(
-                    planning_status="passed",
-                    technical_status="needs_revision",
-                    technical_issues=[issue],
-                ),
-                ensure_ascii=False,
+            payload = _validation_payload(
+                planning_status="passed",
+                technical_status="needs_revision",
+                technical_issues=[issue],
             )
+            section = "technical" if _DEV_ROLE_MARKER in prompt else "planning"
+            return json.dumps(payload[section], ensure_ascii=False)
         return super().__call__(prompt)
 
 
 def test_idea_validation_stores_structured_results_and_four_ordered_messages():
-    update = make_idea_validation_node(_ValidationLLM(_validation_payload()))(_validation_state())
+    update, _llm = _run_idea_validation(_validation_payload())
 
     assert update["phase"] == "awaiting_concept_confirmation"
     assert update["selected_idea"] is None
@@ -820,7 +894,6 @@ def test_idea_validation_stores_structured_results_and_four_ordered_messages():
 
 
 def test_idea_validation_uses_role_specific_external_evidence():
-    llm = _ValidationLLM(_validation_payload())
     calls = []
 
     def external_lookup(persona_id, query):
@@ -845,19 +918,89 @@ def test_idea_validation_uses_role_specific_external_evidence():
             "warnings": [],
         }
 
-    update = make_idea_validation_node(
-        llm,
+    update, llm = _run_idea_validation(
+        _validation_payload(),
         external_evidence_lookup=external_lookup,
-    )(_validation_state())
+    )
 
     assert [call["persona_id"] for call in calls] == ["planning_expert", "dev_expert"]
     assert "민원 안내 도우미" in calls[0]["query"]
+    # 용준/Claude(2026-07-28, 요청: "위원들이 순서대로 대화하는 것처럼 보여야 한다") — 이제
+    # 기획/개발이 각자 별도 프롬프트를 받으므로, 서로의 외부 근거가 상대방 프롬프트에 섞여
+    # 들어가지 않는다(예전 결합 프롬프트 때는 llm.prompts[0] 하나에 둘 다 있었다).
     assert "기획 최신 뉴스" in llm.prompts[0]
-    assert "개발 기술 뉴스" in llm.prompts[0]
+    assert "개발 기술 뉴스" not in llm.prompts[0]
+    assert "개발 기술 뉴스" in llm.prompts[1]
+    assert "기획 최신 뉴스" not in llm.prompts[1]
     assert {item["title"] for item in update["messages"][1]["evidence"]} == {"기획 최신 뉴스"}
     assert {item["title"] for item in update["messages"][2]["evidence"]} == {"개발 기술 뉴스"}
     assert len(update["external_evidence"]) == 2
     assert update["external_evidence_meta"]["used_public_api_search"] is True
+
+
+def test_idea_validation_links_claims_to_retrieved_evidence_when_ground_claims_provided():
+    """용준/Claude(2026-07-28, 요청: "위원들이 RAG를 근거로 회의를 진행" + 화면 "근거 보기"
+    복구) — ground_claims가 주어지면 planning/technical claims가 실제 검색 근거(ref="E1")와
+    연결·검증되어 message.linked_evidence_refs에 실제 chunk_id로 채워지는지 확인한다. 이
+    필드가 비어있으면 프론트(IdeationConversationScreen.jsx::EvidenceToggle)가 근거를 아예
+    렌더링하지 않는다."""
+    from ai.rag.evidence_linking.claim_grounding import ground_claims as _ground_claims_impl
+
+    def _ground_claims(persona_id, claims, retrieved):
+        return _ground_claims_impl(claims, retrieved)
+
+    def _evidence_lookup(_persona_id, _query):
+        return [
+            {
+                "chunk_id": "CHUNK-1",
+                "document_id": "DOC-1",
+                "document_name": "행정 서비스 안내 공모전 공고문",
+                "section": "평가 기준",
+                "text": "행정 정보 접근성을 개선하는 서비스를 우대한다.",
+            }
+        ]
+
+    payload = _validation_payload()
+    payload["planning"]["claims"] = [
+        {
+            "claim_id": "claim_1",
+            "text": "공고문은 행정 정보 접근성을 개선하는 서비스를 우대한다고 명시한다.",
+            "claim_type": "document_fact",
+            "evidence_refs": ["E1"],
+        }
+    ]
+    payload["technical"]["claims"] = [
+        {
+            "claim_id": "claim_1",
+            "text": "이 정도 범위면 기간 내 프로토타입 구현이 가능해 보인다.",
+            "claim_type": "expert_judgment",
+            "evidence_refs": [],
+        }
+    ]
+
+    update, _llm = _run_idea_validation(
+        payload,
+        evidence_lookup=_evidence_lookup,
+        ground_claims=_ground_claims,
+    )
+
+    planning_message, technical_message = update["messages"][1], update["messages"][2]
+    assert planning_message["speaker_id"] == "planning_expert"
+    assert planning_message["linked_evidence_refs"] == ["CHUNK-1"]
+    assert planning_message["claims"][0]["claim_type"] == "document_fact"
+    # expert_judgment claim은 문서 근거로 연결되지 않는다(evidence_refs=[]) — linked는 비어야 한다.
+    assert technical_message["speaker_id"] == "dev_expert"
+    assert technical_message["linked_evidence_refs"] == []
+    assert technical_message["claims"][0]["claim_type"] == "expert_judgment"
+
+
+def test_idea_validation_without_ground_claims_keeps_empty_grounding_backward_compatible():
+    """ground_claims를 안 넘기면(use_rag=False 세션 등) 기존과 동일하게 grounding 없이
+    동작해야 한다 — 하위 호환 확인."""
+    update, _llm = _run_idea_validation(_validation_payload())
+    planning_message, technical_message = update["messages"][1], update["messages"][2]
+    assert planning_message["linked_evidence_refs"] == []
+    assert technical_message["linked_evidence_refs"] == []
 
 
 def test_idea_validation_needs_revision_and_blocking_issue_route_back_to_merge():
@@ -866,15 +1009,13 @@ def test_idea_validation_needs_revision_and_blocking_issue_route_back_to_merge()
         "description": "기관 전체 데이터 연계 범위가 너무 큼",
         "severity": "blocking",
     }
-    update = make_idea_validation_node(
-        _ValidationLLM(
-            _validation_payload(
-                planning_status="passed",
-                technical_status="passed",
-                technical_issues=[issue],
-            )
+    update, _llm = _run_idea_validation(
+        _validation_payload(
+            planning_status="passed",
+            technical_status="passed",
+            technical_issues=[issue],
         )
-    )(_validation_state())
+    )
 
     assert update["phase"] == "idea_conflict_and_merge"
     assert update["validation_result"]["overall_status"] == "needs_revision"
@@ -887,7 +1028,7 @@ def test_idea_validation_normalizes_missing_status_without_failing():
     payload["planning"].pop("status")
     payload["technical"].pop("status")
 
-    update = make_idea_validation_node(_ValidationLLM(payload))(_validation_state())
+    update, _llm = _run_idea_validation(payload)
 
     assert update["phase"] == "awaiting_concept_confirmation"
     assert update["validation_result"]["planning"]["status"] == "passed_with_caution"
@@ -899,7 +1040,7 @@ def test_idea_validation_invalid_json_uses_safe_revision_fallback():
         def __call__(self, _prompt):
             return "JSON 형식이 아닌 응답"
 
-    update = make_idea_validation_node(_InvalidValidationLLM())(_validation_state())
+    update = _run_idea_validation_with_llm(_InvalidValidationLLM())
 
     assert update["phase"] == "idea_conflict_and_merge"
     assert update["validation_result"]["overall_status"] == "needs_revision"
@@ -931,10 +1072,7 @@ def test_idea_validation_keeps_hwpx_raw_text_only_in_evidence():
             }
         ]
 
-    update = make_idea_validation_node(
-        _ValidationLLM(payload),
-        evidence_lookup=evidence_lookup,
-    )(_validation_state())
+    update, _llm = _run_idea_validation(payload, evidence_lookup=evidence_lookup)
     planning_message = update["messages"][1]
 
     assert ".hwpx" not in planning_message["content"]
@@ -952,8 +1090,17 @@ def test_failed_validation_is_forwarded_to_conflict_merge_without_full_divergenc
 
     state = reply_ideation_conversation(previous_state=state, user_message="1번", llm_call=llm)
 
-    assert state["phase"] == "awaiting_candidate_selection"
-    assert state["validation_result"]["next_phase"] == "idea_conflict_and_merge"
+    # 용준/Claude(2026-07-28, 요청: 카드 선택 단계 제거) — 카드 선택 정지점이 사라지면서,
+    # 검증 실패 -> idea_conflict_and_merge 재실행 -> 조건 재충족 -> 재검증이 한 그래프
+    # 호출 안에서 반복될 수 있게 됐다. 이 mock은 검증을 계속 needs_revision으로만
+    # 응답하므로, MAX_VALIDATION_REVISE_ROUNDS(1)에 도달할 때까지 한 번 더 자동으로
+    # 재결합 라운드를 거친 뒤(validation_revise_count) 더 자동으로 되돌리지 않고
+    # awaiting_concept_confirmation에서 멈춘다(overall_status는 needs_revision 그대로
+    # 노출해 사용자가 직접 확정/재검토를 선택하게 한다).
+    assert state["phase"] == "awaiting_concept_confirmation"
+    assert state["validation_result"]["overall_status"] == "needs_revision"
+    assert state["validation_result"]["next_phase"] == "awaiting_concept_confirmation"
+    assert state["validation_revise_count"] == 1
     assert "기관 전체 데이터 연계 범위가 너무 큼" in state["validation_result"]["required_changes"]
     assert sum("[발산 규칙]" in prompt for prompt in llm.captured_prompts) == divergence_calls_before_validation
     conflict_prompts = [prompt for prompt in llm.captured_prompts if "[반론·결합 규칙]" in prompt]
@@ -967,6 +1114,56 @@ def test_failed_validation_is_forwarded_to_conflict_merge_without_full_divergenc
         and record.get("stage") == "idea_conflict_and_merge"
         for record in state["idea_evolution"]
     )
+
+
+def test_idea_validation_stops_after_planning_turn_when_single_turn_requested():
+    """용준/Claude(2026-07-28, 요청: "위원들이 순서대로 대화하는 것처럼 보여야 한다") —
+    프론트가 항상 singleTurn=true로 보내므로(IdeationConversationScreen.jsx), 후보 확정
+    직후 reply_ideation_conversation(stop_after_expert_turn=True)이 validate_planning
+    실행 직후 곧바로 멈추는지 확인한다(기획위원 발언까지만, 개발위원은 아직). 이어서
+    continue_ideation_validation_turn이 그 상태를 이어받아 개발위원 발언까지 만들고
+    awaiting_concept_confirmation으로 넘어가는지도 함께 확인한다 — 실제 백엔드
+    /reply/stream -> /continue-turn/stream 흐름을 그래프 함수 수준에서 재현한다."""
+    from graph import continue_ideation_validation_turn
+
+    llm = DiscoveryScriptedLLM()
+    state = _start_discovery(llm)  # awaiting_candidate_selection까지 자동 진행.
+
+    state = reply_ideation_conversation(
+        previous_state=state,
+        user_message="1번",
+        llm_call=llm,
+        stop_after_expert_turn=True,
+    )
+
+    assert state["phase"] == "idea_validation"
+    assert [m["speaker_id"] for m in state["messages"][-2:]] == ["ideation_facilitator", "planning_expert"]
+    assert planning_validation_completed(state) is True
+    assert technical_validation_completed(state) is False
+
+    state = continue_ideation_validation_turn(previous_state=state, llm_call=llm)
+
+    assert state["phase"] == "awaiting_concept_confirmation"
+    assert [m["speaker_id"] for m in state["messages"][-2:]] == ["dev_expert", "ideation_facilitator"]
+    assert technical_validation_completed(state) is True
+    assert state["forced_next_speaker"] is None
+
+
+def test_continue_ideation_validation_turn_rejects_wrong_phase_or_speaker():
+    from graph import continue_ideation_validation_turn
+
+    with pytest.raises(ValueError):
+        continue_ideation_validation_turn(
+            previous_state={**_validation_state(), "phase": "expert_discussion"},
+            llm_call=_ValidationLLM(_validation_payload()),
+        )
+
+    state_without_planning_turn = {**_validation_state(), "messages": []}
+    with pytest.raises(ValueError):
+        continue_ideation_validation_turn(
+            previous_state=state_without_planning_turn,
+            llm_call=_ValidationLLM(_validation_payload()),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -999,6 +1196,17 @@ def test_route_after_conflict_merge_continues_until_cap_or_conditions_met():
 
 
 def test_candidate_planning_prompt_is_grounded_in_prior_meeting_results_not_reinvented():
+    """용준/Claude(2026-07-28, 요청: 카드 선택 단계 제거) — candidate_planning은 더 이상
+    새 discovery 플로우의 그래프 배선에서 자동 실행되지 않는다(idea_conflict_and_merge
+    "proceed"는 이제 provisional_from_merge로 간다). 다만 이 노드 자체는 레거시 재개용으로
+    삭제되지 않았고, "이전 회의 결과(problem_definition/solution_directions/idea_evolution)를
+    실제로 압축 재료로 쓰는지"는 여전히 유효한 검증 대상이므로, 그래프를 통해 자동
+    도달시키는 대신 real 회의 상태를 만든 뒤(stop_after_expert_turn=True로 idea_validation
+    직전까지 진행) 노드 함수를 직접 호출해 프롬프트를 검증한다(레거시 helper 패턴,
+    test_ideation_discovery_graph.py::_legacy_resolve_selection_then_ask_planning_question과
+    동일한 원칙)."""
+    from graph.ideation_conv_discovery import make_candidate_planning_node
+
     llm = DiscoveryScriptedLLM()
     state = start_ideation_conversation(
         session_id="COMPRESS-TEST",
@@ -1006,8 +1214,13 @@ def test_candidate_planning_prompt_is_grounded_in_prior_meeting_results_not_rein
         user_idea={"description": ""},
         llm_call=llm,
     )
-    state = reply_ideation_conversation(previous_state=state, user_message="1번", llm_call=llm)
-    assert state["phase"] == "awaiting_candidate_selection"
+    state = reply_ideation_conversation(
+        previous_state=state, user_message="1번", llm_call=llm, stop_after_expert_turn=True
+    )
+    assert state["phase"] == "idea_validation"
+
+    candidate_planning_result = make_candidate_planning_node(llm)(state)
+    state = {**state, **candidate_planning_result}
 
     planning_prompts = [p for p in llm.captured_prompts if "[후보 생성 규칙 — 압축 모드" in p]
     assert planning_prompts, "candidate_planning이 압축 모드 규칙 섹션을 포함해야 한다"
@@ -1189,10 +1402,19 @@ def test_action_code_wrong_phase_raises_explicit_validation_error():
 
 
 def test_choose_another_candidate_returns_to_candidate_selection_unlocked():
+    """용준/Claude(2026-07-28, 요청: 카드 선택 단계 제거) — idea_candidates가 없는 세션
+    (카드 선택을 거치지 않고 provisional_from_merge로 온 새 discovery 플로우)에서
+    "choose_another_candidate"는 더 이상 존재하지 않는 카드 목록으로 돌아갈 수 없다.
+    이 경우 반론·결합 라운드로 되돌아가 다시 결합하라는 의미로 처리한다
+    (concept_confirmation의 "재검토" 분기와 동일 — make_concept_confirmation_node 참고).
+    idea_candidates가 있는 레거시 세션의 기존 동작(카드 선택 화면 복귀)은
+    test_old_saved_discovery_session_can_still_reply_at_awaiting_candidate_selection에서
+    별도로 검증한다."""
     llm = DiscoveryScriptedLLM()
     state = _start_discovery(llm)
     state = reply_ideation_conversation(previous_state=state, user_message="1번", llm_call=llm)
     assert state["phase"] == "awaiting_concept_confirmation"
+    assert not state.get("idea_candidates")
 
     state = reply_ideation_conversation(
         previous_state=state,
@@ -1202,10 +1424,10 @@ def test_choose_another_candidate_returns_to_candidate_selection_unlocked():
         action_payload={},
     )
 
-    assert state["phase"] == "awaiting_candidate_selection"
-    assert state["provisional_idea"] is None
-    assert state["validation_result"] is None
-    assert state["selected_idea"] is None
+    # 조건이 다시 충족되면 카드 없이 곧바로 새 provisional_idea가 채택되고 검증까지
+    # 정지 없이 이어져 다시 awaiting_concept_confirmation에서 멈춘다.
+    assert state["phase"] == "awaiting_concept_confirmation"
+    assert state["provisional_idea"] is not None
     assert state["idea_locked"] is False
 
 
@@ -1259,7 +1481,10 @@ def test_action_code_proceed_to_validation_skips_unmet_conditions_like_text_keyw
     state = reply_ideation_conversation(
         previous_state=state, user_message="", llm_call=llm, action_code="proceed_to_validation"
     )
-    assert state["phase"] == "awaiting_candidate_selection"
+    # 용준/Claude(2026-07-28, 요청: 카드 선택 단계 제거) — "proceed_to_validation"도 더 이상
+    # candidate_planning(후보 압축·카드 나열)을 거치지 않는다. provisional_from_merge가
+    # 현재 active 방향을 카드 없이 바로 채택하고, 검증까지 정지 없이 이어진다.
+    assert state["phase"] == "awaiting_concept_confirmation"
 
 
 def test_action_code_drop_direction_by_explicit_direction_id():
@@ -1309,7 +1534,10 @@ def test_action_code_revise_candidate_does_not_lock_even_with_confirm_like_text(
         action_code="revise_candidate",
     )
     assert state["idea_locked"] is False
-    assert state["phase"] == "awaiting_candidate_selection"
+    # 용준/Claude(2026-07-28, 요청: 카드 선택 단계 제거) — 재검토는 반론·결합 라운드로
+    # 되돌아간다. 조건이 다시 충족되면 카드 없이 곧바로 새 provisional_idea가 채택되고
+    # 검증까지 정지 없이 이어져 다시 awaiting_concept_confirmation에서 멈춘다.
+    assert state["phase"] == "awaiting_concept_confirmation"
 
 
 def test_action_code_return_to_problem_definition_resets_solution_directions_and_replays_definition():
@@ -1325,11 +1553,12 @@ def test_action_code_return_to_problem_definition_resets_solution_directions_and
         llm_call=llm,
         action_code="return_to_problem_definition",
     )
-    # problem_definition -> idea_divergence -> idea_conflict_and_merge를 다시 거쳐
-    # candidate_planning까지 자동으로 이어지므로(DiscoveryScriptedLLM stub이 매번 조건을
-    # 만족시킴), 결국 다시 awaiting_candidate_selection에 도달한다 — 문제 정의부터 다시
-    # 시작했다는 뜻이다.
-    assert state["phase"] == "awaiting_candidate_selection"
+    # 용준/Claude(2026-07-28, 요청: 카드 선택 단계 제거) — problem_definition ->
+    # idea_divergence -> idea_conflict_and_merge를 다시 거쳐 provisional_from_merge까지
+    # 카드 없이 자동으로 이어지므로(DiscoveryScriptedLLM stub이 매번 조건을 만족시킴),
+    # 검증까지 정지 없이 진행돼 결국 다시 awaiting_concept_confirmation에 도달한다 — 문제
+    # 정의부터 다시 시작했다는 뜻이다.
+    assert state["phase"] == "awaiting_concept_confirmation"
     assert any(r.get("action_type") == "revision" and "문제 정의" in r.get("title", "") for r in state["idea_evolution"])
 
 
@@ -1372,21 +1601,15 @@ def test_evidence_lookup_is_called_across_all_new_problem_stage_nodes():
     state = reply_ideation_conversation(
         previous_state=state, user_message="1번", llm_call=llm, evidence_lookup=lookup
     )
-    assert state["phase"] == "awaiting_candidate_selection"
+    # 용준/Claude(2026-07-28, 요청: 카드 선택 단계 제거) — problem_definition/
+    # idea_divergence(둘 다 planning_expert) + idea_conflict_and_merge(dev_expert) +
+    # provisional_from_merge(evidence_lookup 없음, 결정론적) + validate_planning
+    # (planning_expert) + validate_technical(dev_expert)까지, 카드 선택 정지 없이 한 번의
+    # /reply 안에서 전부 자동으로 이어져 곧바로 awaiting_concept_confirmation에 도달한다.
+    assert state["phase"] == "awaiting_concept_confirmation"
     called_personas = {c["persona_id"] for c in lookup.calls}
-    # problem_definition/idea_divergence(둘 다 planning_expert) +
-    # idea_conflict_and_merge/candidate_feasibility(dev_expert) + candidate_planning
-    # (planning_expert)까지 한 번의 /reply 안에서 전부 자동으로 이어진다.
     assert "planning_expert" in called_personas
     assert "dev_expert" in called_personas
-
-    lookup.calls.clear()
-    state = reply_ideation_conversation(
-        previous_state=state, user_message="1번", llm_call=llm, evidence_lookup=lookup
-    )
-    assert state["phase"] == "awaiting_concept_confirmation"
-    # idea_validation은 dev_expert 역할로 검색한다(ideation_conv_problem.py 참고).
-    assert any(c["persona_id"] == "dev_expert" for c in lookup.calls), "idea_validation"
 
 
 def test_idea_conflict_and_merge_produces_new_merged_direction_from_two_directions():
@@ -1438,7 +1661,10 @@ def test_action_code_merge_directions_requests_another_round_with_explicit_ids()
         action_code="merge_directions",
         action_payload={"direction_ids": ["direction_1", "direction_3"]},
     )
-    assert state["phase"] == "awaiting_candidate_selection"
+    # 용준/Claude(2026-07-28, 요청: 카드 선택 단계 제거) — 결합 조건 충족 후 카드 없이
+    # 곧바로 provisional_from_merge -> 검증까지 정지 없이 이어져 awaiting_concept_confirmation
+    # 에 도달한다.
+    assert state["phase"] == "awaiting_concept_confirmation"
     assert any(r.get("action_type") == "revision" and r.get("changed_by") == "user" for r in state["idea_evolution"])
 
 
@@ -1474,27 +1700,68 @@ def test_old_saved_discovery_session_without_new_fields_is_handled_safely():
     assert ready_for_concept_confirmation(legacy_state) is False
 
 
+_LEGACY_CANDIDATES = [
+    {
+        "candidate_id": "candidate_1",
+        "title": "구버전 후보 1",
+        "problem": "구버전 세션이 저장했던 문제 정의",
+        "target_user": "구버전 세션의 대상 사용자",
+        "usage_scenario": "구버전 세션의 사용 시나리오",
+        "core_value": "구버전 세션의 핵심 가치",
+        "solution": "구버전 세션의 해결 방식",
+        "main_features": ["구버전 기능 1"],
+        "differentiation": "구버전 차별점",
+        "contest_fit": "구버전 공모전 적합성",
+        "success_metrics": ["구버전 성공 지표"],
+        "feasibility": "medium",
+        "technical_approach": "구버전 기술 접근",
+        "required_data": [],
+        "risks": [],
+    },
+    {
+        "candidate_id": "candidate_2",
+        "title": "구버전 후보 2",
+        "problem": "구버전 세션이 저장했던 다른 문제 정의",
+        "target_user": "구버전 세션의 다른 대상 사용자",
+        "usage_scenario": "구버전 세션의 다른 사용 시나리오",
+        "core_value": "구버전 세션의 다른 핵심 가치",
+        "solution": "구버전 세션의 다른 해결 방식",
+        "main_features": ["구버전 기능 2"],
+        "differentiation": "구버전 다른 차별점",
+        "contest_fit": "구버전 다른 공모전 적합성",
+        "success_metrics": ["구버전 다른 성공 지표"],
+        "feasibility": "medium",
+        "technical_approach": "구버전 다른 기술 접근",
+        "required_data": [],
+        "risks": [],
+    },
+]
+
+
 def test_old_saved_discovery_session_can_still_reply_at_awaiting_candidate_selection():
-    """구버전 discovery 세션(신규 problem 단계를 거치지 않고 저장된, phase가 이미
-    "awaiting_candidate_selection"인 상태)을 이어받아도 /reply가 정상 동작한다 —
-    apply_user_answer가 awaiting_candidate_selection -> "provisional_selection"으로
-    전이시키는 로직은 phase 값 하나만 보고 결정되므로, state에 신규 필드가 없어도
-    영향받지 않는다."""
+    """구버전 discovery 세션(신규 problem 단계가 생기기 전, candidate_generation부터
+    바로 시작해 카드를 나열하고 phase가 이미 "awaiting_candidate_selection"인 상태)을
+    이어받아도 /reply가 정상 동작한다. 용준/Claude(2026-07-28, 요청: 카드 선택 단계
+    제거) — start_ideation_conversation은 이제 discovery 모드에서 항상 problem_discovery
+    부터 시작하므로(카드 선택 단계 자체를 더 이상 거치지 않는다), 이 시나리오는 더 이상
+    실제 호출로 재현할 수 없다. 대신 initial_conv_state로 만든 빈 상태에 "이미
+    awaiting_candidate_selection에 저장돼 있던 구버전 세션"을 직접 흉내내(phase +
+    idea_candidates만 채운다) apply_user_answer -> candidate_selection 경로(레거시
+    노드, 그래프 배선 그대로 유지됨)가 여전히 정상 동작하는지 확인한다."""
     llm = DiscoveryScriptedLLM()
     legacy_state = {
-        **start_ideation_conversation(
-            session_id="LEGACY-2",
-            notice_and_criteria=NOTICE_AND_CRITERIA,
-            user_idea={"description": ""},
-            llm_call=llm,
-        ),
+        **initial_conv_state("LEGACY-2", NOTICE_AND_CRITERIA, {"description": ""}),
+        "phase": "awaiting_candidate_selection",
+        "idea_candidates": _LEGACY_CANDIDATES,
     }
-    # start_ideation_conversation 결과는 이미 신규 흐름을 탄 상태(awaiting_problem_focus_selection)
-    # 이므로, "신규 필드 없이 옛 phase에 저장된 세션"을 정확히 흉내내기 위해 candidate_selection
-    # 단계까지 강제로 진행시킨 뒤 신규 필드 일부를 실제로 지워 구버전 저장 데이터를 재현한다.
     state = reply_ideation_conversation(previous_state=legacy_state, user_message="1번", llm_call=llm)
-    assert state["phase"] == "awaiting_candidate_selection"
-    simulated_legacy = dict(state)
+    assert state["phase"] == "awaiting_concept_confirmation"
+    assert state["provisional_idea"]["candidate_id"] == "candidate_1"
+
+    # 신규 필드가 아예 없는 구버전 저장 데이터(이번 개편 이전에 저장된, phase가 여전히
+    # awaiting_candidate_selection인 세션)를 재현해 같은 경로가 안전하게 동작하는지도
+    # 확인한다.
+    simulated_legacy = dict(legacy_state)
     for legacy_missing_key in (
         "problem_definition",
         "solution_directions",
@@ -1592,6 +1859,13 @@ class _CompressionCompliantLLM(DiscoveryScriptedLLM):
 
 
 def test_candidate_planning_compresses_prior_meeting_results_without_reinventing():
+    """용준/Claude(2026-07-28, 요청: 카드 선택 단계 제거) — candidate_planning은 새
+    discovery 플로우의 그래프 배선에서 더 이상 자동 실행되지 않으므로(위
+    test_candidate_planning_prompt_is_grounded_in_prior_meeting_results_not_reinvented와
+    동일한 이유), 실제 회의 상태를 만든 뒤(stop_after_expert_turn=True) 노드 함수를 직접
+    호출해 압축 동작 자체는 그대로 검증한다."""
+    from graph.ideation_conv_discovery import make_candidate_planning_node
+
     llm = _CompressionCompliantLLM()
     state = start_ideation_conversation(
         session_id="COMPRESS-BEHAVIOR",
@@ -1599,8 +1873,11 @@ def test_candidate_planning_compresses_prior_meeting_results_without_reinventing
         user_idea={"description": ""},
         llm_call=llm,
     )
-    state = reply_ideation_conversation(previous_state=state, user_message="1번", llm_call=llm)
-    assert state["phase"] == "awaiting_candidate_selection"
+    state = reply_ideation_conversation(
+        previous_state=state, user_message="1번", llm_call=llm, stop_after_expert_turn=True
+    )
+    assert state["phase"] == "idea_validation"
+    state = {**state, **make_candidate_planning_node(llm)(state)}
 
     # idea_conflict_and_merge가 실제로 만든 방향 상태 — 방향 1·3은 merged로 비활성화되고,
     # 방향 2·4와 새 결합 방향만 active로 후보 생성에 전달된다.
@@ -1644,28 +1921,35 @@ def test_candidate_planning_compresses_prior_meeting_results_without_reinventing
 
 
 class _CoreFieldPreservingSynthesisLLM(DiscoveryScriptedLLM):
-    """synthesis(최종 종합) 호출에만 개입해, 확정된 아이디어(candidate_1)의 핵심 필드를
-    그대로 반영하는 "규칙을 지키는 LLM"을 흉내낸다. 다른 모든 노드는 기존
-    DiscoveryScriptedLLM 표준 stub을 그대로 쓴다 — "1번" 선택은 결정론적 코드 경로라
-    candidate_1(_default_candidates()의 첫 번째 항목)이 그대로 선택된다."""
+    """synthesis(최종 종합) 호출에만 개입해, 확정된 아이디어의 핵심 필드를 그대로
+    반영하는 "규칙을 지키는 LLM"을 흉내낸다. 다른 모든 노드는 기존 DiscoveryScriptedLLM
+    표준 stub을 그대로 쓴다.
+
+    용준/Claude(2026-07-28, 요청: 카드 선택 단계 제거) — 확정되는 아이디어가 더 이상
+    candidate_planning이 만든 candidate_1이 아니라, provisional_from_merge가 채택한
+    결합 방향(problem="문제 정의", target_user="결합 적합성", differentiation은 채택된
+    방향 제목 기반 문구)이므로, 이 mock의 하드코딩된 값도 그 실제 값과 일치하도록
+    맞춘다 — 이 테스트는 "LLM이 똑똑하게 반영하는지"가 아니라 "확정된 값이 파이프라인
+    끝까지 훼손 없이 전달되는지"를 검증하므로, mock 자체는 여전히 프롬프트 내용과 무관한
+    고정 응답이어도 된다."""
 
     def __call__(self, prompt: str) -> str:
         if '"idea_name"' in prompt:
             self.captured_prompts.append(prompt)
             return json.dumps(
                 {
-                    "idea_name": "후보1: 문의 자동응답",
-                    "one_line_pitch": "동네 카페 반복 문의를 자동 응답으로 줄인다",
-                    "problem_definition": "반복 문의 응대 부담",
-                    "target_user": "동네 카페 사장님",
-                    "core_user_value": "후보1: 문의 자동응답 핵심 가치",
-                    "key_features": ["후보1: 문의 자동응답 기능1"],
-                    "required_data": ["candidate_1 데이터"],
-                    "tech_direction": "candidate_1 기술 접근",
-                    "mvp_scope": ["candidate_1 MVP"],
-                    "differentiation": "후보1: 문의 자동응답 차별성",
+                    "idea_name": "결합 방향 기반 아이디어",
+                    "one_line_pitch": "위원회가 결합한 방향으로 문제를 해결한다",
+                    "problem_definition": "문제 정의",
+                    "target_user": "결합 적합성",
+                    "core_user_value": "결합 원리",
+                    "key_features": ["결합 작동 방식"],
+                    "required_data": ["committee_merge 데이터"],
+                    "tech_direction": "committee_merge 기술 접근",
+                    "mvp_scope": ["committee_merge MVP"],
+                    "differentiation": "'수정 방향 2' 해결 방향의 핵심 원리를 그대로 반영한 안전 후보입니다.",
                     "risks_and_mitigations": [{"risk": "위험1", "mitigation": "대응1"}],
-                    "success_metrics": ["후보1: 문의 자동응답 지표"],
+                    "success_metrics": ["검증 단계에서 확정 예정"],
                     "expert_final_opinions": {"planning_expert": "기획 판단", "dev_expert": "개발 판단"},
                     "unverified_assumptions": [],
                     "final_recommendation": "추천",

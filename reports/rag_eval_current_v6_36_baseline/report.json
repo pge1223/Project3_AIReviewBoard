@@ -1,0 +1,1417 @@
+{
+  "run_id": "06ee0f38-006c-42d7-ba89-f7d3a19f82e9",
+  "executed_at": "2026-07-28T14:51:08.631292Z",
+  "settings": {
+    "dataset_name": "rag_eval_current_v6_36",
+    "dataset_version": "1.0.0",
+    "dataset_path": "reports/rag_eval_current_v6_36.jsonl",
+    "mode": "retrieval",
+    "top_k": 5,
+    "generation_model": null,
+    "eval_model": null,
+    "eval_prompt_version": "faithfulness_judge_v1 / persona_fit_judge_v1",
+    "chroma_collection": "project_documents_kure_v6",
+    "human_verified_only": false,
+    "cache_enabled": true
+  },
+  "retrieval_results": [
+    {
+      "case_id": "v6_001",
+      "query": "2026 공공기관 AI 혁신 챌린지를 개최하는 목적과 슬로건은 무엇인가요?",
+      "persona_id": "planning_expert",
+      "project_id": "6a68b9b9a84aaa49019a34bd",
+      "role_id": "planning",
+      "gold_document_ids": [
+        "6a68b9bda84aaa49019a34bf"
+      ],
+      "retrieved": [
+        {
+          "document_id": "6a68b9bda84aaa49019a34bf",
+          "chunk_id": "chk_50a81d93ce010939",
+          "rank": 1,
+          "score": 0.5613615363836288,
+          "document_name": "붙임1._「2026_공공기관_AI_혁신_챌린지」_공고문_FF.hwpx"
+        },
+        {
+          "document_id": "6a68b9bca84aaa49019a34be",
+          "chunk_id": "chk_2b82e435fd434632",
+          "rank": 2,
+          "score": 0.5523935258388519,
+          "document_name": "HOME > 알림마당 > NIA 알림 > 공지사항 | \r\n        \r\n    \r\n      한국지능정보사회진흥원"
+        }
+      ],
+      "retrieved_document_ids": [
+        "6a68b9bda84aaa49019a34bf",
+        "6a68b9bca84aaa49019a34be"
+      ],
+      "recall_at_k": 1.0,
+      "hit_at_k": 1.0,
+      "expect_no_evidence": false,
+      "empty_result": false,
+      "human_verified": false,
+      "retrieval_time_ms": 523.0499000026612,
+      "warnings": []
+    },
+    {
+      "case_id": "v6_002",
+      "query": "공공기관 AI 혁신 챌린지의 주최·주관 기관은 어디인가요?",
+      "persona_id": "planning_expert",
+      "project_id": "6a68b9b9a84aaa49019a34bd",
+      "role_id": "planning",
+      "gold_document_ids": [
+        "6a68b9bca84aaa49019a34be",
+        "6a68b9bda84aaa49019a34bf"
+      ],
+      "retrieved": [
+        {
+          "document_id": "6a68b9bda84aaa49019a34bf",
+          "chunk_id": "chk_50a81d93ce010939",
+          "rank": 1,
+          "score": 0.5698819309473038,
+          "document_name": "붙임1._「2026_공공기관_AI_혁신_챌린지」_공고문_FF.hwpx"
+        },
+        {
+          "document_id": "6a68b9bca84aaa49019a34be",
+          "chunk_id": "chk_1824cc0a5cd3a3e0",
+          "rank": 2,
+          "score": 0.549490025639534,
+          "document_name": "HOME > 알림마당 > NIA 알림 > 공지사항 | \r\n        \r\n    \r\n      한국지능정보사회진흥원"
+        }
+      ],
+      "retrieved_document_ids": [
+        "6a68b9bda84aaa49019a34bf",
+        "6a68b9bca84aaa49019a34be"
+      ],
+      "recall_at_k": 1.0,
+      "hit_at_k": 1.0,
+      "expect_no_evidence": false,
+      "empty_result": false,
+      "human_verified": false,
+      "retrieval_time_ms": 369.61609999707434,
+      "warnings": []
+    },
+    {
+      "case_id": "v6_003",
+      "query": "공모 부문 두 가지와 지정 주제·자유주제 Track의 차이를 설명해 주세요.",
+      "persona_id": "planning_expert",
+      "project_id": "6a68b9b9a84aaa49019a34bd",
+      "role_id": "planning",
+      "gold_document_ids": [
+        "6a68b9bda84aaa49019a34bf"
+      ],
+      "retrieved": [
+        {
+          "document_id": "6a68b9bda84aaa49019a34bf",
+          "chunk_id": "chk_0be88e29956b59d1",
+          "rank": 1,
+          "score": 0.43509556353092194,
+          "document_name": "붙임1._「2026_공공기관_AI_혁신_챌린지」_공고문_FF.hwpx"
+        },
+        {
+          "document_id": "6a68b9bda84aaa49019a34c1",
+          "chunk_id": "chk_27d27039f64d6dd0",
+          "rank": 2,
+          "score": 0.349540114402771,
+          "document_name": "붙임2._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_실증·PoC_F.hwpx"
+        }
+      ],
+      "retrieved_document_ids": [
+        "6a68b9bda84aaa49019a34bf",
+        "6a68b9bda84aaa49019a34c1"
+      ],
+      "recall_at_k": 1.0,
+      "hit_at_k": 1.0,
+      "expect_no_evidence": false,
+      "empty_result": false,
+      "human_verified": false,
+      "retrieval_time_ms": 326.92979999410454,
+      "warnings": []
+    },
+    {
+      "case_id": "v6_004",
+      "query": "AI 활용 우수사례 부문에 제출할 수 있는 운영 사례의 조건은 무엇인가요?",
+      "persona_id": "planning_expert",
+      "project_id": "6a68b9b9a84aaa49019a34bd",
+      "role_id": "planning",
+      "gold_document_ids": [
+        "6a68b9bda84aaa49019a34bf"
+      ],
+      "retrieved": [
+        {
+          "document_id": "6a68b9bda84aaa49019a34c0",
+          "chunk_id": "chk_5fc86dda016d27f2",
+          "rank": 1,
+          "score": 0.713113471865654,
+          "document_name": "붙임3._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_우수사례_F.hwp"
+        }
+      ],
+      "retrieved_document_ids": [
+        "6a68b9bda84aaa49019a34c0"
+      ],
+      "recall_at_k": 0.0,
+      "hit_at_k": 0.0,
+      "expect_no_evidence": false,
+      "empty_result": false,
+      "human_verified": false,
+      "retrieval_time_ms": 294.4437999976799,
+      "warnings": []
+    },
+    {
+      "case_id": "v6_005",
+      "query": "지정 주제에서 인정하는 사회 현안의 예시와 범위 제한은 무엇인가요?",
+      "persona_id": "planning_expert",
+      "project_id": "6a68b9b9a84aaa49019a34bd",
+      "role_id": "planning",
+      "gold_document_ids": [
+        "6a68b9bda84aaa49019a34bf"
+      ],
+      "retrieved": [
+        {
+          "document_id": "6a68b9bda84aaa49019a34bf",
+          "chunk_id": "chk_0be88e29956b59d1",
+          "rank": 1,
+          "score": 0.36895622313022614,
+          "document_name": "붙임1._「2026_공공기관_AI_혁신_챌린지」_공고문_FF.hwpx"
+        },
+        {
+          "document_id": "6a68b9bda84aaa49019a34c0",
+          "chunk_id": "chk_26bef65777db751f",
+          "rank": 2,
+          "score": 0.35622091591358185,
+          "document_name": "붙임3._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_우수사례_F.hwp"
+        }
+      ],
+      "retrieved_document_ids": [
+        "6a68b9bda84aaa49019a34bf",
+        "6a68b9bda84aaa49019a34c0"
+      ],
+      "recall_at_k": 1.0,
+      "hit_at_k": 1.0,
+      "expect_no_evidence": false,
+      "empty_result": false,
+      "human_verified": false,
+      "retrieval_time_ms": 291.2437999912072,
+      "warnings": []
+    },
+    {
+      "case_id": "v6_006",
+      "query": "참가 가능한 주관기관과 컨소시엄 참여기관의 자격을 구분해 주세요.",
+      "persona_id": "planning_expert",
+      "project_id": "6a68b9b9a84aaa49019a34bd",
+      "role_id": "planning",
+      "gold_document_ids": [
+        "6a68b9bda84aaa49019a34bf"
+      ],
+      "retrieved": [
+        {
+          "document_id": "6a68b9bda84aaa49019a34bf",
+          "chunk_id": "chk_2a0b3b0fd7d86d87",
+          "rank": 1,
+          "score": 0.5027146339416504,
+          "document_name": "붙임1._「2026_공공기관_AI_혁신_챌린지」_공고문_FF.hwpx"
+        },
+        {
+          "document_id": "6a68b9bca84aaa49019a34be",
+          "chunk_id": "chk_66c79a900c2b8818",
+          "rank": 2,
+          "score": 0.4478265345096588,
+          "document_name": "HOME > 알림마당 > NIA 알림 > 공지사항 | \r\n        \r\n    \r\n      한국지능정보사회진흥원"
+        }
+      ],
+      "retrieved_document_ids": [
+        "6a68b9bda84aaa49019a34bf",
+        "6a68b9bca84aaa49019a34be"
+      ],
+      "recall_at_k": 1.0,
+      "hit_at_k": 1.0,
+      "expect_no_evidence": false,
+      "empty_result": false,
+      "human_verified": false,
+      "retrieval_time_ms": 283.45260000787675,
+      "warnings": []
+    },
+    {
+      "case_id": "v6_007",
+      "query": "컨소시엄에 중앙행정기관이나 지방자치단체가 참여할 수 있으며 최대 몇 개 기관까지 구성할 수 있나요?",
+      "persona_id": "planning_expert",
+      "project_id": "6a68b9b9a84aaa49019a34bd",
+      "role_id": "planning",
+      "gold_document_ids": [
+        "6a68b9bda84aaa49019a34bf"
+      ],
+      "retrieved": [
+        {
+          "document_id": "6a68b9bda84aaa49019a34bf",
+          "chunk_id": "chk_2a0b3b0fd7d86d87",
+          "rank": 1,
+          "score": 0.4995119422674179,
+          "document_name": "붙임1._「2026_공공기관_AI_혁신_챌린지」_공고문_FF.hwpx"
+        }
+      ],
+      "retrieved_document_ids": [
+        "6a68b9bda84aaa49019a34bf"
+      ],
+      "recall_at_k": 1.0,
+      "hit_at_k": 1.0,
+      "expect_no_evidence": false,
+      "empty_result": false,
+      "human_verified": false,
+      "retrieval_time_ms": 310.7632999890484,
+      "warnings": []
+    },
+    {
+      "case_id": "v6_008",
+      "query": "팀 인원 제한과 동일 임직원의 중복 참여 제한은 어떻게 되나요?",
+      "persona_id": "planning_expert",
+      "project_id": "6a68b9b9a84aaa49019a34bd",
+      "role_id": "planning",
+      "gold_document_ids": [
+        "6a68b9bda84aaa49019a34bf"
+      ],
+      "retrieved": [
+        {
+          "document_id": "6a68b9bda84aaa49019a34bf",
+          "chunk_id": "chk_2a0b3b0fd7d86d87",
+          "rank": 1,
+          "score": 0.4603440910577774,
+          "document_name": "붙임1._「2026_공공기관_AI_혁신_챌린지」_공고문_FF.hwpx"
+        },
+        {
+          "document_id": "6a68b9bda84aaa49019a34c1",
+          "chunk_id": "chk_27d27039f64d6dd0",
+          "rank": 2,
+          "score": 0.3908510059118271,
+          "document_name": "붙임2._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_실증·PoC_F.hwpx"
+        }
+      ],
+      "retrieved_document_ids": [
+        "6a68b9bda84aaa49019a34bf",
+        "6a68b9bda84aaa49019a34c1"
+      ],
+      "recall_at_k": 1.0,
+      "hit_at_k": 1.0,
+      "expect_no_evidence": false,
+      "empty_result": false,
+      "human_verified": false,
+      "retrieval_time_ms": 286.55009999056347,
+      "warnings": []
+    },
+    {
+      "case_id": "v6_009",
+      "query": "AI 혁신 챌린지의 결격사유에는 어떤 항목들이 포함되나요?",
+      "persona_id": "dev_expert",
+      "project_id": "6a68b9b9a84aaa49019a34bd",
+      "role_id": "technology",
+      "gold_document_ids": [
+        "6a68b9bda84aaa49019a34bf"
+      ],
+      "retrieved": [
+        {
+          "document_id": "6a68b9bda84aaa49019a34bf",
+          "chunk_id": "chk_b55c8bd229855b88",
+          "rank": 1,
+          "score": 0.5343156158924103,
+          "document_name": "붙임1._「2026_공공기관_AI_혁신_챌린지」_공고문_FF.hwpx"
+        },
+        {
+          "document_id": "6a68b9bda84aaa49019a34c0",
+          "chunk_id": "chk_f8cab9009ccb5b48",
+          "rank": 2,
+          "score": 0.6962426453828812,
+          "document_name": "붙임3._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_우수사례_F.hwp"
+        }
+      ],
+      "retrieved_document_ids": [
+        "6a68b9bda84aaa49019a34bf",
+        "6a68b9bda84aaa49019a34c0"
+      ],
+      "recall_at_k": 1.0,
+      "hit_at_k": 1.0,
+      "expect_no_evidence": false,
+      "empty_result": false,
+      "human_verified": false,
+      "retrieval_time_ms": 275.8048000105191,
+      "warnings": []
+    },
+    {
+      "case_id": "v6_010",
+      "query": "동일 서비스의 타 공모전 수상 이력이 결격사유가 되는 누적 상금 기준은 얼마인가요?",
+      "persona_id": "planning_expert",
+      "project_id": "6a68b9b9a84aaa49019a34bd",
+      "role_id": "planning",
+      "gold_document_ids": [
+        "6a68b9bda84aaa49019a34bf"
+      ],
+      "retrieved": [
+        {
+          "document_id": "6a68b9bda84aaa49019a34bf",
+          "chunk_id": "chk_b55c8bd229855b88",
+          "rank": 1,
+          "score": 0.47403931617736816,
+          "document_name": "붙임1._「2026_공공기관_AI_혁신_챌린지」_공고문_FF.hwpx"
+        },
+        {
+          "document_id": "6a68b9bda84aaa49019a34c0",
+          "chunk_id": "chk_5fc86dda016d27f2",
+          "rank": 2,
+          "score": 0.633740246295929,
+          "document_name": "붙임3._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_우수사례_F.hwp"
+        }
+      ],
+      "retrieved_document_ids": [
+        "6a68b9bda84aaa49019a34bf",
+        "6a68b9bda84aaa49019a34c0"
+      ],
+      "recall_at_k": 1.0,
+      "hit_at_k": 1.0,
+      "expect_no_evidence": false,
+      "empty_result": false,
+      "human_verified": false,
+      "retrieval_time_ms": 302.58270000922494,
+      "warnings": []
+    },
+    {
+      "case_id": "v6_011",
+      "query": "접수 기간, 서면 심사, 발표 심사, 최종 결과 발표 일정을 날짜별로 알려주세요.",
+      "persona_id": "planning_expert",
+      "project_id": "6a68b9b9a84aaa49019a34bd",
+      "role_id": "planning",
+      "gold_document_ids": [
+        "6a68b9bda84aaa49019a34bf"
+      ],
+      "retrieved": [
+        {
+          "document_id": "6a68b9bca84aaa49019a34be",
+          "chunk_id": "chk_76f35a5335dd9267",
+          "rank": 1,
+          "score": 0.48701584339141846,
+          "document_name": "HOME > 알림마당 > NIA 알림 > 공지사항 | \r\n        \r\n    \r\n      한국지능정보사회진흥원"
+        },
+        {
+          "document_id": "6a68b9bda84aaa49019a34bf",
+          "chunk_id": "chk_b55c8bd229855b88",
+          "rank": 2,
+          "score": 0.4775374799966812,
+          "document_name": "붙임1._「2026_공공기관_AI_혁신_챌린지」_공고문_FF.hwpx"
+        }
+      ],
+      "retrieved_document_ids": [
+        "6a68b9bca84aaa49019a34be",
+        "6a68b9bda84aaa49019a34bf"
+      ],
+      "recall_at_k": 1.0,
+      "hit_at_k": 1.0,
+      "expect_no_evidence": false,
+      "empty_result": false,
+      "human_verified": false,
+      "retrieval_time_ms": 286.2540999922203,
+      "warnings": []
+    },
+    {
+      "case_id": "v6_012",
+      "query": "신청할 때 제출해야 할 네 가지 서류와 이메일 접수처는 무엇인가요?",
+      "persona_id": "planning_expert",
+      "project_id": "6a68b9b9a84aaa49019a34bd",
+      "role_id": "planning",
+      "gold_document_ids": [
+        "6a68b9bda84aaa49019a34bf"
+      ],
+      "retrieved": [
+        {
+          "document_id": "6a68b9bda84aaa49019a34bf",
+          "chunk_id": "chk_de31edfc6f5ca332",
+          "rank": 1,
+          "score": 0.46747557520866395,
+          "document_name": "붙임1._「2026_공공기관_AI_혁신_챌린지」_공고문_FF.hwpx"
+        }
+      ],
+      "retrieved_document_ids": [
+        "6a68b9bda84aaa49019a34bf"
+      ],
+      "recall_at_k": 1.0,
+      "hit_at_k": 1.0,
+      "expect_no_evidence": false,
+      "empty_result": false,
+      "human_verified": false,
+      "retrieval_time_ms": 312.54810000245925,
+      "warnings": []
+    },
+    {
+      "case_id": "v6_013",
+      "query": "제출 압축파일의 파일명은 어떤 형식으로 통일해야 하나요?",
+      "persona_id": "planning_expert",
+      "project_id": "6a68b9b9a84aaa49019a34bd",
+      "role_id": "planning",
+      "gold_document_ids": [
+        "6a68b9b9a84aaa49019a34bf"
+      ],
+      "retrieved": [
+        {
+          "document_id": "6a68b9bda84aaa49019a34bf",
+          "chunk_id": "chk_92d9125c4f90748f",
+          "rank": 1,
+          "score": 0.34520789980888367,
+          "document_name": "붙임1._「2026_공공기관_AI_혁신_챌린지」_공고문_FF.hwpx"
+        },
+        {
+          "document_id": "6a68b9bda84aaa49019a34c1",
+          "chunk_id": "chk_ad8f6107682e0373",
+          "rank": 2,
+          "score": 0.33439211547374725,
+          "document_name": "붙임2._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_실증·PoC_F.hwpx"
+        }
+      ],
+      "retrieved_document_ids": [
+        "6a68b9bda84aaa49019a34bf",
+        "6a68b9bda84aaa49019a34c1"
+      ],
+      "recall_at_k": 0.0,
+      "hit_at_k": 0.0,
+      "expect_no_evidence": false,
+      "empty_result": false,
+      "human_verified": false,
+      "retrieval_time_ms": 300.75870000291616,
+      "warnings": []
+    },
+    {
+      "case_id": "v6_014",
+      "query": "1차와 2차 심사의 선정 배수, 발표 시간과 질의응답 시간은 어떻게 되나요?",
+      "persona_id": "planning_expert",
+      "project_id": "6a68b9b9a84aaa49019a34bd",
+      "role_id": "planning",
+      "gold_document_ids": [
+        "6a68b9bda84aaa49019a34bf"
+      ],
+      "retrieved": [
+        {
+          "document_id": "6a68b9bda84aaa49019a34bf",
+          "chunk_id": "chk_63dce281a04eb25c",
+          "rank": 1,
+          "score": 0.4557175487279892,
+          "document_name": "붙임1._「2026_공공기관_AI_혁신_챌린지」_공고문_FF.hwpx"
+        },
+        {
+          "document_id": "6a68b9bca84aaa49019a34be",
+          "chunk_id": "chk_76f35a5335dd9267",
+          "rank": 2,
+          "score": 0.39296387135982513,
+          "document_name": "HOME > 알림마당 > NIA 알림 > 공지사항 | \r\n        \r\n    \r\n      한국지능정보사회진흥원"
+        },
+        {
+          "document_id": "6a68b9bda84aaa49019a34c0",
+          "chunk_id": "chk_5fc86dda016d27f2",
+          "rank": 3,
+          "score": 0.5992329120635986,
+          "document_name": "붙임3._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_우수사례_F.hwp"
+        },
+        {
+          "document_id": "6a68b9bda84aaa49019a34c1",
+          "chunk_id": "chk_b34dccf872ae8362",
+          "rank": 4,
+          "score": 0.57357437312603,
+          "document_name": "붙임2._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_실증·PoC_F.hwpx"
+        }
+      ],
+      "retrieved_document_ids": [
+        "6a68b9bda84aaa49019a34bf",
+        "6a68b9bca84aaa49019a34be",
+        "6a68b9bda84aaa49019a34c0",
+        "6a68b9bda84aaa49019a34c1"
+      ],
+      "recall_at_k": 1.0,
+      "hit_at_k": 1.0,
+      "expect_no_evidence": false,
+      "empty_result": false,
+      "human_verified": false,
+      "retrieval_time_ms": 303.2480999972904,
+      "warnings": []
+    },
+    {
+      "case_id": "v6_015",
+      "query": "실증·PoC와 우수사례의 5개 평가 항목별 배점을 각각 비교해 주세요.",
+      "persona_id": "planning_expert",
+      "project_id": "6a68b9b9a84aaa49019a34bd",
+      "role_id": "planning",
+      "gold_document_ids": [
+        "6a68b9bda84aaa49019a34bf"
+      ],
+      "retrieved": [
+        {
+          "document_id": "6a68b9bda84aaa49019a34bf",
+          "chunk_id": "chk_de31edfc6f5ca332",
+          "rank": 1,
+          "score": 0.49268261790275575,
+          "document_name": "붙임1._「2026_공공기관_AI_혁신_챌린지」_공고문_FF.hwpx"
+        },
+        {
+          "document_id": "6a68b9bda84aaa49019a34c0",
+          "chunk_id": "chk_5fc86dda016d27f2",
+          "rank": 2,
+          "score": 0.6142287850379944,
+          "document_name": "붙임3._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_우수사례_F.hwp"
+        }
+      ],
+      "retrieved_document_ids": [
+        "6a68b9bda84aaa49019a34bf",
+        "6a68b9bda84aaa49019a34c0"
+      ],
+      "recall_at_k": 1.0,
+      "hit_at_k": 1.0,
+      "expect_no_evidence": false,
+      "empty_result": false,
+      "human_verified": false,
+      "retrieval_time_ms": 302.5746000057552,
+      "warnings": []
+    },
+    {
+      "case_id": "v6_016",
+      "query": "실증·PoC 부문의 가점 5점은 어떤 두 요소를 평가하나요?",
+      "persona_id": "dev_expert",
+      "project_id": "6a68b9b9a84aaa49019a34bd",
+      "role_id": "technology",
+      "gold_document_ids": [
+        "6a68b9bda84aaa49019a34bf"
+      ],
+      "retrieved": [
+        {
+          "document_id": "6a68b9bda84aaa49019a34bf",
+          "chunk_id": "chk_2db07e9643c5e28f",
+          "rank": 1,
+          "score": 0.4868209809064865,
+          "document_name": "붙임1._「2026_공공기관_AI_혁신_챌린지」_공고문_FF.hwpx"
+        },
+        {
+          "document_id": "6a68b9bda84aaa49019a34c1",
+          "chunk_id": "chk_03d23d15c7e0046d",
+          "rank": 2,
+          "score": 0.6491615623235703,
+          "document_name": "붙임2._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_실증·PoC_F.hwpx"
+        },
+        {
+          "document_id": "6a68b9bda84aaa49019a34c0",
+          "chunk_id": "chk_f8cab9009ccb5b48",
+          "rank": 3,
+          "score": 0.6048445403575897,
+          "document_name": "붙임3._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_우수사례_F.hwp"
+        }
+      ],
+      "retrieved_document_ids": [
+        "6a68b9bda84aaa49019a34bf",
+        "6a68b9bda84aaa49019a34c1",
+        "6a68b9bda84aaa49019a34c0"
+      ],
+      "recall_at_k": 1.0,
+      "hit_at_k": 1.0,
+      "expect_no_evidence": false,
+      "empty_result": false,
+      "human_verified": false,
+      "retrieval_time_ms": 298.10399998677894,
+      "warnings": []
+    },
+    {
+      "case_id": "v6_017",
+      "query": "AI 모델이나 정부 지원 플랫폼을 보조적으로 사용해도 가점을 받을 수 있나요?",
+      "persona_id": "dev_expert",
+      "project_id": "6a68b9b9a84aaa49019a34bd",
+      "role_id": "technology",
+      "gold_document_ids": [
+        "6a68b9bda84aaa49019a34bf"
+      ],
+      "retrieved": [
+        {
+          "document_id": "6a68b9bda84aaa49019a34bf",
+          "chunk_id": "chk_06f45b6872fb14e2",
+          "rank": 1,
+          "score": 0.5642972767353058,
+          "document_name": "붙임1._「2026_공공기관_AI_혁신_챌린지」_공고문_FF.hwpx"
+        },
+        {
+          "document_id": "6a68b9bda84aaa49019a34c0",
+          "chunk_id": "chk_f8cab9009ccb5b48",
+          "rank": 2,
+          "score": 0.6662819683551788,
+          "document_name": "붙임3._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_우수사례_F.hwp"
+        }
+      ],
+      "retrieved_document_ids": [
+        "6a68b9bda84aaa49019a34bf",
+        "6a68b9bda84aaa49019a34c0"
+      ],
+      "recall_at_k": 1.0,
+      "hit_at_k": 1.0,
+      "expect_no_evidence": false,
+      "empty_result": false,
+      "human_verified": false,
+      "retrieval_time_ms": 322.38699999288656,
+      "warnings": []
+    },
+    {
+      "case_id": "v6_018",
+      "query": "AI 모델·데이터셋·오픈소스 사용 시 사전에 확인해야 할 권리 사항은 무엇인가요?",
+      "persona_id": "dev_expert",
+      "project_id": "6a68b9b9a84aaa49019a34bd",
+      "role_id": "technology",
+      "gold_document_ids": [
+        "6a68b9bda84aaa49019a34bf"
+      ],
+      "retrieved": [
+        {
+          "document_id": "6a68b9bda84aaa49019a34bf",
+          "chunk_id": "chk_b2ff66e900fb8c16",
+          "rank": 1,
+          "score": 0.45180442929267883,
+          "document_name": "붙임1._「2026_공공기관_AI_혁신_챌린지」_공고문_FF.hwpx"
+        },
+        {
+          "document_id": "6a68b9bda84aaa49019a34c1",
+          "chunk_id": "chk_ad8f6107682e0373",
+          "rank": 2,
+          "score": 0.41095004975795746,
+          "document_name": "붙임2._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_실증·PoC_F.hwpx"
+        },
+        {
+          "document_id": "6a68b9bda84aaa49019a34c0",
+          "chunk_id": "chk_f8cab9009ccb5b48",
+          "rank": 3,
+          "score": 0.6572742164134979,
+          "document_name": "붙임3._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_우수사례_F.hwp"
+        }
+      ],
+      "retrieved_document_ids": [
+        "6a68b9bda84aaa49019a34bf",
+        "6a68b9bda84aaa49019a34c1",
+        "6a68b9bda84aaa49019a34c0"
+      ],
+      "recall_at_k": 1.0,
+      "hit_at_k": 1.0,
+      "expect_no_evidence": false,
+      "empty_result": false,
+      "human_verified": false,
+      "retrieval_time_ms": 284.7758999996586,
+      "warnings": []
+    },
+    {
+      "case_id": "v6_019",
+      "query": "실증·PoC 신청 서식에서 수행보고서와 요약서의 최대 분량은 각각 몇 쪽인가요?",
+      "persona_id": "planning_expert",
+      "project_id": "6a68b9b9a84aaa49019a34bd",
+      "role_id": "planning",
+      "gold_document_ids": [
+        "6a68b9bda84aaa49019a34c1"
+      ],
+      "retrieved": [
+        {
+          "document_id": "6a68b9bda84aaa49019a34c1",
+          "chunk_id": "chk_65656cc31b32d6e0",
+          "rank": 1,
+          "score": 0.5823991090059281,
+          "document_name": "붙임2._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_실증·PoC_F.hwpx"
+        },
+        {
+          "document_id": "6a68b9bda84aaa49019a34c0",
+          "chunk_id": "chk_5fc86dda016d27f2",
+          "rank": 2,
+          "score": 0.6229649633169174,
+          "document_name": "붙임3._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_우수사례_F.hwp"
+        }
+      ],
+      "retrieved_document_ids": [
+        "6a68b9bda84aaa49019a34c1",
+        "6a68b9bda84aaa49019a34c0"
+      ],
+      "recall_at_k": 1.0,
+      "hit_at_k": 1.0,
+      "expect_no_evidence": false,
+      "empty_result": false,
+      "human_verified": false,
+      "retrieval_time_ms": 306.64599999727216,
+      "warnings": []
+    },
+    {
+      "case_id": "v6_020",
+      "query": "실증·PoC 현안 및 문제정의에는 어떤 객관적 근거를 제시해야 하나요?",
+      "persona_id": "planning_expert",
+      "project_id": "6a68b9b9a84aaa49019a34bd",
+      "role_id": "planning",
+      "gold_document_ids": [
+        "6a68b9bda84aaa49019a34c1"
+      ],
+      "retrieved": [
+        {
+          "document_id": "6a68b9bda84aaa49019a34c1",
+          "chunk_id": "chk_65656cc31b32d6e0",
+          "rank": 1,
+          "score": 0.5471062898635864,
+          "document_name": "붙임2._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_실증·PoC_F.hwpx"
+        }
+      ],
+      "retrieved_document_ids": [
+        "6a68b9bda84aaa49019a34c1"
+      ],
+      "recall_at_k": 1.0,
+      "hit_at_k": 1.0,
+      "expect_no_evidence": false,
+      "empty_result": false,
+      "human_verified": false,
+      "retrieval_time_ms": 288.05439999268856,
+      "warnings": []
+    },
+    {
+      "case_id": "v6_021",
+      "query": "AI 도입 필요성과 적절성을 설명할 때 어떤 내용을 구체화해야 하나요?",
+      "persona_id": "planning_expert",
+      "project_id": "6a68b9b9a84aaa49019a34bd",
+      "role_id": "planning",
+      "gold_document_ids": [
+        "6a68b9bda84aaa49019a34c1"
+      ],
+      "retrieved": [
+        {
+          "document_id": "6a68b9bda84aaa49019a34c0",
+          "chunk_id": "chk_8efb7fa3af654dbd",
+          "rank": 1,
+          "score": 0.511539950966835,
+          "document_name": "붙임3._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_우수사례_F.hwp"
+        },
+        {
+          "document_id": "6a68b9bda84aaa49019a34c1",
+          "chunk_id": "chk_03d23d15c7e0046d",
+          "rank": 2,
+          "score": 0.43783217668533325,
+          "document_name": "붙임2._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_실증·PoC_F.hwpx"
+        }
+      ],
+      "retrieved_document_ids": [
+        "6a68b9bda84aaa49019a34c0",
+        "6a68b9bda84aaa49019a34c1"
+      ],
+      "recall_at_k": 1.0,
+      "hit_at_k": 1.0,
+      "expect_no_evidence": false,
+      "empty_result": false,
+      "human_verified": false,
+      "retrieval_time_ms": 333.6123999906704,
+      "warnings": []
+    },
+    {
+      "case_id": "v6_022",
+      "query": "실증·PoC 목표와 추진 로드맵은 어떤 방식으로 측정 가능하게 작성해야 하나요?",
+      "persona_id": "planning_expert",
+      "project_id": "6a68b9b9a84aaa49019a34bd",
+      "role_id": "planning",
+      "gold_document_ids": [
+        "6a68b9bda84aaa49019a34c1"
+      ],
+      "retrieved": [
+        {
+          "document_id": "6a68b9bda84aaa49019a34c1",
+          "chunk_id": "chk_65656cc31b32d6e0",
+          "rank": 1,
+          "score": 0.5919708847999573,
+          "document_name": "붙임2._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_실증·PoC_F.hwpx"
+        },
+        {
+          "document_id": "6a68b9bda84aaa49019a34c0",
+          "chunk_id": "chk_584adbcffabe84d3",
+          "rank": 2,
+          "score": 0.6191002666950226,
+          "document_name": "붙임3._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_우수사례_F.hwp"
+        }
+      ],
+      "retrieved_document_ids": [
+        "6a68b9bda84aaa49019a34c1",
+        "6a68b9bda84aaa49019a34c0"
+      ],
+      "recall_at_k": 1.0,
+      "hit_at_k": 1.0,
+      "expect_no_evidence": false,
+      "empty_result": false,
+      "human_verified": false,
+      "retrieval_time_ms": 311.9204000104219,
+      "warnings": []
+    },
+    {
+      "case_id": "v6_023",
+      "query": "실증·PoC 데이터 확보 수준과 품질 관리 항목에는 무엇을 적어야 하나요?",
+      "persona_id": "dev_expert",
+      "project_id": "6a68b9b9a84aaa49019a34bd",
+      "role_id": "technology",
+      "gold_document_ids": [
+        "6a68b9bda84aaa49019a34c1"
+      ],
+      "retrieved": [
+        {
+          "document_id": "6a68b9bda84aaa49019a34c1",
+          "chunk_id": "chk_03d23d15c7e0046d",
+          "rank": 1,
+          "score": 0.6525560766458511,
+          "document_name": "붙임2._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_실증·PoC_F.hwpx"
+        },
+        {
+          "document_id": "6a68b9bda84aaa49019a34c0",
+          "chunk_id": "chk_f8cab9009ccb5b48",
+          "rank": 2,
+          "score": 0.6271832287311554,
+          "document_name": "붙임3._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_우수사례_F.hwp"
+        },
+        {
+          "document_id": "6a68b9bda84aaa49019a34bf",
+          "chunk_id": "chk_06f45b6872fb14e2",
+          "rank": 3,
+          "score": 0.5512452006340027,
+          "document_name": "붙임1._「2026_공공기관_AI_혁신_챌린지」_공고문_FF.hwpx"
+        }
+      ],
+      "retrieved_document_ids": [
+        "6a68b9bda84aaa49019a34c1",
+        "6a68b9bda84aaa49019a34c0",
+        "6a68b9bda84aaa49019a34bf"
+      ],
+      "recall_at_k": 1.0,
+      "hit_at_k": 1.0,
+      "expect_no_evidence": false,
+      "empty_result": false,
+      "human_verified": false,
+      "retrieval_time_ms": 327.8377999959048,
+      "warnings": []
+    },
+    {
+      "case_id": "v6_024",
+      "query": "AI 모델·알고리즘 설계 적정성과 시스템 아키텍처는 어떤 기술 정보를 요구하나요?",
+      "persona_id": "dev_expert",
+      "project_id": "6a68b9b9a84aaa49019a34bd",
+      "role_id": "technology",
+      "gold_document_ids": [
+        "6a68b9bda84aaa49019a34c1"
+      ],
+      "retrieved": [
+        {
+          "document_id": "6a68b9bda84aaa49019a34c1",
+          "chunk_id": "chk_03d23d15c7e0046d",
+          "rank": 1,
+          "score": 0.4673135429620743,
+          "document_name": "붙임2._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_실증·PoC_F.hwpx"
+        },
+        {
+          "document_id": "6a68b9bda84aaa49019a34c0",
+          "chunk_id": "chk_f8cab9009ccb5b48",
+          "rank": 2,
+          "score": 0.6778041124343872,
+          "document_name": "붙임3._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_우수사례_F.hwp"
+        }
+      ],
+      "retrieved_document_ids": [
+        "6a68b9bda84aaa49019a34c1",
+        "6a68b9bda84aaa49019a34c0"
+      ],
+      "recall_at_k": 1.0,
+      "hit_at_k": 1.0,
+      "expect_no_evidence": false,
+      "empty_result": false,
+      "human_verified": false,
+      "retrieval_time_ms": 300.42820000380743,
+      "warnings": []
+    },
+    {
+      "case_id": "v6_025",
+      "query": "실증·PoC의 KPI는 현재 수준과 목표 수준, 측정 방법을 어떻게 제시해야 하나요?",
+      "persona_id": "planning_expert",
+      "project_id": "6a68b9b9a84aaa49019a34bd",
+      "role_id": "planning",
+      "gold_document_ids": [
+        "6a68b9bda84aaa49019a34c1"
+      ],
+      "retrieved": [
+        {
+          "document_id": "6a68b9bda84aaa49019a34c1",
+          "chunk_id": "chk_65656cc31b32d6e0",
+          "rank": 1,
+          "score": 0.5780971586704254,
+          "document_name": "붙임2._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_실증·PoC_F.hwpx"
+        },
+        {
+          "document_id": "6a68b9bda84aaa49019a34c0",
+          "chunk_id": "chk_5fc86dda016d27f2",
+          "rank": 2,
+          "score": 0.6251595914363861,
+          "document_name": "붙임3._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_우수사례_F.hwp"
+        }
+      ],
+      "retrieved_document_ids": [
+        "6a68b9bda84aaa49019a34c1",
+        "6a68b9bda84aaa49019a34c0"
+      ],
+      "recall_at_k": 1.0,
+      "hit_at_k": 1.0,
+      "expect_no_evidence": false,
+      "empty_result": false,
+      "human_verified": false,
+      "retrieval_time_ms": 321.59940000565257,
+      "warnings": []
+    },
+    {
+      "case_id": "v6_026",
+      "query": "실증·PoC에서 개인정보 보호, AI 편향성, 인간 개입과 모니터링 대책은 어떻게 작성하나요?",
+      "persona_id": "dev_expert",
+      "project_id": "6a68b9b9a84aaa49019a34bd",
+      "role_id": "technology",
+      "gold_document_ids": [
+        "6a68b9bda84aaa49019a34c1"
+      ],
+      "retrieved": [
+        {
+          "document_id": "6a68b9bda84aaa49019a34c1",
+          "chunk_id": "chk_03d23d15c7e0046d",
+          "rank": 1,
+          "score": 0.6723844408988953,
+          "document_name": "붙임2._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_실증·PoC_F.hwpx"
+        },
+        {
+          "document_id": "6a68b9bda84aaa49019a34c0",
+          "chunk_id": "chk_f8cab9009ccb5b48",
+          "rank": 2,
+          "score": 0.6647731363773346,
+          "document_name": "붙임3._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_우수사례_F.hwp"
+        },
+        {
+          "document_id": "6a68b9bda84aaa49019a34bf",
+          "chunk_id": "chk_06f45b6872fb14e2",
+          "rank": 3,
+          "score": 0.5707179486751557,
+          "document_name": "붙임1._「2026_공공기관_AI_혁신_챌린지」_공고문_FF.hwpx"
+        }
+      ],
+      "retrieved_document_ids": [
+        "6a68b9bda84aaa49019a34c1",
+        "6a68b9bda84aaa49019a34c0",
+        "6a68b9bda84aaa49019a34bf"
+      ],
+      "recall_at_k": 1.0,
+      "hit_at_k": 1.0,
+      "expect_no_evidence": false,
+      "empty_result": false,
+      "human_verified": false,
+      "retrieval_time_ms": 283.9092999929562,
+      "warnings": []
+    },
+    {
+      "case_id": "v6_027",
+      "query": "실증·PoC에서 AI 모델과 공공 플랫폼이 핵심 문제 해결에 기여했음을 무엇으로 입증해야 하나요?",
+      "persona_id": "dev_expert",
+      "project_id": "6a68b9b9a84aaa49019a34bd",
+      "role_id": "technology",
+      "gold_document_ids": [
+        "6a68b9bda84aaa49019a34c1"
+      ],
+      "retrieved": [
+        {
+          "document_id": "6a68b9bda84aaa49019a34c1",
+          "chunk_id": "chk_03d23d15c7e0046d",
+          "rank": 1,
+          "score": 0.6583432108163834,
+          "document_name": "붙임2._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_실증·PoC_F.hwpx"
+        },
+        {
+          "document_id": "6a68b9bda84aaa49019a34c0",
+          "chunk_id": "chk_f8cab9009ccb5b48",
+          "rank": 2,
+          "score": 0.670393705368042,
+          "document_name": "붙임3._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_우수사례_F.hwp"
+        },
+        {
+          "document_id": "6a68b9bda84aaa49019a34bf",
+          "chunk_id": "chk_06f45b6872fb14e2",
+          "rank": 3,
+          "score": 0.5746877074241639,
+          "document_name": "붙임1._「2026_공공기관_AI_혁신_챌린지」_공고문_FF.hwpx"
+        }
+      ],
+      "retrieved_document_ids": [
+        "6a68b9bda84aaa49019a34c1",
+        "6a68b9bda84aaa49019a34c0",
+        "6a68b9bda84aaa49019a34bf"
+      ],
+      "recall_at_k": 1.0,
+      "hit_at_k": 1.0,
+      "expect_no_evidence": false,
+      "empty_result": false,
+      "human_verified": false,
+      "retrieval_time_ms": 289.9900000047637,
+      "warnings": []
+    },
+    {
+      "case_id": "v6_028",
+      "query": "실증·PoC 개인정보는 언제 폐기하며 수상자의 경우 얼마 동안 보관할 수 있나요?",
+      "persona_id": "dev_expert",
+      "project_id": "6a68b9b9a84aaa49019a34bd",
+      "role_id": "technology",
+      "gold_document_ids": [
+        "6a68b9bda84aaa49019a34c1"
+      ],
+      "retrieved": [
+        {
+          "document_id": "6a68b9bda84aaa49019a34c1",
+          "chunk_id": "chk_03d23d15c7e0046d",
+          "rank": 1,
+          "score": 0.6020145863294601,
+          "document_name": "붙임2._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_실증·PoC_F.hwpx"
+        },
+        {
+          "document_id": "6a68b9bda84aaa49019a34c0",
+          "chunk_id": "chk_0a3ab4f35d27830b",
+          "rank": 2,
+          "score": 0.6014425605535507,
+          "document_name": "붙임3._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_우수사례_F.hwp"
+        },
+        {
+          "document_id": "6a68b9bda84aaa49019a34bf",
+          "chunk_id": "chk_06f45b6872fb14e2",
+          "rank": 3,
+          "score": 0.5363733798265458,
+          "document_name": "붙임1._「2026_공공기관_AI_혁신_챌린지」_공고문_FF.hwpx"
+        }
+      ],
+      "retrieved_document_ids": [
+        "6a68b9bda84aaa49019a34c1",
+        "6a68b9bda84aaa49019a34c0",
+        "6a68b9bda84aaa49019a34bf"
+      ],
+      "recall_at_k": 1.0,
+      "hit_at_k": 1.0,
+      "expect_no_evidence": false,
+      "empty_result": false,
+      "human_verified": false,
+      "retrieval_time_ms": 276.2343999929726,
+      "warnings": []
+    },
+    {
+      "case_id": "v6_029",
+      "query": "우수사례 수행보고서의 최대 분량과 포함을 권고하는 증빙자료는 무엇인가요?",
+      "persona_id": "planning_expert",
+      "project_id": "6a68b9b9a84aaa49019a34bd",
+      "role_id": "planning",
+      "gold_document_ids": [
+        "6a68b9bda84aaa49019a34c0"
+      ],
+      "retrieved": [
+        {
+          "document_id": "6a68b9bda84aaa49019a34c0",
+          "chunk_id": "chk_5fc86dda016d27f2",
+          "rank": 1,
+          "score": 0.6547536104917526,
+          "document_name": "붙임3._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_우수사례_F.hwp"
+        },
+        {
+          "document_id": "6a68b9bda84aaa49019a34c1",
+          "chunk_id": "chk_b34dccf872ae8362",
+          "rank": 2,
+          "score": 0.5879629939794541,
+          "document_name": "붙임2._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_실증·PoC_F.hwpx"
+        }
+      ],
+      "retrieved_document_ids": [
+        "6a68b9bda84aaa49019a34c0",
+        "6a68b9bda84aaa49019a34c1"
+      ],
+      "recall_at_k": 1.0,
+      "hit_at_k": 1.0,
+      "expect_no_evidence": false,
+      "empty_result": false,
+      "human_verified": false,
+      "retrieval_time_ms": 282.7696000022115,
+      "warnings": []
+    },
+    {
+      "case_id": "v6_030",
+      "query": "운영 중인 우수사례의 데이터 현황과 품질 관리 체계에는 어떤 내용을 적어야 하나요?",
+      "persona_id": "dev_expert",
+      "project_id": "6a68b9b9a84aaa49019a34bd",
+      "role_id": "technology",
+      "gold_document_ids": [
+        "6a68b9bda84aaa49019a34c0"
+      ],
+      "retrieved": [
+        {
+          "document_id": "6a68b9bda84aaa49019a34c0",
+          "chunk_id": "chk_f8cab9009ccb5b48",
+          "rank": 1,
+          "score": 0.6717850565910339,
+          "document_name": "붙임3._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_우수사례_F.hwp"
+        },
+        {
+          "document_id": "6a68b9bda84aaa49019a34c1",
+          "chunk_id": "chk_9178a8022ba44306",
+          "rank": 2,
+          "score": 0.5723344326019287,
+          "document_name": "붙임2._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_실증·PoC_F.hwpx"
+        },
+        {
+          "document_id": "6a68b9bda84aaa49019a34bf",
+          "chunk_id": "chk_06f45b6872fb14e2",
+          "rank": 3,
+          "score": 0.522721204161644,
+          "document_name": "붙임1._「2026_공공기관_AI_혁신_챌린지」_공고문_FF.hwpx"
+        }
+      ],
+      "retrieved_document_ids": [
+        "6a68b9bda84aaa49019a34c0",
+        "6a68b9bda84aaa49019a34c1",
+        "6a68b9bda84aaa49019a34bf"
+      ],
+      "recall_at_k": 1.0,
+      "hit_at_k": 1.0,
+      "expect_no_evidence": false,
+      "empty_result": false,
+      "human_verified": false,
+      "retrieval_time_ms": 291.020299991942,
+      "warnings": []
+    },
+    {
+      "case_id": "v6_031",
+      "query": "우수사례 서비스의 운영 안정성을 입증하려면 어떤 실적을 제시해야 하나요?",
+      "persona_id": "dev_expert",
+      "project_id": "6a68b9b9a84aaa49019a34bd",
+      "role_id": "technology",
+      "gold_document_ids": [
+        "6a68b9bda84aaa49019a34c0"
+      ],
+      "retrieved": [
+        {
+          "document_id": "6a68b9bda84aaa49019a34c0",
+          "chunk_id": "chk_f8cab9009ccb5b48",
+          "rank": 1,
+          "score": 0.6507911384105682,
+          "document_name": "붙임3._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_우수사례_F.hwp"
+        },
+        {
+          "document_id": "6a68b9bda84aaa49019a34c1",
+          "chunk_id": "chk_9178a8022ba44306",
+          "rank": 2,
+          "score": 0.5951552927494049,
+          "document_name": "붙임2._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_실증·PoC_F.hwpx"
+        },
+        {
+          "document_id": "6a68b9bda84aaa49019a34bf",
+          "chunk_id": "chk_06f45b6872fb14e2",
+          "rank": 3,
+          "score": 0.49913309812545775,
+          "document_name": "붙임1._「2026_공공기관_AI_혁신_챌린지」_공고문_FF.hwpx"
+        }
+      ],
+      "retrieved_document_ids": [
+        "6a68b9bda84aaa49019a34c0",
+        "6a68b9bda84aaa49019a34c1",
+        "6a68b9bda84aaa49019a34bf"
+      ],
+      "recall_at_k": 1.0,
+      "hit_at_k": 1.0,
+      "expect_no_evidence": false,
+      "empty_result": false,
+      "human_verified": false,
+      "retrieval_time_ms": 279.0776000038022,
+      "warnings": []
+    },
+    {
+      "case_id": "v6_032",
+      "query": "우수사례의 법·제도적 제약에 대응한 과정은 어떤 내용으로 설명해야 하나요?",
+      "persona_id": "planning_expert",
+      "project_id": "6a68b9b9a84aaa49019a34bd",
+      "role_id": "planning",
+      "gold_document_ids": [
+        "6a68b9bda84aaa49019a34c0"
+      ],
+      "retrieved": [
+        {
+          "document_id": "6a68b9bda84aaa49019a34c0",
+          "chunk_id": "chk_5fc86dda016d27f2",
+          "rank": 1,
+          "score": 0.6600402891635895,
+          "document_name": "붙임3._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_우수사례_F.hwp"
+        },
+        {
+          "document_id": "6a68b9bda84aaa49019a34c1",
+          "chunk_id": "chk_b34dccf872ae8362",
+          "rank": 2,
+          "score": 0.5880662143230438,
+          "document_name": "붙임2._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_실증·PoC_F.hwpx"
+        }
+      ],
+      "retrieved_document_ids": [
+        "6a68b9bda84aaa49019a34c0",
+        "6a68b9bda84aaa49019a34c1"
+      ],
+      "recall_at_k": 1.0,
+      "hit_at_k": 1.0,
+      "expect_no_evidence": false,
+      "empty_result": false,
+      "human_verified": false,
+      "retrieval_time_ms": 285.6998999923235,
+      "warnings": []
+    },
+    {
+      "case_id": "v6_033",
+      "query": "우수사례의 지속 운영과 고도화 로드맵에는 어떤 지속 가능성 근거가 필요하나요?",
+      "persona_id": "planning_expert",
+      "project_id": "6a68b9b9a84aaa49019a34bd",
+      "role_id": "planning",
+      "gold_document_ids": [
+        "6a68b9bda84aaa49019a34c0"
+      ],
+      "retrieved": [
+        {
+          "document_id": "6a68b9bda84aaa49019a34c0",
+          "chunk_id": "chk_5fc86dda016d27f2",
+          "rank": 1,
+          "score": 0.49897778034210205,
+          "document_name": "붙임3._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_우수사례_F.hwp"
+        },
+        {
+          "document_id": "6a68b9bda84aaa49019a34c1",
+          "chunk_id": "chk_d83c42050295afc4",
+          "rank": 2,
+          "score": 0.5648329198360443,
+          "document_name": "붙임2._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_실증·PoC_F.hwpx"
+        }
+      ],
+      "retrieved_document_ids": [
+        "6a68b9bda84aaa49019a34c0",
+        "6a68b9bda84aaa49019a34c1"
+      ],
+      "recall_at_k": 1.0,
+      "hit_at_k": 1.0,
+      "expect_no_evidence": false,
+      "empty_result": false,
+      "human_verified": false,
+      "retrieval_time_ms": 278.9305000042077,
+      "warnings": []
+    },
+    {
+      "case_id": "v6_034",
+      "query": "우수사례의 KPI 달성 현황과 대국민 체감 효과는 어떤 객관적 수치로 제시해야 하나요?",
+      "persona_id": "planning_expert",
+      "project_id": "6a68b9b9a84aaa49019a34bd",
+      "role_id": "planning",
+      "gold_document_ids": [
+        "6a68b9bda84aaa49019a34c0"
+      ],
+      "retrieved": [
+        {
+          "document_id": "6a68b9bda84aaa49019a34c0",
+          "chunk_id": "chk_5fc86dda016d27f2",
+          "rank": 1,
+          "score": 0.6195288300514221,
+          "document_name": "붙임3._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_우수사례_F.hwp"
+        },
+        {
+          "document_id": "6a68b9bda84aaa49019a34c1",
+          "chunk_id": "chk_65656cc31b32d6e0",
+          "rank": 2,
+          "score": 0.5955478340387345,
+          "document_name": "붙임2._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_실증·PoC_F.hwpx"
+        }
+      ],
+      "retrieved_document_ids": [
+        "6a68b9bda84aaa49019a34c0",
+        "6a68b9bda84aaa49019a34c1"
+      ],
+      "recall_at_k": 1.0,
+      "hit_at_k": 1.0,
+      "expect_no_evidence": false,
+      "empty_result": false,
+      "human_verified": false,
+      "retrieval_time_ms": 302.38950000784826,
+      "warnings": []
+    },
+    {
+      "case_id": "v6_035",
+      "query": "타 기관이나 유사 분야로 확산한 우수사례는 어떤 실적과 노력을 구체화해야 하나요?",
+      "persona_id": "planning_expert",
+      "project_id": "6a68b9b9a84aaa49019a34bd",
+      "role_id": "planning",
+      "gold_document_ids": [
+        "6a68b9bda84aaa49019a34c0"
+      ],
+      "retrieved": [
+        {
+          "document_id": "6a68b9bda84aaa49019a34c0",
+          "chunk_id": "chk_5fc86dda016d27f2",
+          "rank": 1,
+          "score": 0.6552178114652634,
+          "document_name": "붙임3._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_우수사례_F.hwp"
+        },
+        {
+          "document_id": "6a68b9bda84aaa49019a34c1",
+          "chunk_id": "chk_b34dccf872ae8362",
+          "rank": 2,
+          "score": 0.6009345144033432,
+          "document_name": "붙임2._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_실증·PoC_F.hwpx"
+        }
+      ],
+      "retrieved_document_ids": [
+        "6a68b9bda84aaa49019a34c0",
+        "6a68b9bda84aaa49019a34c1"
+      ],
+      "recall_at_k": 1.0,
+      "hit_at_k": 1.0,
+      "expect_no_evidence": false,
+      "empty_result": false,
+      "human_verified": false,
+      "retrieval_time_ms": 281.57639999699313,
+      "warnings": []
+    },
+    {
+      "case_id": "v6_036",
+      "query": "운영 중인 AI 우수사례의 편향성·신뢰성 검증과 서비스 통제 방안에는 무엇이 포함되어야 하나요?",
+      "persona_id": "dev_expert",
+      "project_id": "6a68b9b9a84aaa49019a34bd",
+      "role_id": "technology",
+      "gold_document_ids": [
+        "6a68b9bda84aaa49019a34c0"
+      ],
+      "retrieved": [
+        {
+          "document_id": "6a68b9bda84aaa49019a34c0",
+          "chunk_id": "chk_9cf3fc5eb1ce5f60",
+          "rank": 1,
+          "score": 0.7110162079334259,
+          "document_name": "붙임3._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_우수사례_F.hwp"
+        },
+        {
+          "document_id": "6a68b9bda84aaa49019a34c1",
+          "chunk_id": "chk_9178a8022ba44306",
+          "rank": 2,
+          "score": 0.6421271204948426,
+          "document_name": "붙임2._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_실증·PoC_F.hwpx"
+        }
+      ],
+      "retrieved_document_ids": [
+        "6a68b9bda84aaa49019a34c0",
+        "6a68b9bda84aaa49019a34c1"
+      ],
+      "recall_at_k": 1.0,
+      "hit_at_k": 1.0,
+      "expect_no_evidence": false,
+      "empty_result": false,
+      "human_verified": false,
+      "retrieval_time_ms": 265.062599995872,
+      "warnings": []
+    }
+  ],
+  "retrieval_aggregate": {
+    "k": 5,
+    "case_count": 36,
+    "human_verified_case_count": 0,
+    "recall_at_k_macro": null,
+    "hit_at_k_macro": null,
+    "reference_recall_at_k_macro": 0.9444444444444444,
+    "reference_hit_at_k_macro": 0.9444444444444444,
+    "no_evidence_case_count": 0,
+    "no_evidence_accuracy": null,
+    "retrieval_failure_rate": 0.0,
+    "avg_retrieval_time_ms": 305.05128055422875
+  },
+  "generation_results": [],
+  "generation_aggregate": null,
+  "estimated_cost_usd": null,
+  "notes": "v6-36-before-quality-tuning"
+}

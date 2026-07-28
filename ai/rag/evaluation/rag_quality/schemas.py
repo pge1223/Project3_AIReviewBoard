@@ -23,6 +23,7 @@ class RagEvalFilters(BaseModel):
 
     project_id: str
     role_id: Optional[str] = None
+    phase: Optional[str] = None
 
     @field_validator("project_id")
     @classmethod
@@ -111,6 +112,7 @@ class RetrievalCaseResult(BaseModel):
     retrieved_document_ids: list[str] = Field(default_factory=list, description="중복 제거된, 점수순 document_id")
     recall_at_k: float = 0.0
     hit_at_k: float = 0.0
+    reciprocal_rank: float = 0.0
     expect_no_evidence: bool = False
     empty_result: bool = False
     human_verified: bool = False
@@ -124,8 +126,10 @@ class RetrievalAggregate(BaseModel):
     human_verified_case_count: int = 0
     recall_at_k_macro: Optional[float] = None
     hit_at_k_macro: Optional[float] = None
+    mrr_macro: Optional[float] = None
     reference_recall_at_k_macro: Optional[float] = None
     reference_hit_at_k_macro: Optional[float] = None
+    reference_mrr_macro: Optional[float] = None
     no_evidence_case_count: int = 0
     no_evidence_accuracy: Optional[float] = None
     retrieval_failure_rate: Optional[float] = None

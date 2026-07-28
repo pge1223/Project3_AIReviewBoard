@@ -1789,6 +1789,11 @@ def _discussion_round_snapshot_text(
 # 값은 항상 None이다.
 QUESTION_STREAM_FIELDS: tuple[tuple[str, str | None], ...] = (("spoken_text", None),)
 DISCUSSION_STREAM_FIELDS: tuple[tuple[str, str | None], ...] = (("spoken_text", None),)
+# 용준/Claude(2026-07-28, 요청: "위원들이 순서대로 대화하는 것처럼 보여야 한다") —
+# idea_validation이 기획/개발 순차 노드(validate_planning/validate_technical)로 분리되며
+# 각자 자기 발언을 스트리밍한다. 이 두 프롬프트의 사용자 가시 필드는 "message"뿐이다(다른
+# 필드는 status/issues 등 구조화 데이터라 discussion과 동일하게 스트리밍 대상에서 뺀다).
+VALIDATION_STREAM_FIELDS: tuple[tuple[str, str | None], ...] = (("message", None),)
 FACILITATOR_SUMMARY_STREAM_FIELDS: tuple[tuple[str, str | None], ...] = (("spoken_text", None),)
 EXPERT_DELEGATION_STREAM_FIELDS: tuple[tuple[str, str | None], ...] = (("spoken_text", None),)
 # make_expert_delegation_message가 spoken_text 뒤에 항상 고정으로 덧붙이는 문구 — 스트리밍
@@ -2011,6 +2016,7 @@ def _runtime_scope_for(state: IdeationConvState) -> dict[str, Any]:
     return {
         "session_id": state.get("session_id"),
         "selected_candidate_document_id": state.get("selected_idea_document_id"),
+        "phase": state.get("phase"),
     }
 
 

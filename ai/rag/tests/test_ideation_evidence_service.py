@@ -17,6 +17,7 @@ evidence_lookup 호출 시점의 runtime_scope가 lookup 생성 시점의 closur
 from ai.rag.orchestration.ideation_evidence_service import (
     _build_issue_focused_query,
     _compose_by_document_role,
+    _rank_by_document_type,
     _scope_target_evidence,
     make_ideation_evidence_lookup,
     search_ideation_evidence,
@@ -67,6 +68,58 @@ def test_dev_expert_prioritizes_target_over_criteria():
     assert roles.count("target") == 3
     assert roles.count("criteria") == 2
     assert missing == []
+
+
+def test_pre_target_phase_uses_criteria_only_without_false_missing_target():
+    items = [
+        _item("C1", "criteria", 0.9),
+        _item("C2", "criteria", 0.8),
+    ]
+    composed, missing = _compose_by_document_role(
+        items,
+        persona_id="dev_expert",
+        top_k=5,
+        phase="problem_discovery",
+    )
+    assert [item["document_role"] for item in composed] == ["criteria", "criteria"]
+    assert missing == []
+
+
+def test_post_selection_phase_restores_persona_target_quota():
+    items = [
+        _item("C1", "criteria", 0.95),
+        _item("C2", "criteria", 0.9),
+        _item("T1", "target", 0.85),
+        _item("T2", "target", 0.8),
+        _item("T3", "target", 0.75),
+    ]
+    composed, missing = _compose_by_document_role(
+        items,
+        persona_id="dev_expert",
+        top_k=5,
+        phase="idea_validation",
+    )
+    assert [item["document_role"] for item in composed].count("target") == 3
+    assert missing == []
+
+
+def test_announcement_query_prioritizes_legacy_announcement_content():
+    form = {
+        **_item("FORM", "criteria", 0.99),
+        "document_name": "붙임2_실증_PoC_신청서.hwpx",
+        "text": "실증·PoC 신청서 작성 요령",
+    }
+    announcement = {
+        **_item("NOTICE", "criteria", 0.75),
+        "document_name": "붙임1_공고문.hwpx",
+        "text": "공고문 주최 기관과 주관 기관, 참가 자격 및 접수 일정",
+    }
+    ranked = _rank_by_document_type(
+        [form, announcement],
+        "참가 자격과 주최·주관 기관은 어디인가요?",
+    )
+    assert ranked[0]["chunk_id"] == "NOTICE"
+    assert ranked[0]["document_type"] == "announcement"
 
 
 def test_missing_document_role_is_reported_not_backfilled_with_wrong_label():

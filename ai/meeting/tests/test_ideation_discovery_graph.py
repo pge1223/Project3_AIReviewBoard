@@ -20,12 +20,21 @@ sys.path.insert(0, str(MEETING_DIR))
 from graph import (  # noqa: E402
     active_stage_for,
     finalize_ideation_conversation,
+    make_idea_conflict_and_merge_node,
+    make_idea_divergence_node,
+    make_problem_definition_node,
+    make_problem_focus_selection_node,
     reply_ideation_conversation,
     retry_failed_ideation_conversation_node,
     start_ideation_conversation,
 )
-from graph.ideation_conv_discovery import make_candidate_planning_node, make_candidate_selection_node  # noqa: E402
+from graph.ideation_conv_discovery import (  # noqa: E402
+    make_candidate_feasibility_node,
+    make_candidate_planning_node,
+    make_candidate_selection_node,
+)
 from graph.ideation_conv_nodes import make_conv_question_node  # noqa: E402
+from graph.ideation_conv_problem import _route_after_conflict_merge  # noqa: E402
 from graph.ideation_conv_run import _new_user_message  # noqa: E402
 from graph.ideation_conv_state import apply_user_answer  # noqa: E402
 from prompts import (  # noqa: E402
@@ -460,9 +469,15 @@ class DiscoveryScriptedLLM:
             )
 
         if "[검증 규칙]" in prompt:
-            return json.dumps(
-                {
-                    "planning": {
+            # 용준/Claude(2026-07-28, 요청: "위원들이 순서대로 대화하는 것처럼 보여야
+            # 한다") — idea_validation이 기획/개발 순차 프롬프트 2개로 분리되며, 이제 이
+            # 마커를 가진 호출이 두 번(각각 다른 역할 마커와 함께) 온다. 역할 마커로
+            # 어느 쪽 검증인지 구분해 그 쪽 legacy 필드만 반환한다(예전처럼 통합 dict를
+            # 양쪽에 그대로 주면 raw에 status/message 등 flat 필드도, legacy 필드도
+            # 없어서 _normalize_validation_section이 내용 없는 기본값으로 빠진다).
+            if "당신은 AI Review Board의 기획 전문가입니다" in prompt:
+                return json.dumps(
+                    {
                         "value_worth_solving": "해결할 가치가 있음",
                         "target_user_clarity": "명확함",
                         "differentiation": "차별성 있음",
@@ -470,15 +485,16 @@ class DiscoveryScriptedLLM:
                         "contest_alignment": "공모전 기준과 연결됨",
                         "concerns": [],
                     },
-                    "technical": {
-                        "data_availability": "확보 가능",
-                        "feasibility": "구현 가능",
-                        "ai_necessity": "AI 필요",
-                        "privacy_or_security_risks": "위험 낮음",
-                        "prototype_feasibility": "기간 내 가능",
-                        "concerns": [],
-                    },
-                    "unresolved_assumptions": [],
+                    ensure_ascii=False,
+                )
+            return json.dumps(
+                {
+                    "data_availability": "확보 가능",
+                    "feasibility": "구현 가능",
+                    "ai_necessity": "AI 필요",
+                    "privacy_or_security_risks": "위험 낮음",
+                    "prototype_feasibility": "기간 내 가능",
+                    "concerns": [],
                 },
                 ensure_ascii=False,
             )
@@ -486,16 +502,91 @@ class DiscoveryScriptedLLM:
         raise AssertionError(f"예상하지 못한 프롬프트입니다: {prompt[:200]}")
 
 
+_REDUCER_FIELDS = ("messages", "idea_evolution", "discussion_rounds")
+
+
+def _merge_node_result(state: dict, result: dict) -> dict:
+    """LangGraph가 Annotated[..., operator.add] 필드(messages/idea_evolution/
+    discussion_rounds)에 적용하는 누적 리듀서를 그대로 흉내낸다 — 아래 helper들이 그래프를
+    거치지 않고 노드 함수를 직접 순서대로 호출할 때, 그래프가 하던 것과 동일하게 병합하기
+    위함이다."""
+    merged = dict(state)
+    for key, value in result.items():
+        if key in _REDUCER_FIELDS and key in merged:
+            merged[key] = list(merged.get(key) or []) + list(value or [])
+        else:
+            merged[key] = value
+    return merged
+
+
+def _advance_to_awaiting_candidate_selection(state, llm, external_evidence_lookup=None):
+    """용준/Claude(2026-07-28, 요청: "위원들이 결합하는 방식으로" 카드 선택 단계 제거) —
+    새 discovery 플로우는 idea_conflict_and_merge 조건 충족 시 더 이상
+    candidate_planning/candidate_feasibility(카드 나열)를 자동으로 거치지 않고
+    provisional_from_merge로 곧장 간다(ideation_conv_build.py 참고). 이 두 노드 자체의
+    동작(이전 회의 결과 압축·실현 가능성 검토)은 여전히 유효하고 레거시 재개용으로
+    삭제되지 않았으므로, 그래프의 자동 라우팅 대신 문제 단계 노드들을 직접 순서대로
+    호출해(그래프가 하던 것과 정확히 같은 순서 — problem_focus_selection ->
+    problem_definition -> idea_divergence -> idea_conflict_and_merge(조건 충족까지
+    반복) -> candidate_planning -> candidate_feasibility) "awaiting_candidate_selection"
+    상태를 재구성한다. 이렇게 만든 state는 이후 정상적인 reply_ideation_conversation으로
+    계속 이어받을 수 있다 — candidate_selection 자체의 그래프 배선은 전혀 바뀌지 않았다."""
+    assert state["phase"] == "awaiting_problem_focus_selection"
+    answer_message = _new_user_message("1번", state["round"])
+    state = apply_user_answer(state, answer_message)
+    assert state["phase"] == "problem_focus_selection"
+
+    state = _merge_node_result(state, make_problem_focus_selection_node(llm)(state))
+    state = _merge_node_result(state, make_problem_definition_node(llm)(state))
+    state = _merge_node_result(state, make_idea_divergence_node(llm)(state))
+    while True:
+        state = _merge_node_result(state, make_idea_conflict_and_merge_node(llm)(state))
+        route = _route_after_conflict_merge(state)
+        if route == "proceed":
+            break
+        assert route == "continue", f"예상치 못한 idea_conflict_and_merge 라우팅: {route}"
+
+    state = _merge_node_result(
+        state, make_candidate_planning_node(llm, external_evidence_lookup=external_evidence_lookup)(state)
+    )
+    state = _merge_node_result(
+        state, make_candidate_feasibility_node(llm, external_evidence_lookup=external_evidence_lookup)(state)
+    )
+    # phase 검증은 호출부에 맡긴다(candidate_planning/candidate_feasibility가 LLM 실패로
+    # phase="failed"를 반환하는 경로를 의도적으로 검증하는 테스트도 이 helper를 쓴다).
+    return state
+
+
+def _start_discovery_to_candidate_selection(llm, user_idea=""):
+    """이 파일(candidate_planning/candidate_feasibility/candidate_selection 노드 자체를
+    검증하는 파일) 전용 헬퍼 — 반환값이 "awaiting_candidate_selection"에서
+    idea_candidates 2개를 들고 멈춘 상태라는 이전 계약을 그대로 보존한다.
+
+    용준/Claude(2026-07-28, 요청: "위원들이 결합하는 방식으로" 카드 선택 단계 제거) —
+    새 discovery 플로우의 그래프 자동 라우팅은 더 이상 이 지점에서 멈추지 않으므로(조건
+    충족 시 provisional_from_merge로 곧장 감), _advance_to_awaiting_candidate_selection이
+    문제 단계 노드들을 직접 순서대로 호출해 이 상태를 재구성한다. 실제 프로덕션 플로우를
+    그대로 따라가는 버전은 아래 _start_discovery(다른 테스트 파일들이 공유해서 쓴다)를
+    참고 — 이름이 비슷하지만 용도가 다르다."""
+    state = start_ideation_conversation(
+        session_id="DISC-TEST",
+        notice_and_criteria=NOTICE_AND_CRITERIA,
+        user_idea={"description": user_idea},
+        llm_call=llm,
+    )
+    if state.get("ideation_mode") != "discovery":
+        return state
+    return _advance_to_awaiting_candidate_selection(state, llm)
+
+
 def _start_discovery(llm, user_idea=""):
-    """용준/Claude(2026-07-27, 요청: "발산 전에 완성, 선택 즉시 확정" 구조 개편) — discovery
-    모드는 이제 candidate_generation 이전에 problem_discovery/problem_focus_selection/
-    problem_definition/idea_divergence/idea_conflict_and_merge를 먼저 거친다. 이 헬퍼는
-    이전 계약(반환값이 "awaiting_candidate_selection"에서 idea_candidates 2개를 들고
-    멈춘 상태)을 최대한 그대로 보존하기 위해, 그 신규 단계들을 문제 영역 1번 선택이라는
-    가장 단순한 경로로 자동 통과시킨다(DiscoveryScriptedLLM이 반론·결합 최소 조건을
-    1라운드 안에 충족시키는 고정 응답을 반환하므로, 이 통과에는 사용자 응답이 "1번" 한
-    번만 필요하다) — user_idea가 있으면(refinement 모드) 이 신규 단계 자체를 타지
-    않으므로 그대로 반환한다."""
+    """실제 프로덕션 그래프 배선을 그대로 따라간다(다른 discovery 테스트 파일들, 예:
+    test_ideation_problem_stage.py가 공유해서 쓴다) — 카드 선택 단계가 사라진
+    2026-07-28 이후에는 problem_focus_selection 답변 한 번만으로 조건이 충족되는 경우
+    idea_conflict_and_merge -> provisional_from_merge -> idea_validation까지 정지 없이
+    이어져 보통 "awaiting_concept_confirmation"에서 멈춘다. 이 파일(candidate_planning/
+    candidate_feasibility/candidate_selection 노드 자체를 검증)에서는 대신 위
+    _start_discovery_to_candidate_selection을 쓴다 — 이름이 비슷하지만 용도가 다르다."""
     state = start_ideation_conversation(
         session_id="DISC-TEST",
         notice_and_criteria=NOTICE_AND_CRITERIA,
@@ -560,7 +651,7 @@ def test_initial_idea_present_starts_refinement_mode():
 
 def test_no_initial_idea_starts_discovery_mode():
     llm = DiscoveryScriptedLLM()
-    state = _start_discovery(llm, user_idea="")
+    state = _start_discovery_to_candidate_selection(llm, user_idea="")
     assert state["ideation_mode"] == "discovery"
     assert state["phase"] == "awaiting_candidate_selection"
     assert state["initial_idea"] is None
@@ -568,7 +659,7 @@ def test_no_initial_idea_starts_discovery_mode():
 
 def test_whitespace_only_idea_starts_discovery_mode():
     llm = DiscoveryScriptedLLM()
-    state = _start_discovery(llm, user_idea="   \n\t  ")
+    state = _start_discovery_to_candidate_selection(llm, user_idea="   \n\t  ")
     assert state["ideation_mode"] == "discovery"
     assert state["phase"] == "awaiting_candidate_selection"
 
@@ -580,7 +671,7 @@ def test_whitespace_only_idea_starts_discovery_mode():
 
 def test_discovery_generates_distinct_candidates_with_feasibility_review():
     llm = DiscoveryScriptedLLM()
-    state = _start_discovery(llm)
+    state = _start_discovery_to_candidate_selection(llm)
 
     assert state["phase"] == "awaiting_candidate_selection"
     candidates = state["idea_candidates"]
@@ -605,7 +696,7 @@ def test_discovery_generates_distinct_candidates_with_feasibility_review():
 
 def test_no_refinement_question_runs_before_candidate_selection():
     llm = DiscoveryScriptedLLM()
-    state = _start_discovery(llm)
+    state = _start_discovery_to_candidate_selection(llm)
     assert state["phase"] == "awaiting_candidate_selection"
     question_prompts = [p for p in llm.captured_prompts if "[질문 규칙]" in p]
     assert not question_prompts, "후보 선택 전에 refinement 질문 노드가 호출되면 안 된다"
@@ -622,7 +713,7 @@ def test_numeric_candidate_selection_switches_to_refinement_without_llm_interpre
     선택(provisional_idea)만 확정되고, idea_validation을 거쳐 concept_confirmation에서
     사용자 확정을 기다린다 — idea_locked는 여전히 False다."""
     llm = DiscoveryScriptedLLM()
-    state = _start_discovery(llm)
+    state = _start_discovery_to_candidate_selection(llm)
     state = reply_ideation_conversation(previous_state=state, user_message="1번", llm_call=llm)
 
     assert state["phase"] == "awaiting_concept_confirmation"
@@ -649,7 +740,7 @@ def test_active_stage_switches_from_candidate_discovery_to_refinement_after_sele
     active_stage는 "refinement"가 아니라 "candidate_selection"이어야 한다. concept_confirmation
     에서 실제로 확정해야 비로소 "refinement"로 바뀐다."""
     llm = DiscoveryScriptedLLM()
-    state = _start_discovery(llm)
+    state = _start_discovery_to_candidate_selection(llm)
 
     assert state["ideation_mode"] == "discovery"
     assert active_stage_for(state["phase"]) == "candidate_discovery"
@@ -673,7 +764,7 @@ def test_active_stage_switches_from_candidate_discovery_to_refinement_after_sele
 
 def test_title_candidate_selection_resolves_deterministically():
     llm = DiscoveryScriptedLLM()
-    state = _start_discovery(llm)
+    state = _start_discovery_to_candidate_selection(llm)
     title = state["idea_candidates"][1]["title"]
     state = reply_ideation_conversation(previous_state=state, user_message=title, llm_call=llm)
 
@@ -723,7 +814,7 @@ def test_combine_request_uses_llm_interpretation_and_produces_combined_idea():
             }
         ]
     )
-    state = _start_discovery(llm)
+    state = _start_discovery_to_candidate_selection(llm)
     # 용준/Claude(2026-07-21, 요청: 전문가 라운드테이블 전환) — 결합 확정 직후 곧바로
     # 라운드테이블이 이어지고, 그 라운드의 dev 의견이 unconfirmed=[]를 반환하면
     # unresolved_issues가 그 값으로 덮어써진다(DiscoveryScriptedLLM의 "[의견 규칙]" stub이
@@ -762,7 +853,7 @@ def test_regenerate_request_produces_new_candidates_without_llm_interpretation()
     # 시작(1번째 호출)에는 기본 후보를, 재추천(2번째 호출)에는 second_batch를 받도록 두
     # 항목을 순서대로 넣는다.
     llm = DiscoveryScriptedLLM(candidates_queue=[_default_candidates(), second_batch])
-    state = _start_discovery(llm)
+    state = _start_discovery_to_candidate_selection(llm)
     first_titles = {c["title"] for c in state["idea_candidates"]}
 
     state = reply_ideation_conversation(previous_state=state, user_message="다시 추천해줘", llm_call=llm)
@@ -785,7 +876,7 @@ def test_regenerate_request_after_selection_returns_to_new_candidate_list():
         _candidate("candidate_2", "새 후보2", "새 문제2", "새 사용자2"),
     ]
     llm = DiscoveryScriptedLLM(candidates_queue=[_default_candidates(), second_batch])
-    state = _start_discovery(llm)
+    state = _start_discovery_to_candidate_selection(llm)
     state = reply_ideation_conversation(previous_state=state, user_message="1번", llm_call=llm)
     # 용준/Claude(2026-07-27) — 선택 직후에는 provisional_idea만 확정되고 검증/확정 대기
     # 상태(awaiting_concept_confirmation)로 멈춘다(요청 3번, 즉시 잠기지 않는다).
@@ -808,7 +899,7 @@ def test_regenerate_request_after_selection_returns_to_new_candidate_list():
 
 def test_regeneration_capped_and_stops_calling_llm_after_limit():
     llm = DiscoveryScriptedLLM(candidates_queue=[_default_candidates(), _default_candidates(), _default_candidates()])
-    state = _start_discovery(llm)
+    state = _start_discovery_to_candidate_selection(llm)
 
     state = reply_ideation_conversation(previous_state=state, user_message="다시 추천", llm_call=llm)
     assert state["candidate_regeneration_count"] == 1
@@ -841,7 +932,7 @@ def test_expert_recommend_request_produces_reasoned_recommendation():
             }
         ]
     )
-    state = _start_discovery(llm)
+    state = _start_discovery_to_candidate_selection(llm)
     # test_combine_request_uses_llm_interpretation_and_produces_combined_idea와 같은 이유로
     # (라운드테이블의 후속 라운드가 unresolved_issues를 덮어쓸 수 있다) candidate_selection
     # 노드를 직접 호출해 그 시점의 값을 검증한다.
@@ -871,7 +962,7 @@ def test_candidate_planning_retry_still_invalid_falls_back_to_safe_candidates():
     중단하지 않는다(요청: "후보를 만들 수 있는 active direction이 2개 이상이면
     candidate_planning 실패로 전체 회의를 중단하지 않는다")."""
     llm = DiscoveryScriptedLLM(fixed_invalid_candidates=[{"candidate_id": "candidate_1", "title": "제목만 있음"}])
-    state = _start_discovery(llm)
+    state = _start_discovery_to_candidate_selection(llm)
     assert state["phase"] == "awaiting_candidate_selection"
     assert state.get("failed_node") is None
     assert llm.call_counts["candidate_planning"] == 2  # 최초 1회 + 재시도 1회, 계속 무효했다.
@@ -902,7 +993,7 @@ def test_candidate_planning_fallback_impossible_asks_user_instead_of_failing():
     idea_conflict_and_merge 라운드 상한 도달 시와 동일한 awaiting_conflict_resolution
     화면(방향 추가/결합/문제 정의 복귀)으로 사용자에게 조정을 요청한다."""
     llm = DiscoveryScriptedLLM(fixed_invalid_candidates=[{"candidate_id": "candidate_1", "title": "제목만 있음"}])
-    state = _start_discovery(llm)
+    state = _start_discovery_to_candidate_selection(llm)
     # 위 테스트에서 확인했듯 discovery 흐름은 기본적으로 active direction이 3개 남는다 —
     # 여기서는 부족한 상황을 직접 구성해 그 경로만 별도로 검증한다.
     state = dict(state)
@@ -928,7 +1019,7 @@ def test_candidate_planning_recovers_on_retry_with_retry_note():
     모두 같은 reason="source_direction_id_not_active") — 즉 재시도가 사실상 아무 교정
     정보 없는 반복 호출이었다."""
     llm = DiscoveryScriptedLLM()
-    state = _start_discovery(llm)
+    state = _start_discovery_to_candidate_selection(llm)
     active_ids = [d["direction_id"] for d in state["solution_directions"] if d["status"] == "active"]
     assert len(active_ids) >= 2
 
@@ -980,7 +1071,7 @@ def test_retry_failed_node_resumes_from_candidate_planning_without_restarting_se
     다시 시작(problem_discovery 등)하지 않고 candidate_planning 노드만 재실행한다 —
     문제 정의/기존 메시지는 그대로 보존되고, round도 초기화되지 않는다."""
     llm = DiscoveryScriptedLLM()
-    state = _start_discovery(llm)
+    state = _start_discovery_to_candidate_selection(llm)
     assert state["phase"] == "awaiting_candidate_selection"
 
     # 실제로 phase="failed"가 되는 경로(active direction 부족)는 위 테스트에서 이미
@@ -1011,14 +1102,14 @@ def test_retry_failed_node_resumes_from_candidate_planning_without_restarting_se
 
 def test_retry_failed_node_rejects_non_failed_phase():
     llm = DiscoveryScriptedLLM()
-    state = _start_discovery(llm)
+    state = _start_discovery_to_candidate_selection(llm)
     with pytest.raises(ValueError):
         retry_failed_ideation_conversation_node(previous_state=state, llm_call=llm)
 
 
 def test_retry_failed_node_rejects_unsupported_failed_node():
     llm = DiscoveryScriptedLLM()
-    state = _start_discovery(llm)
+    state = _start_discovery_to_candidate_selection(llm)
     failed_state = dict(state)
     failed_state["phase"] = "failed"
     failed_state["failed_node"] = "candidate_feasibility"
@@ -1028,14 +1119,14 @@ def test_retry_failed_node_rejects_unsupported_failed_node():
 
 def test_candidate_feasibility_llm_failure_falls_back_to_failed_phase():
     llm = DiscoveryScriptedLLM(broken_for={"candidate_feasibility"})
-    state = _start_discovery(llm)
+    state = _start_discovery_to_candidate_selection(llm)
     assert state["phase"] == "failed"
     assert state["failed_node"] == "candidate_feasibility"
 
 
 def test_candidate_selection_llm_failure_falls_back_to_failed_phase():
     llm = DiscoveryScriptedLLM(broken_for={"candidate_selection"})
-    state = _start_discovery(llm)
+    state = _start_discovery_to_candidate_selection(llm)
     state = reply_ideation_conversation(previous_state=state, user_message="1번과 2번 결합해줘", llm_call=llm)
     assert state["phase"] == "failed"
     assert state["failed_node"] == "candidate_selection"
@@ -1051,7 +1142,7 @@ def test_discovery_final_result_includes_13_fields_and_discovery_history():
     같은 요청 안에서 끝까지 실행되므로 "1번" 선택 한 번의 reply로 awaiting_user_decision에
     도달한다(과거처럼 두 번의 추가 질문 답변이 필요하지 않다)."""
     llm = DiscoveryScriptedLLM(dev_next_action="await_user_decision")
-    state = _start_discovery(llm)
+    state = _start_discovery_to_candidate_selection(llm)
     state = reply_ideation_conversation(previous_state=state, user_message="1번", llm_call=llm)
     assert state["phase"] == "awaiting_concept_confirmation"
     # 용준/Claude(2026-07-27) — concept_confirmation에서 사용자가 실제로 확정해야
@@ -1167,7 +1258,7 @@ def test_combine_preserves_both_source_candidates_in_state():
     """요청 1·11번 — "1번과 2번 결합" 시 두 원본 후보(제목/문제/목표 사용자/핵심 가치/
     주요 기능)와 사용자 원문 요청, 선택 의도가 state에 그대로 보존되는지."""
     llm = _CombineAwareScriptedLLM(selection_responses=[_combine_selection_response("high")])
-    state = _start_discovery(llm)
+    state = _start_discovery_to_candidate_selection(llm)
     original_candidates = {c["candidate_id"]: c for c in state["idea_candidates"]}
 
     state = reply_ideation_conversation(previous_state=state, user_message="1번과 2번 결합", llm_call=llm)
@@ -1197,7 +1288,7 @@ def test_combine_first_question_prompt_includes_both_candidate_titles_and_conten
     작업 범위 밖). 아래는 그 레거시 코드 경로(candidate_selection -> planning_question)가
     여전히 올바르게 동작하는지 손으로 이어 붙여 검증한다."""
     llm = _CombineAwareScriptedLLM(selection_responses=[_combine_selection_response("high")])
-    state = _start_discovery(llm)
+    state = _start_discovery_to_candidate_selection(llm)
     titles = [c["title"] for c in state["idea_candidates"]]
     problems = [c["problem"] for c in state["idea_candidates"]]
 
@@ -1221,7 +1312,7 @@ def test_combine_first_expert_message_mentions_both_candidates_concretely():
     레거시 1:1 인터뷰 질문 노드(planning_question) 경로 보존 검증 — 위 테스트와 같은 이유로
     레거시 헬퍼를 사용한다."""
     llm = _CombineAwareScriptedLLM(selection_responses=[_combine_selection_response("high")])
-    state = _start_discovery(llm)
+    state = _start_discovery_to_candidate_selection(llm)
     titles = [c["title"] for c in state["idea_candidates"]]
 
     state = _legacy_resolve_selection_then_ask_planning_question(llm, state, "1번과 2번 결합")
@@ -1242,7 +1333,7 @@ def test_combine_high_fit_finalizes_selection_normally():
     (2026-07-21, 요청: 전문가 라운드테이블 전환) 이후에는 refinement 첫 질문 대신
     라운드테이블 한 라운드까지 같은 요청 안에서 정상적으로 이어지는지."""
     llm = _CombineAwareScriptedLLM(selection_responses=[_combine_selection_response("high")])
-    state = _start_discovery(llm)
+    state = _start_discovery_to_candidate_selection(llm)
     state = reply_ideation_conversation(previous_state=state, user_message="1번과 2번 결합", llm_call=llm)
 
     assert state["phase"] == "awaiting_concept_confirmation"
@@ -1256,7 +1347,7 @@ def test_combine_medium_fit_finalizes_and_preserves_primary_secondary_features()
     사용자에게 우선순위를 묻는 것은 프롬프트가 실제 LLM에게 지시하는 부분이므로, 여기서는
     "주 기능/보조 기능 구분이 state에 실제로 남아있는지"를 배선 수준에서 검증한다."""
     llm = _CombineAwareScriptedLLM(selection_responses=[_combine_selection_response("medium")])
-    state = _start_discovery(llm)
+    state = _start_discovery_to_candidate_selection(llm)
     state = reply_ideation_conversation(previous_state=state, user_message="1번과 2번 결합", llm_call=llm)
 
     # 용준/Claude(2026-07-27) — 결합 확정 직후에는 provisional_idea만 채워지고
@@ -1278,7 +1369,7 @@ def test_combine_low_fit_does_not_finalize_and_asks_for_primary_direction():
             _combine_selection_response("low", conflicts=["목표 사용자가 서로 다릅니다"])
         ]
     )
-    state = _start_discovery(llm)
+    state = _start_discovery_to_candidate_selection(llm)
     titles = [c["title"] for c in state["idea_candidates"]]
 
     state = reply_ideation_conversation(previous_state=state, user_message="1번과 2번 결합", llm_call=llm)
@@ -1310,7 +1401,7 @@ def test_combine_does_not_reask_already_selected_candidates():
     레거시 1:1 인터뷰 질문 노드(planning_question) 경로 보존 검증 — 위 두 combine 프롬프트
     테스트와 같은 이유로 레거시 헬퍼를 사용한다."""
     llm = _CombineAwareScriptedLLM(selection_responses=[_combine_selection_response("high")])
-    state = _start_discovery(llm)
+    state = _start_discovery_to_candidate_selection(llm)
     state = _legacy_resolve_selection_then_ask_planning_question(llm, state, "1번과 2번 결합")
 
     combine_question_prompts = [
@@ -1357,17 +1448,19 @@ def _start_discovery_to_candidates(llm, session_id, external_evidence_lookup=Non
     """용준/Claude(2026-07-27) — external_evidence_lookup은 candidate_planning/
     candidate_feasibility에만 연결되므로(problem_discovery 등 신규 단계는 이 콜백을
     받지 않는다), problem_focus_selection까지 진행한 뒤(문제 영역 1번 선택) 그 다음
-    호출에서 콜백을 전달해야 실제로 호출된다."""
+    호출에서 콜백을 전달해야 실제로 호출된다.
+
+    용준/Claude(2026-07-28, 요청: 카드 선택 단계 제거) —
+    _advance_to_awaiting_candidate_selection이 candidate_planning/candidate_feasibility를
+    직접 호출하므로(그래프 자동 라우팅은 더 이상 이 지점에서 멈추지 않는다),
+    external_evidence_lookup을 그 두 노드에 그대로 전달한다."""
     state = start_ideation_conversation(
         session_id=session_id,
         notice_and_criteria=NOTICE_AND_CRITERIA,
         user_idea={"description": ""},
         llm_call=llm,
     )
-    assert state["phase"] == "awaiting_problem_focus_selection"
-    return reply_ideation_conversation(
-        previous_state=state, user_message="1번", llm_call=llm, external_evidence_lookup=external_evidence_lookup
-    )
+    return _advance_to_awaiting_candidate_selection(state, llm, external_evidence_lookup=external_evidence_lookup)
 
 
 def test_external_evidence_lookup_is_called_for_planning_and_dev_roles():
