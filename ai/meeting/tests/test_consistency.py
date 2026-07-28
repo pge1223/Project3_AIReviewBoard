@@ -20,10 +20,8 @@ from quality import ConsistencyTolerance, run_consistency_check, summarize_consi
 COMPETITION_MAPPING_PATH = MEETING_DIR / "personas" / "rubric_mapping_competition.json"
 
 _PERSONA_NAMES = {
-    "creativity_originality": "창의성·독창성 전문가",
-    "technical_feasibility": "기술·실현가능성 전문가",
-    "business_strategy": "사업전략 전문가",
-    "presentation_completeness": "완성도·전달력 전문가",
+    "planning_expert": "기획 전문가",
+    "dev_expert": "개발 전문가",
 }
 
 
@@ -118,7 +116,8 @@ def test_scored_ratio_tracks_gating_variance():
 # ---------------------------------------------------------------------------
 
 
-def _make_raw_reviewer(persona_id, cid, cname, score):
+def _make_raw_reviewer(persona_id, criteria, score):
+    """criteria: [(criterion_id, criterion_name), ...] — 주담당 항목 전부 같은 점수로 채점."""
     return {
         "review_id": f"REV-{persona_id}",
         "persona_id": persona_id,
@@ -138,6 +137,7 @@ def _make_raw_reviewer(persona_id, cid, cname, score):
                 "evidence_refs": [],
                 "improvement_actions": [],
             }
+            for cid, cname in criteria
         ],
         "cross_reviews": [],
         "out_of_scope": [],
@@ -163,11 +163,15 @@ def test_run_meeting_pipeline_is_deterministic_baseline():
     mapping = json.loads(COMPETITION_MAPPING_PATH.read_text(encoding="utf-8"))
     routing = build_routing(mapping)
     criteria_by_id = {c["criterion_id"]: c for c in mapping["rubric"]}
-    owned = {r["primary"]: cid for cid, r in routing.items()}
+    owned: dict[str, list[str]] = {}
+    for cid, r in routing.items():
+        owned.setdefault(r["primary"], []).append(cid)
 
     raw_by_marker = {
-        f"{_PERSONA_NAMES[pid]}입니다": _make_raw_reviewer(pid, cid, criteria_by_id[cid]["criterion_name"], 20)
-        for pid, cid in owned.items()
+        f"{_PERSONA_NAMES[pid]}입니다": _make_raw_reviewer(
+            pid, [(cid, criteria_by_id[cid]["criterion_name"]) for cid in cids], 20
+        )
+        for pid, cids in owned.items()
     }
     raw_by_marker["위원장(review_chair)입니다"] = _RAW_CHAIR
 
