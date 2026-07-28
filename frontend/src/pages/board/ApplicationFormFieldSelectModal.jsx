@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Check, FileText } from 'lucide-react'
+import { Check, ChevronDown, ChevronUp, FileText } from 'lucide-react'
 import { isAdministrativeFormField } from './ideationConversationHelpers'
 
 // 가은/Claude(2026-07-24, 요청: "신청기관/도시명/홈페이지 같은 건 회의로 할 이야기가
@@ -7,6 +7,12 @@ import { isAdministrativeFormField } from './ideationConversationHelpers'
 // 내용을 정할 항목만 사용자가 고르게 한다. 담당자·연락처·기관 식별 정보처럼 명백한
 // 행정/개인정보 항목은 기본으로 꺼둔다(isAdministrativeFormField 휴리스틱). 체크박스
 // 대신 눌렀을 때 색이 바뀌는 버튼(칩) 형태로 — 요청한 그대로.
+// pge/Claude(2026-07-28, 요청: "처음엔 선택된 키워드만 보이게, 펼치기 버튼으로 선택
+// 해제된 것도 보이게 — 펼쳤을 때 이미 보이던 항목 위치는 안 바뀌게") — 행정 항목은
+// 목록에서 아예 안 보이던 것을 "더보기"로 펼쳐 뒤에 이어붙이는 방식으로 바꾼다.
+// alwaysVisibleEntries(초기 선택 항목)는 원래 배열 순서 그대로 고정하고,
+// hiddenEntries(행정 항목)는 펼쳤을 때만 그 뒤에 이어붙인다 — 펼치기 전/후 모두
+// alwaysVisibleEntries의 위치가 바뀌지 않는다(원래 배열 순서로 재정렬하지 않는다).
 export default function ApplicationFormFieldSelectModal({ items, onConfirm }) {
   const [selected, setSelected] = useState(() => {
     const initial = new Set()
@@ -15,6 +21,15 @@ export default function ApplicationFormFieldSelectModal({ items, onConfirm }) {
     })
     return initial
   })
+  const [showHidden, setShowHidden] = useState(false)
+
+  const alwaysVisibleEntries = []
+  const hiddenEntries = []
+  items.forEach((item, i) => {
+    if (isAdministrativeFormField(item.field_name)) hiddenEntries.push([item, i])
+    else alwaysVisibleEntries.push([item, i])
+  })
+  const visibleEntries = showHidden ? [...alwaysVisibleEntries, ...hiddenEntries] : alwaysVisibleEntries
 
   function toggle(i) {
     setSelected((prev) => {
@@ -62,7 +77,7 @@ export default function ApplicationFormFieldSelectModal({ items, onConfirm }) {
         </div>
 
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, overflowY: 'auto', paddingBottom: 4 }}>
-          {items.map((item, i) => {
+          {visibleEntries.map(([item, i]) => {
             const isSelected = selected.has(i)
             return (
               <button
@@ -89,6 +104,28 @@ export default function ApplicationFormFieldSelectModal({ items, onConfirm }) {
               </button>
             )
           })}
+          {hiddenEntries.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowHidden((v) => !v)}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 3,
+                padding: '7px 12px',
+                borderRadius: 999,
+                fontSize: 12.5,
+                fontWeight: 600,
+                cursor: 'pointer',
+                border: '1px dashed var(--glass-border)',
+                background: 'transparent',
+                color: 'var(--text-2)',
+              }}
+            >
+              {showHidden ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+              {showHidden ? '접기' : `더보기 ${hiddenEntries.length}개`}
+            </button>
+          )}
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 18 }}>

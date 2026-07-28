@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from 'react'
-import { AlertCircle, ArrowRight, CheckCircle2, ChevronDown, ChevronUp, Circle, Download, ExternalLink, Lightbulb, ListChecks, Newspaper, RefreshCw, Send, Sparkles, Users } from 'lucide-react'
+import { AlertCircle, ArrowRight, CheckCircle2, ChevronDown, ChevronUp, Circle, ClipboardList, Download, ExternalLink, History, Lightbulb, ListChecks, Newspaper, RefreshCw, Send, Sparkles, Users } from 'lucide-react'
 import {
   cancelIdeationConversation,
   continueIdeationExpertTurnStream,
@@ -16,7 +16,6 @@ import {
 import { getAnnouncementAnalysis, getApplicationFormAnalysis } from '../../api/documentApi'
 import IdeaCanvasPanel from './IdeaCanvasPanel'
 import IdeationAvatarStage from './IdeationAvatarStage'
-import IdeationProgressPanel from './IdeationProgressPanel'
 import IdeaEvolutionTimeline from './IdeaEvolutionTimeline'
 import ApplicationFormFieldSelectModal from './ApplicationFormFieldSelectModal'
 import ApplicationFormPanel from './ApplicationFormPanel'
@@ -1284,6 +1283,11 @@ export function IdeationScreen({
   // 시작하는 순간(video.play() 성공 시점)마다 onRevealed로 하나씩 늘려준다 — 재생은
   // 항상 큐 순서대로(=메시지 순서대로) 진행되므로 개수만 세도 순서가 정확히 맞는다.
   const [avatarRevealedCount, setAvatarRevealedCount] = useState(0)
+  // pge/Claude(2026-07-28, 요청: "진행 상황 패널은 아예 안 불러오게 — 그 탭엔 진행
+  // 상황이 아니라 아이디어 변화 과정이 들어가야 함") — IdeationProgressPanel은 이 화면
+  // import·렌더링에서 완전히 뺐다. IdeaCanvasPanel과 IdeaEvolutionTimeline을 탭으로
+  // 전환하는 하나의 자리로 합친다. 기본 탭은 "canvas"다.
+  const [canvasColumnTab, setCanvasColumnTab] = useState('evolution')
   // 재인/Claude(2026-07-23, 2026-07-24 갱신): 아래 eager fetch effect가 지금 진행 중인
   // continue-turn fetch를 추적한다 — "잠시만"이 그 사이에 눌리면 abort()로 끊어서, 이미
   // 중단한 뒤에 뒤늦게 도착하는 응답이 canonical state를 다시 덮어쓰지 않게 막는다
@@ -2549,19 +2553,84 @@ export function IdeationScreen({
             없애줘") — 회의 중 오른쪽 패널에 노출하던 ApplicationFormPanel을 제거했다.
             신청서 초안은 이제 주제 확정 후 별도 페이지(ApplicationFormDraftScreen,
             stage="form_draft")에서만 보여준다 — ApplicationFormPanel 자체는 그 화면에서
-            계속 재사용하므로 컴포넌트/import는 그대로 둔다. */}
-        <IdeaCanvasPanel ideationConv={ideationConv} analysis={announcementAnalysis} />
-
-        {/* 용준/Claude(2026-07-27, 요청: 진행 상황 패널) — 참여 위원 카드 바로 아래, 기존
-            합의/미해결 쟁점 카드 위에 배치한다. IdeationProgressPanel은 discovery 모드가
-            아니어도(ideationConv만 있으면) phase/문제정의 등 공통 필드를 그대로 보여줄 수
-            있으므로 모드로 게이팅하지 않는다 — ideationConv 자체가 없으면 내부에서 null을
-            반환한다. */}
-        {ideationConv && (
-          <div style={{ marginTop: 12 }}>
-            <IdeationProgressPanel ideationConv={ideationConv} />
-          </div>
-        )}
+            계속 재사용하므로 컴포넌트/import는 그대로 둔다.
+            pge/Claude(2026-07-28, 요청: "아이디어 진행 상황 패널은 아예 안 불러오게 —
+            그 자리엔 진행 상황이 아니라 아이디어 변화 과정(IdeaEvolutionTimeline)이
+            들어가야 함") — IdeationProgressPanel은 이 화면에서 import·렌더링을 완전히
+            뺐다(파일 자체는 다른 곳에서 쓸 수 있으니 지우지 않는다). 탭 전환 자리에는
+            기존에 아래쪽에 항상 떠 있던 IdeaEvolutionTimeline을 그대로 옮겨왔다 —
+            idea_evolution 데이터가 있을 때만 두 번째 탭 버튼이 나타난다(예전 단독
+            렌더링과 같은 게이팅 조건, 요청: "idea_evolution?.length > 0일 때만"). */}
+        {/* pge/Claude(2026-07-28, 요청: "탭이랑 패널이 붙어있어야 해 — 떠 있으면 안 됨") —
+            탭 줄과 내용을 별도 박스 두 개로 겹쳐 붙이려던 첫 시도(그림자·둥근 모서리를 각자
+            그리고 margin으로 겹치기)는 살짝의 오차에도 틈이 보였다. 그 대신 탭 줄과 내용을
+            하나의 card glass 박스 안에 함께 넣는다 — 물리적으로 같은 상자이므로 절대
+            떨어져 보일 수 없다. IdeaCanvasPanel/IdeaEvolutionTimeline에는 bare=true를 줘서
+            자기 자신의 card glass 외곽(테두리·그림자·둥근 모서리)을 그리지 않고 내용만
+            채우게 한다. */}
+        {ideationConv && (() => {
+          const hasEvolution = (ideationConv.idea_evolution?.length || 0) > 0
+          return (
+            <div className="card glass" style={{ marginBottom: 12, overflow: 'hidden' }}>
+              {/* pge/Claude(2026-07-28, 요청: "회의 시작 전엔 탭 자체가 안 뜨더라 — 내용은
+                  안 떠도 되는데 탭 두 개는 항상 고정") — 탭 줄 자체는 hasEvolution과 무관하게
+                  항상 렌더링한다. idea_evolution 데이터가 아직 없을 때만 "변화 과정" 탭의
+                  내용 영역이 안내 문구로 대체된다(아래 참고). */}
+              <div style={{ display: 'flex', borderBottom: '1px solid var(--glass-border)' }}>
+                {[
+                  { key: 'canvas', label: '기획 캔버스', Icon: ClipboardList },
+                  { key: 'evolution', label: '아이디어 변화 과정', Icon: History },
+                ].map(({ key, label, Icon }) => {
+                  const active = canvasColumnTab === key
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => setCanvasColumnTab(key)}
+                      style={{
+                        flex: 1,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: 4,
+                        whiteSpace: 'nowrap',
+                        padding: '10px 8px',
+                        fontSize: 12.5,
+                        fontWeight: 700,
+                        cursor: 'pointer',
+                        border: 'none',
+                        borderBottom: active ? '2px solid var(--purple)' : '2px solid transparent',
+                        background: active ? 'var(--bg-1)' : 'transparent',
+                        color: active ? 'var(--text-0)' : 'var(--text-2)',
+                        marginBottom: -1,
+                        transition: 'background 0.12s ease, color 0.12s ease',
+                      }}
+                    >
+                      <Icon size={14} color={active ? 'var(--purple)' : 'currentColor'} style={{ flexShrink: 0 }} />
+                      {label}
+                    </button>
+                  )
+                })}
+              </div>
+              {canvasColumnTab === 'evolution' ? (
+                hasEvolution ? (
+                  <IdeaEvolutionTimeline
+                    idea_evolution={ideationConv.idea_evolution}
+                    solution_directions={ideationConv.solution_directions}
+                    problem_areas={ideationConv.problem_areas}
+                    bare
+                  />
+                ) : (
+                  <div style={{ padding: 18, fontSize: 13.5, color: 'var(--text-2)' }}>
+                    아직 표시할 변화 이력이 없어요. 회의가 진행되면 여기에 쌓여요.
+                  </div>
+                )
+              ) : (
+                <IdeaCanvasPanel ideationConv={ideationConv} analysis={announcementAnalysis} bare />
+              )}
+            </div>
+          )
+        })()}
 
         {ideationConv && (ideationConv.consensus?.length > 0 || ideationConv.unresolved_issues?.length > 0) && (
           <div className="card glass" style={{ marginBottom: 12, padding: 14 }}>
@@ -2582,18 +2651,6 @@ export function IdeationScreen({
               </div>
             )}
           </div>
-        )}
-
-        {/* 용준/Claude(2026-07-27, 요청: 아이디어 변화 과정 타임라인) — idea_evolution은
-            discovery 모드 전용 필드라(리파인먼트 전용 세션엔 안 쌓임) 배열이 실제로 채워졌을
-            때만 렌더링한다(요청: "show IdeaEvolutionTimeline only when idea_evolution?.length
-            > 0"). */}
-        {(ideationConv?.idea_evolution?.length || 0) > 0 && (
-          <IdeaEvolutionTimeline
-            idea_evolution={ideationConv.idea_evolution}
-            solution_directions={ideationConv.solution_directions}
-            problem_areas={ideationConv.problem_areas}
-          />
         )}
 
       </div>
@@ -2807,7 +2864,7 @@ export function IdeationResultScreen({ ideationConv, setIdeationConv, onBack, on
       <div className="card glass">
         {PROPOSAL_ROWS.map(([key, label], i) => (
           <div key={key} style={{ display: 'grid', gridTemplateColumns: '150px 1fr', gap: 16, padding: '14px 0', borderTop: i > 0 ? '1px solid var(--glass-border)' : 'none' }}>
-            <div style={{ fontSize: 13.5, color: 'var(--text-2)', fontFamily: 'var(--mono)' }}>{label}</div>
+            <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--text-2)' }}>{label}</div>
             <div style={{ fontSize: 14.5, lineHeight: 1.6 }}>{proposalValueDisplay(proposal[key])}</div>
           </div>
         ))}
