@@ -55,6 +55,11 @@ class ChromaVectorStore:
         PersistentClient+KUREEmbedder 조사 참고)."""
         return self._client
 
+    @property
+    def collection_name(self) -> str:
+        """Return the active collection name for diagnostics and recovery checks."""
+        return self._collection_name
+
     def _get_or_create_collection(self):
         collection = self._client.get_or_create_collection(
             name=self._collection_name,

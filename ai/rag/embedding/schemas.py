@@ -25,6 +25,10 @@ class EmbeddingConfig(BaseModel):
     model_name: str = DEFAULT_MODEL_NAME
     device: Literal["cpu", "cuda", "auto"] = DEFAULT_DEVICE
     batch_size: int = DEFAULT_BATCH_SIZE
+    cpu_threads: Optional[int] = Field(
+        default=None,
+        description="CPU 추론에 사용할 PyTorch intra-op 스레드 수. None이면 PyTorch 기본값 사용",
+    )
     normalize_embeddings: bool = DEFAULT_NORMALIZE_EMBEDDINGS
     show_progress: bool = DEFAULT_SHOW_PROGRESS
     model_cache_dir: Optional[str] = DEFAULT_MODEL_CACHE_DIR
@@ -36,6 +40,13 @@ class EmbeddingConfig(BaseModel):
     def _batch_size_must_be_positive(cls, v: int) -> int:
         if v <= 0:
             raise ValueError("batch_size는 0보다 커야 합니다")
+        return v
+
+    @field_validator("cpu_threads")
+    @classmethod
+    def _cpu_threads_must_be_positive(cls, v: Optional[int]) -> Optional[int]:
+        if v is not None and v <= 0:
+            raise ValueError("cpu_threads는 0보다 커야 합니다")
         return v
 
 

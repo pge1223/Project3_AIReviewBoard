@@ -245,19 +245,26 @@ _similar_case_service = SimilarCaseSearchService(_similar_case_repo, _kure_embed
 # 캐시가 필요 없어 MeetingEvidenceOrchestrationService와 달리 요청마다 새로 만들지 않는다).
 # 용준/Claude(2026-07-27, RAG-007 연결): _similar_case_repo/_similar_case_service와 동일한
 # 패턴 — documents.py의 client/embedder 싱글턴을 그대로 재사용하고(새 PersistentClient/
-# KUREEmbedder 생성 금지, 위 주석 참고) DatasetProvider만 연결한다. 실시간 공공데이터 API
-# (PublicApiProvider)는 아직 실제 fetch 구현이 없어(config.py의 enable_public_api_search
-# 기본값 False) 여기서는 연결하지 않는다 — 단순히 환경변수만 켜면 PublicApiProvider.search()가
-# ExternalProviderUnavailableError를 던지므로, 실제 fetch 콜러블을 구현하기 전까지는 이
-# 상태(dataset-only)를 유지해야 한다(README.md 8절).
+# KUREEmbedder 생성 금지, 위 주석 참고) DatasetProvider를 연결한다. NAVER API HUB
+# 인증 정보와 활성화 플래그가 모두 있으면 실시간 뉴스 검색도 보조 provider로 연결한다.
 from ai.rag.external_research import (  # noqa: E402
     DatasetProvider,
     ExternalEvidenceRepository,
     ExternalResearchConfig,
     ExternalResearchService,
+    NaverNewsFetcher,
+    PublicApiProvider,
+    PublicApiProviderConfig,
 )
 
-_external_research_config = ExternalResearchConfig()
+_naver_news_enabled = bool(
+    settings.RAG_EXTERNAL_ENABLE_PUBLIC_API
+    and settings.NAVER_CLIENT_ID.strip()
+    and settings.NAVER_CLIENT_SECRET.strip()
+)
+_external_research_config = ExternalResearchConfig(
+    enable_public_api_search=_naver_news_enabled,
+)
 _external_evidence_repo = ExternalEvidenceRepository(
     client=_chroma_client,
     collection_name=_external_research_config.collection_name,
@@ -266,7 +273,24 @@ _external_evidence_repo = ExternalEvidenceRepository(
     embedding_version="embedding_v1",
 )
 _external_dataset_provider = DatasetProvider(_external_evidence_repo, _kure_embedder, config=_external_research_config)
-_external_research_service = ExternalResearchService(_external_dataset_provider, config=_external_research_config)
+_external_public_api_provider = None
+if _naver_news_enabled:
+    _naver_provider_config = PublicApiProviderConfig()
+    _external_public_api_provider = PublicApiProvider(
+        fetch=NaverNewsFetcher(
+            client_id=settings.NAVER_CLIENT_ID,
+            client_secret=settings.NAVER_CLIENT_SECRET,
+            timeout_seconds=_naver_provider_config.timeout_seconds,
+            display=_naver_provider_config.max_results,
+        ),
+        config=_naver_provider_config,
+        enabled=True,
+    )
+_external_research_service = ExternalResearchService(
+    _external_dataset_provider,
+    public_api_provider=_external_public_api_provider,
+    config=_external_research_config,
+)
 
 _CHAIR_MARKER = "위원장(review_chair)입니다"
 
