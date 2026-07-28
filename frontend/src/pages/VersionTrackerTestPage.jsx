@@ -644,6 +644,19 @@ const WHY_JUDGMENT_LABEL = {
   critical_risk: '중대 리스크', insufficient_evidence: '근거 부족', not_applicable: '해당 없음',
 }
 
+// 판정별 점수 구간(reviewer_prompt 밴드·judgmentFromScore와 동일 경계) — 점수 변화 팝업에서
+// "왜 이 점수 구간인가"를 배점 기준 실제 점수로 보여준다(경이 요청 2026-07-27 상세화).
+const JUDGMENT_BANDS = [
+  { key: 'critical_risk', lo: 0, hi: 0.4 },
+  { key: 'needs_improvement', lo: 0.4, hi: 0.65 },
+  { key: 'acceptable', lo: 0.65, hi: 0.85 },
+  { key: 'strong', lo: 0.85, hi: 1 },
+]
+const trimNum = (n) => {
+  const v = Math.round(n * 10) / 10
+  return Number.isInteger(v) ? String(v) : v.toFixed(1)
+}
+
 function CriterionCard({ c, before, index, animKey, isDev, profile, accent, realGuides, citations, priority, rubricInfo, noticeName }) {
   // 우선순위 팝업 — "왜 이 순위인가"(판정·감점·근거 기반 점수 상한)를 배지 클릭 시 보여준다
   // (경이 요청 2026-07-25: 상한 배너를 카드에 늘어놓지 않고 우선순위 근거로 접어 넣기).
@@ -720,12 +733,48 @@ function CriterionCard({ c, before, index, animKey, isDev, profile, accent, real
                     {(fCounts.resolved || 0) > 0 && <div>· 이전 버전 지적 <b>{fCounts.resolved}건이 해결</b>되어 해당 감점 요인이 사라졌습니다.</div>}
                     {(fCounts.new || 0) > 0 && <div>· 이번 버전에서 <b>신규 지적 {fCounts.new}건</b>이 나와 상승 폭을 제한했습니다.</div>}
                     {(fCounts.open || 0) > 0 && <div>· <b>보완 필요 {fCounts.open}건</b>이 남아 있어, 반영하면 추가 상승 여지가 있습니다.</div>}
-                    <div>· 이번 버전 판정은 <b>「{WHY_JUDGMENT_LABEL[c.judgment] || c.judgment}」</b> — 배점 <b className="mono">{c.max}점</b>에 판정별 점수 밴드 비율을 적용해 산정됩니다.</div>
-                    {c.calibration && (
-                      <div>· 근거 신호 부족으로 <b>결정론적 상한 {c.calibration.cap_score}점</b>이 적용되었습니다{c.calibration.original_score != null ? ` (위원 제안 ${c.calibration.original_score}점)` : ''}.</div>
+                    <div>
+                      · 위원{c.reviewers > 1 ? ` ${c.reviewers}명 평균` : ''} 제안 점수는{' '}
+                      <b className="mono">{c.calibration?.original_score ?? c.score}점</b>이며, 판정별 점수 구간
+                      안에서만 제안됩니다 (현재 판정 「{WHY_JUDGMENT_LABEL[c.judgment] || c.judgment}」):
+                    </div>
+                    {/* 판정별 점수 구간 — 이 항목 배점 기준, 최종 점수가 속한 구간 강조 */}
+                    <div style={{ margin: '4px 0 2px', padding: '6px 9px', borderRadius: 8, background: 'rgba(28,26,46,0.045)' }}>
+                      {JUDGMENT_BANDS.map((bd) => {
+                        const on = bd.key === c.judgment
+                        return (
+                          <div key={bd.key} className="mono" style={{ fontSize: 11, display: 'flex', justifyContent: 'space-between', gap: 8, fontWeight: on ? 800 : 500, color: on ? '#1c1a2e' : '#918d9f' }}>
+                            <span>{on ? '▶ ' : '· '}{WHY_JUDGMENT_LABEL[bd.key]} {Math.round(bd.lo * 100)}–{Math.round(bd.hi * 100)}%</span>
+                            <span>{trimNum(bd.lo * c.max)}–{trimNum(bd.hi * c.max)}점</span>
+                          </div>
+                        )
+                      })}
+                    </div>
+                    {c.calibration ? (
+                      <>
+                        <div>
+                          · 그런데 <b>근거 상한 {c.calibration.cap_score}점</b>
+                          {c.calibration.cap_ratio != null ? ` (배점의 ${Math.round(c.calibration.cap_ratio * 100)}%)` : ''}이 위원 제안보다
+                          낮아 최종 점수가 <b className="mono">{c.score}점</b>이 되었습니다. 문서 원문 검사에서 발동한 신호:
+                        </div>
+                        <div style={{ margin: '2px 0 2px 12px' }}>
+                          {(c.calibration.signals || []).map((s, i) => (
+                            <div key={i} style={{ color: '#a6541f' }}>– {s.reason}</div>
+                          ))}
+                        </div>
+                        <div style={{ color: '#918d9f' }}>
+                          상한이란? 문서 원문을 코드 규칙으로 검사해 "근거가 뒷받침하는 최대 점수"를 계산한
+                          값입니다. 위원 제안이 상한보다 높으면 상한까지만 인정하고(올리지는 않음), 같은
+                          문서에는 항상 같은 상한이 나옵니다. 위 신호를 문서에서 보완하면 상한이 풀립니다.
+                        </div>
+                      </>
+                    ) : (
+                      <div>· 근거 상한(문서 원문 검사) 발동 없음 — 위원 제안이 그대로 최종 점수입니다.</div>
                     )}
                     <div style={{ marginTop: 7, paddingTop: 7, borderTop: '1px dashed rgba(28,26,46,0.14)', color: '#918d9f' }}>
-                      점수 체계: 위원이 문서 근거를 들어 판정(우수·적정·보완 필요·중대 리스크)을 내리면 판정별 점수 밴드로 환산되고, 지적이 해결될수록 판정이 올라가 점수가 상승합니다.
+                      점수 체계: 위원이 문서 근거를 들어 판정을 내리면 위 구간 안에서 점수를 제안하고, 지적이
+                      해결될수록 판정이 올라가 점수가 상승합니다. 화면의 판정 표시는 최종 점수의 배점 대비
+                      비율로 정해집니다.
                     </div>
                   </div>
                 </div>
@@ -932,6 +981,7 @@ function reportToVersions(report) {
       score: b.raw_score ?? 0,
       max: b.max_score ?? CRITERION_MAX,
       calibration: b.calibration || null,
+      reviewers: (b.source_review_ids || []).length || null, // 이 항목을 채점한 위원 수(점수 변화 팝업 표시용)
       judgment: judgmentFromScore(b.raw_score ?? 0, b.max_score ?? CRITERION_MAX),
       feedback,
     }
@@ -1096,6 +1146,7 @@ function buildVersionsFromHistory(versions) {
         score: c.score ?? 0,
         max: c.max ?? CRITERION_MAX,
         calibration: c.calibration || null,
+        reviewers: c.reviewers ?? null, // 비교 API(comparison.py)가 채워줌 — 없으면 표시 생략
         judgment: judgmentFromScore(c.score ?? 0, c.max ?? CRITERION_MAX),
         feedback,
       }
