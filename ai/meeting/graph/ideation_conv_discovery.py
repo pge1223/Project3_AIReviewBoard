@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 from prompts import (
@@ -177,8 +178,10 @@ _REQUIRED_CANDIDATE_FIELDS = (
 _REQUIRED_IDEA_FIELDS = ("title", "problem", "target_user", "solution")
 
 _SELECTION_QUESTION = (
-    "제안된 후보 중 발전시키고 싶은 아이디어를 선택해 주세요. 번호나 제목을 입력하거나, "
-    "'다시 추천', '전문가 추천'처럼 답할 수 있습니다."
+    "전문가 반론과 수정 결과를 반영해 잠정 후보를 만들었습니다. "
+    "기획·개발 검증을 진행할 후보를 선택해 주세요. "
+    "선택한 후보는 검증 결과에 따라 변경될 수 있습니다. "
+    "번호나 제목을 입력하거나, '다시 추천', '전문가 추천'처럼 답할 수 있습니다."
 )
 
 _REGENERATE_KEYWORDS = (
@@ -226,6 +229,126 @@ def _validate_candidate_planning_response(raw: dict) -> str | None:
         if not isinstance(candidate.get("main_features"), list) or not candidate.get("main_features"):
             return "missing_or_empty_field:main_features"
     return None
+
+
+def _validate_candidate_grounding(raw: dict, active_direction_ids: set[str], evolution_ids: set[str]) -> str | None:
+    error = _validate_candidate_planning_response(raw)
+    if error or not active_direction_ids:
+        return error
+    for candidate in raw.get("candidates") or []:
+        source_ids = candidate.get("source_direction_ids")
+        if not isinstance(source_ids, list) or not source_ids:
+            return "source_direction_ids_missing"
+        if any(source_id not in active_direction_ids for source_id in source_ids):
+            return "source_direction_id_not_active"
+        reflected_ids = candidate.get("reflected_evolution_ids")
+        if not isinstance(reflected_ids, list):
+            return "reflected_evolution_ids_missing"
+        if any(record_id not in evolution_ids for record_id in reflected_ids):
+            return "reflected_evolution_id_unknown"
+    return None
+
+
+# 용준/Claude(2026-07-28, 요청: candidate_planning 실패 원인 수정) — 실측(2026-07-28,
+# session=IDEA-CONV-5e9bbbd1)으로 확인한 실패 원인: candidate_planning 노드가
+# _safe_call_structured_json을 retry_note_for 없이 호출하고 있었다 — 그래서 1차 시도가
+# "source_direction_id_not_active"로 실패하면, 재시도(2차 시도)가 실패 사유를 전혀 모른 채
+# 완전히 동일한 프롬프트를 그대로 다시 보냈다(로그: attempt=1/attempt=2 모두 같은 reason).
+# 즉 재시도가 사실상 아무 교정 정보 없이 반복 호출만 한 셈이라 같은 실수가 그대로
+# 반복됐다. 아래 함수로 실패 사유별 구체적 지시(유효한 active direction_id/record_id
+# 목록)를 재시도 프롬프트에 덧붙인다 — ideation_conv_problem.py::_idea_validation_retry_note
+# 와 동일한 패턴.
+def _candidate_planning_retry_note_for(
+    active_direction_ids: set[str], evolution_ids: set[str]
+) -> Callable[[str], str]:
+    def note(reason: str) -> str:
+        if reason == "source_direction_id_not_active":
+            ids_text = ", ".join(sorted(active_direction_ids)) or "(active한 방향 없음)"
+            return (
+                "\n\n[재시도 지시] 방금 응답의 source_direction_ids에 현재 active하지 않은 "
+                f"direction_id가 포함되어 있었습니다. 다음 active direction_id만 사용하세요: "
+                f"{ids_text}. dropped/merged된 이전 방향(excluded_solution_directions)의 "
+                "ID는 절대 쓰지 마세요."
+            )
+        if reason == "source_direction_ids_missing":
+            ids_text = ", ".join(sorted(active_direction_ids)) or "(active한 방향 없음)"
+            return (
+                "\n\n[재시도 지시] 모든 후보의 source_direction_ids에 다음 active "
+                f"direction_id 중 최소 1개 이상을 채우세요: {ids_text}."
+            )
+        if reason == "reflected_evolution_ids_missing":
+            return "\n\n[재시도 지시] 모든 후보에 reflected_evolution_ids를 배열로 채우세요(반영한 게 없으면 빈 배열)."
+        if reason == "reflected_evolution_id_unknown":
+            ids_text = ", ".join(sorted(evolution_ids)) or "(없음)"
+            return (
+                "\n\n[재시도 지시] reflected_evolution_ids에 존재하지 않는 record_id가 "
+                f"포함되어 있었습니다. 다음 record_id 중 실제로 반영한 것만 고르세요: {ids_text}."
+            )
+        return "\n\n[재시도 지시] 출력 규칙의 JSON 스키마를 정확히 지키고, 모든 필드를 빠짐없이 채워 다시 응답하세요."
+
+    return note
+
+
+# 용준/Claude(2026-07-28, 요청: candidate_planning 재시도까지 실패해도 회의를 중단하지
+# 않는 안전 폴백) — LLM 호출 없이 active solution_directions를 결정론적으로 후보로
+# 변환한다. candidate_feasibility(개발위원 실현가능성 검토, 또 다른 LLM 호출)를 거치지
+# 않고 곧바로 awaiting_candidate_selection으로 보낸다 — 폴백 경로 자체에 또 다른 LLM
+# 실패 지점을 만들지 않기 위함이다(요청: "무한 재시도는 금지"와 같은 원칙 — 폴백은
+# 반드시 성공해야 하므로 LLM을 타지 않는다). 최대 3개까지만 쓴다(정상 경로와 동일한
+# candidates_count 제약, _validate_candidate_planning_response 참고).
+def _build_fallback_candidates(state: IdeationConvState, active_directions: list[dict]) -> list[dict]:
+    problem_definition = state.get("problem_definition") or {}
+    fallback_problem = problem_definition.get("problem") or "공고문에서 확인되지 않음"
+    fallback_target_user = problem_definition.get("target_user") or "공고문에서 확인되지 않음"
+    candidates: list[dict] = []
+    for index, direction in enumerate(active_directions[:3], start=1):
+        title = direction.get("title") or f"해결 방향 {index}"
+        mechanism = direction.get("mechanism") or "공고문에서 확인되지 않음"
+        core_principle = direction.get("core_principle") or "공고문에서 확인되지 않음"
+        target_user = direction.get("target_user_fit") or fallback_target_user
+        direction_id = direction.get("direction_id")
+        candidates.append(
+            {
+                "candidate_id": f"candidate_{index}",
+                "title": title,
+                "problem": fallback_problem,
+                "target_user": target_user,
+                "usage_scenario": f"'{title}' 방향을 그대로 적용해 {target_user}의 문제 상황을 해결합니다.",
+                "core_value": core_principle,
+                "solution": mechanism,
+                "main_features": [mechanism],
+                "differentiation": f"'{title}' 해결 방향의 핵심 원리를 그대로 반영한 안전 후보입니다.",
+                "contest_fit": "공모전 적합성은 다음 검증 단계에서 위원들이 다시 확인합니다.",
+                "success_metrics": ["검증 단계에서 확정 예정"],
+                "source_direction_ids": [direction_id] if direction_id else [],
+                "reflected_evolution_ids": [],
+            }
+        )
+    return candidates
+
+
+def _build_candidate_generation_records(session_id: str, candidates: list[dict]) -> list[dict]:
+    """candidate_planning 성공 경로와 안전 폴백 경로가 공유하는 idea_evolution 기록
+    생성기(2026-07-28 리팩터링 — 기존 성공 경로 로직을 그대로 함수로 뽑았을 뿐 동작은
+    바꾸지 않았다)."""
+    generated_at = datetime.now(timezone.utc).isoformat()
+    return [
+        {
+            "record_id": (
+                "EVOL-CAND-" + hashlib.sha256(f"{session_id}:{candidate['candidate_id']}".encode()).hexdigest()[:10]
+            ),
+            "stage": "candidate_generation",
+            "action_type": "candidate_generation",
+            "title": candidate["title"],
+            "content": candidate["solution"],
+            "changed_by": "planning_expert",
+            "target_direction_ids": candidate["source_direction_ids"],
+            "before": candidate["source_direction_ids"],
+            "after": candidate["candidate_id"],
+            "created_at": generated_at,
+        }
+        for candidate in candidates
+    ]
 
 
 def _validate_candidate_feasibility_response(raw: dict) -> str | None:
@@ -526,26 +649,109 @@ def make_candidate_planning_node(
             external_evidence_lookup, "planning_expert", _external_evidence_query(state, previous_candidates)
         )
 
+        # 용준/Claude(2026-07-27, 요청: candidate_planning이 실제로 problem_definition/
+        # solution_directions/idea_evolution을 압축하도록 보정) — 이전에는
+        # solution_directions만 부가 정보로 넘겨서, 프롬프트가 여전히 "공모전 공고문만으로
+        # 새 아이디어 발명"을 1순위 지시로 두고 있었다. 이제 problem_definition/
+        # idea_evolution도 함께 넘기고, 프롬프트 자체가 이 값들의 존재 여부로 압축 모드/
+        # 레거시 발명 모드를 명시적으로 구분한다(ideation_conv_candidate_planning.txt
+        # [모드 판단] 참고).
+        active_directions = [d for d in (state.get("solution_directions") or []) if d.get("status") == "active"]
+        excluded_directions = [
+            d for d in (state.get("solution_directions") or []) if d.get("status") != "active"
+        ]
+        active_direction_ids = {direction["direction_id"] for direction in active_directions}
+        evolution = state.get("idea_evolution") or []
+        evolution_ids = {
+            record["record_id"]
+            for record in evolution
+            if isinstance(record, dict) and record.get("record_id")
+        }
         prompt = build_ideation_conv_candidate_planning_prompt(
             state["notice_and_criteria"],
             retrieved,
             previous_candidates,
             regeneration_reason,
             external_research=external_result.get("external_evidence"),
+            solution_directions=active_directions,
+            excluded_solution_directions=excluded_directions,
+            problem_definition=state.get("problem_definition"),
+            idea_evolution=evolution,
         )
         raw, ok, attempts = _safe_call_structured_json(
-            llm_call, prompt, _validate_candidate_planning_response, "candidate_planning"
+            llm_call,
+            prompt,
+            lambda payload: _validate_candidate_grounding(payload, active_direction_ids, evolution_ids),
+            "candidate_planning",
+            retry_note_for=_candidate_planning_retry_note_for(active_direction_ids, evolution_ids),
         )
         used = state.get("llm_calls_used", 0) + attempts
+        session_id = state["session_id"]
         if not ok:
-            return {"phase": "failed", "failed_node": "candidate_planning", "llm_calls_used": used}
+            # 용준/Claude(2026-07-28, 요청: candidate_planning 실패로 전체 회의를 중단하지
+            # 않는다) — 재시도까지 실패하면 active solution_directions로 안전 후보를
+            # 만든다(LLM 미사용, 항상 성공). active direction이 2개 미만이면 안전 후보
+            # 자체를 만들 수 없으므로(정상 경로도 candidates 2~3개를 요구함,
+            # _validate_candidate_planning_response 참고), 회의를 끊지 않고
+            # awaiting_conflict_resolution으로 보내 방향 추가/결합/문제 정의 복귀 중
+            # 하나를 사용자에게 요청한다(기존 idea_conflict_and_merge 라운드 상한 도달
+            # 시와 동일한 화면 — _await_conflict_resolution_node/ConflictResolutionBlock
+            # 재사용, 새 UI를 만들지 않는다).
+            if len(active_directions) < 2:
+                shortage_message = _build_message(
+                    persona_id="ideation_facilitator",
+                    round_number=state["round"],
+                    message_type="question",
+                    content=(
+                        "후보를 만들 수 있는 해결 방향이 충분하지 않습니다. "
+                        "방향을 추가하거나 결합해 주세요. 현재 방향으로 검증을 진행할 수도 있습니다."
+                    ),
+                    referenced_message_ids=[],
+                    evidence=[],
+                )
+                return {
+                    "messages": [shortage_message],
+                    "phase": "awaiting_conflict_resolution",
+                    "llm_calls_used": used,
+                }
+
+            fallback_candidates = _build_fallback_candidates(state, active_directions)
+            fallback_message = _build_message(
+                persona_id="ideation_facilitator",
+                round_number=state["round"],
+                message_type="summary",
+                content=(
+                    "후보 생성 과정에서 일부 문제가 발생해 현재까지의 회의 결과를 바탕으로 "
+                    "안전 후보를 구성했습니다."
+                ),
+                referenced_message_ids=[],
+                evidence=[],
+            )
+            selection_question = _build_message(
+                persona_id="ideation_facilitator",
+                round_number=state["round"],
+                message_type="question",
+                content=_SELECTION_QUESTION,
+                referenced_message_ids=[],
+                evidence=[],
+            )
+            return {
+                "idea_candidates": fallback_candidates,
+                "idea_evolution": _build_candidate_generation_records(session_id, fallback_candidates),
+                "messages": [fallback_message, selection_question],
+                "phase": "awaiting_candidate_selection",
+                "llm_calls_used": used,
+            }
 
         merged_external = _merge_external_evidence_results(
             {"external_evidence": state.get("external_evidence", []), **(state.get("external_evidence_meta") or {})},
             external_result,
         )
+        candidates = raw["candidates"]
+        generation_records = _build_candidate_generation_records(session_id, candidates)
         return {
-            "idea_candidates": raw["candidates"],
+            "idea_candidates": candidates,
+            "idea_evolution": generation_records,
             "contest_analysis": raw.get("contest_analysis"),
             "llm_calls_used": used,
             "external_evidence": merged_external["external_evidence"],

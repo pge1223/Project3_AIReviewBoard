@@ -8,6 +8,7 @@
 
 import json
 import re
+import re
 import sys
 from pathlib import Path
 
@@ -20,9 +21,10 @@ from graph import (  # noqa: E402
     active_stage_for,
     finalize_ideation_conversation,
     reply_ideation_conversation,
+    retry_failed_ideation_conversation_node,
     start_ideation_conversation,
 )
-from graph.ideation_conv_discovery import make_candidate_selection_node  # noqa: E402
+from graph.ideation_conv_discovery import make_candidate_planning_node, make_candidate_selection_node  # noqa: E402
 from graph.ideation_conv_nodes import make_conv_question_node  # noqa: E402
 from graph.ideation_conv_run import _new_user_message  # noqa: E402
 from graph.ideation_conv_state import apply_user_answer  # noqa: E402
@@ -110,6 +112,7 @@ NOTICE_AND_CRITERIA = {
 
 
 def _candidate(cid, title, problem, target_user):
+    source_direction_id = "direction_2" if cid == "candidate_1" else "direction_4"
     return {
         "candidate_id": cid,
         "title": title,
@@ -122,6 +125,8 @@ def _candidate(cid, title, problem, target_user):
         "differentiation": f"{title} 차별성",
         "contest_fit": f"{title} 공모전 적합성",
         "success_metrics": [f"{title} 지표"],
+        "source_direction_ids": [source_direction_id],
+        "reflected_evolution_ids": [],
     }
 
 
@@ -174,6 +179,7 @@ class DiscoveryScriptedLLM:
         # "계속 무효한 응답"을 표현할 수 없다).
         self.fixed_invalid_candidates = fixed_invalid_candidates
         self.call_counts = {"candidate_planning": 0, "candidate_feasibility": 0, "candidate_selection": 0}
+        self.conflict_call_count = 0
 
     def __call__(self, prompt: str) -> str:
         self.captured_prompts.append(prompt)
@@ -186,6 +192,14 @@ class DiscoveryScriptedLLM:
                 candidates = self.fixed_invalid_candidates
             else:
                 candidates = self.candidates_queue.pop(0) if self.candidates_queue else _default_candidates()
+            active_section = prompt.rsplit("[해결 방향 solution_directions", 1)[-1].split(
+                "[제외된 이전 방향", 1
+            )[0]
+            active_ids = re.findall(r'"direction_id"\s*:\s*"([^"]+)"', active_section)
+            for index, candidate in enumerate(candidates):
+                if active_ids:
+                    candidate["source_direction_ids"] = [active_ids[index % len(active_ids)]]
+                candidate.setdefault("reflected_evolution_ids", [])
             return json.dumps(
                 {
                     "contest_analysis": {
@@ -317,16 +331,181 @@ class DiscoveryScriptedLLM:
         if "[캔버스 갱신 규칙]" in prompt:
             return CANVAS_STUB_RESPONSE
 
+        # 용준/Claude(2026-07-27, 요청: "발산 전에 완성, 선택 즉시 확정" 구조 개편) —
+        # candidate_planning보다 앞선 신규 단계 5종의 stub. 문제 초점 선택("1번")은
+        # 결정론적 코드 경로(problem_focus_selection 노드)라 LLM을 부르지 않는다.
+        if "[문제 영역 생성 규칙]" in prompt:
+            return json.dumps(
+                {
+                    "problem_areas": [
+                        {
+                            "area_id": "area_1",
+                            "title": "문제 영역 1",
+                            "summary": "문제 영역 1 요약",
+                            "who_is_affected": "영향받는 사용자 1",
+                        },
+                        {
+                            "area_id": "area_2",
+                            "title": "문제 영역 2",
+                            "summary": "문제 영역 2 요약",
+                            "who_is_affected": "영향받는 사용자 2",
+                        },
+                    ]
+                },
+                ensure_ascii=False,
+            )
+
+        if "[문제 정의 규칙]" in prompt:
+            return json.dumps(
+                {
+                    "problem_definition": {
+                        "problem": "문제 정의",
+                        "target_user": "대상 사용자",
+                        "user_context": "사용자 상황",
+                        "root_cause": "원인",
+                        "existing_solution": "기존 방식",
+                        "existing_limitations": "기존 한계",
+                    }
+                },
+                ensure_ascii=False,
+            )
+
+        if "[발산 규칙]" in prompt:
+            return json.dumps(
+                {
+                    "solution_directions": [
+                        {
+                            "direction_id": "direction_1",
+                            "title": "방향 1",
+                            "core_principle": "원리 1",
+                            "mechanism": "작동 방식 1",
+                            "target_user_fit": "적합성 1",
+                        },
+                        {
+                            "direction_id": "direction_2",
+                            "title": "방향 2",
+                            "core_principle": "원리 2",
+                            "mechanism": "작동 방식 2",
+                            "target_user_fit": "적합성 2",
+                        },
+                        {
+                            "direction_id": "direction_3",
+                            "title": "방향 3",
+                            "core_principle": "원리 3",
+                            "mechanism": "작동 방식 3",
+                            "target_user_fit": "적합성 3",
+                        },
+                        {
+                            "direction_id": "direction_4",
+                            "title": "방향 4",
+                            "core_principle": "원리 4",
+                            "mechanism": "작동 방식 4",
+                            "target_user_fit": "적합성 4",
+                        },
+                    ]
+                },
+                ensure_ascii=False,
+            )
+
+        if "[반론·결합 규칙]" in prompt:
+            self.conflict_call_count += 1
+            active_section = prompt.rsplit("[해결 방향 solution_directions]", 1)[-1].split(
+                "[아이디어 변화 이력", 1
+            )[0]
+            active_ids = re.findall(r'"direction_id"\s*:\s*"([^"]+)"', active_section)
+            if "direction_1" in active_ids and "direction_3" in active_ids:
+                target_ids = ["direction_1", "direction_3"]
+                action_type = "merge"
+                result_id = "direction_merged_1"
+                result_title = "결합 방향"
+            else:
+                target_ids = [active_ids[0]]
+                action_type = "revision"
+                result_id = f"direction_revised_{self.conflict_call_count}"
+                result_title = f"수정 방향 {self.conflict_call_count}"
+            # 최소 조건(방향 3개 이상/반론 1회 이상/수정·결합 1회 이상)을 1라운드 안에
+            # 모두 충족시켜, 기본 시나리오에서는 conflict_and_merge가 곧바로
+            # candidate_planning으로 넘어가도록 한다(라운드 상한 분기는 별도 테스트에서
+            # 전용 stub으로 검증한다).
+            return json.dumps(
+                {
+                    "round_events": [
+                        {
+                            "issued_by": "dev_expert",
+                            "action_type": "critique",
+                            "target_direction_ids": target_ids,
+                            "spoken_text": "지목한 방향은 제약을 해결하지 않으면 그대로 구현하기 어렵습니다.",
+                            "detail": "개발 반론 상세",
+                        },
+                        {
+                            "issued_by": "planning_expert",
+                            "action_type": action_type,
+                            "target_direction_ids": target_ids,
+                            "spoken_text": "개발위원 반론을 반영한 새 방향으로 변경하겠습니다.",
+                            "detail": "기획 변경 상세",
+                        },
+                    ],
+                    "resulting_direction": {
+                        "direction_id": result_id,
+                        "title": result_title,
+                        "core_principle": "결합 원리",
+                        "mechanism": "결합 작동 방식",
+                        "target_user_fit": "결합 적합성",
+                        "parent_direction_ids": target_ids,
+                        "strengths": ["두 방향의 장점 결합"],
+                        "open_assumptions": ["결합 방식의 사용자 수용성"],
+                    },
+                },
+                ensure_ascii=False,
+            )
+
+        if "[검증 규칙]" in prompt:
+            return json.dumps(
+                {
+                    "planning": {
+                        "value_worth_solving": "해결할 가치가 있음",
+                        "target_user_clarity": "명확함",
+                        "differentiation": "차별성 있음",
+                        "usage_motivation": "사용 동기 있음",
+                        "contest_alignment": "공모전 기준과 연결됨",
+                        "concerns": [],
+                    },
+                    "technical": {
+                        "data_availability": "확보 가능",
+                        "feasibility": "구현 가능",
+                        "ai_necessity": "AI 필요",
+                        "privacy_or_security_risks": "위험 낮음",
+                        "prototype_feasibility": "기간 내 가능",
+                        "concerns": [],
+                    },
+                    "unresolved_assumptions": [],
+                },
+                ensure_ascii=False,
+            )
+
         raise AssertionError(f"예상하지 못한 프롬프트입니다: {prompt[:200]}")
 
 
 def _start_discovery(llm, user_idea=""):
-    return start_ideation_conversation(
+    """용준/Claude(2026-07-27, 요청: "발산 전에 완성, 선택 즉시 확정" 구조 개편) — discovery
+    모드는 이제 candidate_generation 이전에 problem_discovery/problem_focus_selection/
+    problem_definition/idea_divergence/idea_conflict_and_merge를 먼저 거친다. 이 헬퍼는
+    이전 계약(반환값이 "awaiting_candidate_selection"에서 idea_candidates 2개를 들고
+    멈춘 상태)을 최대한 그대로 보존하기 위해, 그 신규 단계들을 문제 영역 1번 선택이라는
+    가장 단순한 경로로 자동 통과시킨다(DiscoveryScriptedLLM이 반론·결합 최소 조건을
+    1라운드 안에 충족시키는 고정 응답을 반환하므로, 이 통과에는 사용자 응답이 "1번" 한
+    번만 필요하다) — user_idea가 있으면(refinement 모드) 이 신규 단계 자체를 타지
+    않으므로 그대로 반환한다."""
+    state = start_ideation_conversation(
         session_id="DISC-TEST",
         notice_and_criteria=NOTICE_AND_CRITERIA,
         user_idea={"description": user_idea},
         llm_call=llm,
     )
+    if state.get("ideation_mode") != "discovery":
+        return state
+    assert state["phase"] == "awaiting_problem_focus_selection"
+    return reply_ideation_conversation(previous_state=state, user_message="1번", llm_call=llm)
 
 
 def _legacy_resolve_selection_then_ask_planning_question(llm, state, user_message):
@@ -438,27 +617,23 @@ def test_no_refinement_question_runs_before_candidate_selection():
 
 
 def test_numeric_candidate_selection_switches_to_refinement_without_llm_interpretation():
-    """용준/Claude(2026-07-21, 요청: 전문가 라운드테이블 전환) 이후 후보 확정 직후에는
-    1:1 인터뷰 질문이 아니라 라운드테이블 한 라운드가 같은 요청 안에서 곧바로 끝까지
-    실행된다."""
+    """용준/Claude(2026-07-27, 요청: "발산 전에 완성, 선택 즉시 확정" 구조 개편) — 후보
+    확정 직후에는 더 이상 곧바로 selected_idea/refinement로 넘어가지 않는다. 잠정
+    선택(provisional_idea)만 확정되고, idea_validation을 거쳐 concept_confirmation에서
+    사용자 확정을 기다린다 — idea_locked는 여전히 False다."""
     llm = DiscoveryScriptedLLM()
     state = _start_discovery(llm)
     state = reply_ideation_conversation(previous_state=state, user_message="1번", llm_call=llm)
 
-    assert state["phase"] == "discussion_complete"
+    assert state["phase"] == "awaiting_concept_confirmation"
     assert state["ideation_mode"] == "discovery"  # 모드 자체는 바뀌지 않는다.
-    assert state["selected_idea"]["candidate_id"] == "candidate_1"
-    assert state["selected_idea"]["source"] == "select"
-    assert state["user_idea"]["candidate_id"] == "candidate_1"
+    assert state["provisional_idea"]["candidate_id"] == "candidate_1"
+    assert state["provisional_idea"]["source"] == "select"
+    assert state["selected_idea"] is None  # 확정 즉시 잠기지 않는다(요청 3번).
+    assert state["idea_locked"] is False
     assert llm.call_counts["candidate_selection"] == 0  # 단순 번호 선택은 LLM을 호출하지 않는다.
-    # 선택 직후 같은 요청 안에서 라운드테이블(기획 위원 최초 의견 -> 개발 위원 검토 -> 진행자
-    # 정리)까지 만들어졌다 — 1:1 인터뷰 질문(message_type="question")은 없다.
     assert state["messages"][-1]["speaker_id"] == "ideation_facilitator"
     assert state["messages"][-1]["message_type"] == "summary"
-    # 후보 선택 질문(discovery 단계의 정상적인 message_type="question")을 제외한, 선택
-    # 확정 이후에 생성된 메시지 중에는 1:1 인터뷰 질문이 없어야 한다.
-    after_selection = state["messages"][2:]  # [0]=선택 질문, [1]=사용자의 "1번" 답변
-    assert not any(m["message_type"] == "question" for m in after_selection)
 
 
 # ---------------------------------------------------------------------------
@@ -470,6 +645,9 @@ def test_numeric_candidate_selection_switches_to_refinement_without_llm_interpre
 
 
 def test_active_stage_switches_from_candidate_discovery_to_refinement_after_selection():
+    """용준/Claude(2026-07-27) — 후보 선택 직후에는 아직 확정 전(검증/확정 대기)이므로
+    active_stage는 "refinement"가 아니라 "candidate_selection"이어야 한다. concept_confirmation
+    에서 실제로 확정해야 비로소 "refinement"로 바뀐다."""
     llm = DiscoveryScriptedLLM()
     state = _start_discovery(llm)
 
@@ -478,8 +656,13 @@ def test_active_stage_switches_from_candidate_discovery_to_refinement_after_sele
 
     state = reply_ideation_conversation(previous_state=state, user_message="1번", llm_call=llm)
 
-    # 최초 진입 모드 기록은 그대로 유지된다 — active_stage만 바뀐다.
+    # 최초 진입 모드 기록은 그대로 유지된다.
     assert state["ideation_mode"] == "discovery"
+    assert state["phase"] == "awaiting_concept_confirmation"
+    assert active_stage_for(state["phase"]) == "candidate_selection"
+
+    state = reply_ideation_conversation(previous_state=state, user_message="확정할게요", llm_call=llm)
+    assert state["idea_locked"] is True
     assert active_stage_for(state["phase"]) == "refinement"
 
 
@@ -494,7 +677,8 @@ def test_title_candidate_selection_resolves_deterministically():
     title = state["idea_candidates"][1]["title"]
     state = reply_ideation_conversation(previous_state=state, user_message=title, llm_call=llm)
 
-    assert state["selected_idea"]["candidate_id"] == "candidate_2"
+    assert state["provisional_idea"]["candidate_id"] == "candidate_2"
+    assert state["selected_idea"] is None
     assert llm.call_counts["candidate_selection"] == 0
 
 
@@ -603,10 +787,11 @@ def test_regenerate_request_after_selection_returns_to_new_candidate_list():
     llm = DiscoveryScriptedLLM(candidates_queue=[_default_candidates(), second_batch])
     state = _start_discovery(llm)
     state = reply_ideation_conversation(previous_state=state, user_message="1번", llm_call=llm)
-    # 용준/Claude(2026-07-21, 요청: 전문가 라운드테이블 전환) — 선택 직후 라운드테이블이
-    # 같은 요청 안에서 끝까지 실행돼 "awaiting_user_decision"으로 멈춘다.
-    assert state["phase"] == "discussion_complete"
-    assert state["selected_idea"] is not None
+    # 용준/Claude(2026-07-27) — 선택 직후에는 provisional_idea만 확정되고 검증/확정 대기
+    # 상태(awaiting_concept_confirmation)로 멈춘다(요청 3번, 즉시 잠기지 않는다).
+    assert state["phase"] == "awaiting_concept_confirmation"
+    assert state["provisional_idea"] is not None
+    assert state["selected_idea"] is None
 
     sufficiency_calls_before = sum("[판정 규칙]" in prompt for prompt in llm.captured_prompts)
     state = reply_ideation_conversation(previous_state=state, user_message="아이디어 다시 짜줘", llm_call=llm)
@@ -674,17 +859,171 @@ def test_expert_recommend_request_produces_reasoned_recommendation():
 
 
 # ---------------------------------------------------------------------------
-# 14. 필수 키가 없는 후보 생성 응답 — 빈 카드를 만들지 않고 실패 처리
+# 14. 필수 키가 없는 후보 생성 응답 — 빈 카드를 만들지 않고, active solution_directions로
+#     안전 폴백(2026-07-28, 요청: candidate_planning 실패로 전체 회의를 중단하지 않는다)
 # ---------------------------------------------------------------------------
 
 
-def test_candidate_planning_missing_required_field_does_not_produce_empty_candidates():
+def test_candidate_planning_retry_still_invalid_falls_back_to_safe_candidates():
+    """재시도(최초 1회 + 재시도 1회)까지 구조화 응답이 계속 무효하면, active
+    solution_directions(discovery 흐름이면 최소 3개)로 LLM 호출 없이 안전 후보를 만들어
+    awaiting_candidate_selection으로 진행한다 — 예전처럼 phase="failed"로 회의를
+    중단하지 않는다(요청: "후보를 만들 수 있는 active direction이 2개 이상이면
+    candidate_planning 실패로 전체 회의를 중단하지 않는다")."""
     llm = DiscoveryScriptedLLM(fixed_invalid_candidates=[{"candidate_id": "candidate_1", "title": "제목만 있음"}])
     state = _start_discovery(llm)
-    assert state["phase"] == "failed"
-    assert state["failed_node"] == "candidate_planning"
-    assert state["idea_candidates"] == []
+    assert state["phase"] == "awaiting_candidate_selection"
+    assert state.get("failed_node") is None
     assert llm.call_counts["candidate_planning"] == 2  # 최초 1회 + 재시도 1회, 계속 무효했다.
+
+    candidates = state["idea_candidates"]
+    active_direction_ids = {
+        d["direction_id"] for d in (state.get("solution_directions") or []) if d.get("status") == "active"
+    }
+    assert len(active_direction_ids) >= 2
+    assert 2 <= len(candidates) <= 3
+    for candidate in candidates:
+        assert candidate["title"].strip()
+        assert candidate["problem"].strip()
+        assert candidate["target_user"].strip()
+        assert candidate["solution"].strip()
+        assert candidate["source_direction_ids"]
+        assert set(candidate["source_direction_ids"]).issubset(active_direction_ids)
+
+    # 폴백 사용 사실이 대화록에 안내 메시지로 남아야 한다(요청: 폴백 성공 시 전체 오류
+    # 배너 대신 안내 문구) — 그리고 기존 messages/problem_definition은 보존된다.
+    assert any("안전 후보를 구성했습니다" in m["content"] for m in state["messages"])
+    assert state.get("problem_definition")
+
+
+def test_candidate_planning_fallback_impossible_asks_user_instead_of_failing():
+    """active direction이 2개 미만이면 안전 후보 자체를 만들 수 없으므로(정상 경로도
+    candidates 2~3개를 요구함), phase="failed"로 회의를 끊는 대신 기존
+    idea_conflict_and_merge 라운드 상한 도달 시와 동일한 awaiting_conflict_resolution
+    화면(방향 추가/결합/문제 정의 복귀)으로 사용자에게 조정을 요청한다."""
+    llm = DiscoveryScriptedLLM(fixed_invalid_candidates=[{"candidate_id": "candidate_1", "title": "제목만 있음"}])
+    state = _start_discovery(llm)
+    # 위 테스트에서 확인했듯 discovery 흐름은 기본적으로 active direction이 3개 남는다 —
+    # 여기서는 부족한 상황을 직접 구성해 그 경로만 별도로 검증한다.
+    state = dict(state)
+    state["solution_directions"] = [
+        {**d, "status": "dropped"} for d in (state.get("solution_directions") or [])
+    ][:1]
+    if state["solution_directions"]:
+        state["solution_directions"][0]["status"] = "active"
+    llm.call_counts["candidate_planning"] = 0
+    candidate_planning_node = make_candidate_planning_node(llm)
+    update = candidate_planning_node(state)
+    assert update["phase"] == "awaiting_conflict_resolution"
+    assert "failed" not in update
+    assert any("해결 방향이 충분하지 않습니다" in m["content"] for m in update["messages"])
+
+
+def test_candidate_planning_recovers_on_retry_with_retry_note():
+    """1차 시도가 스키마상 무효해도, 재시도(2차) 프롬프트에 실패 사유별 구체적 지시
+    (retry_note_for)가 실리면 정상 성공할 수 있다 — 실측 버그 수정 검증(2026-07-28,
+    session=IDEA-CONV-5e9bbbd1): 예전에는 candidate_planning이 retry_note_for 없이
+    _safe_call_structured_json을 호출해서, 1차 시도가 실패하면 2차(재시도)가 실패 사유를
+    전혀 모른 채 완전히 동일한 프롬프트를 그대로 다시 보냈다(로그: attempt=1/attempt=2
+    모두 같은 reason="source_direction_id_not_active") — 즉 재시도가 사실상 아무 교정
+    정보 없는 반복 호출이었다."""
+    llm = DiscoveryScriptedLLM()
+    state = _start_discovery(llm)
+    active_ids = [d["direction_id"] for d in state["solution_directions"] if d["status"] == "active"]
+    assert len(active_ids) >= 2
+
+    call_count = {"n": 0}
+    retry_note_seen_on_second_call = []
+
+    def flaky_llm(prompt: str) -> str:
+        assert "[후보 생성 규칙" in prompt, "candidate_planning 전용 stub인데 다른 노드 프롬프트가 왔습니다"
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            # 스키마상 무효(candidates가 1개뿐 — 2~3개 필요) — 1차 시도 실패.
+            return json.dumps({"contest_analysis": {}, "candidates": [{"candidate_id": "candidate_1"}]})
+        retry_note_seen_on_second_call.append("[재시도 지시]" in prompt)
+        candidates = _default_candidates()
+        for index, candidate in enumerate(candidates):
+            candidate["source_direction_ids"] = [active_ids[index % len(active_ids)]]
+        return json.dumps(
+            {
+                "contest_analysis": {
+                    "purpose": "목적",
+                    "key_criteria": ["기준1"],
+                    "required_tech_or_theme": ["기술1"],
+                    "suitable_problem_domains": ["영역1"],
+                    "constraints": ["제약1"],
+                    "unknown_from_notice": ["미상1"],
+                },
+                "candidates": candidates,
+            }
+        )
+
+    candidate_planning_node = make_candidate_planning_node(flaky_llm)
+    update = candidate_planning_node(state)
+
+    assert call_count["n"] == 2
+    assert retry_note_seen_on_second_call == [True]
+    # 정상 성공 경로는 phase를 건드리지 않는다(호출부가 candidate_feasibility로 이어감).
+    assert "phase" not in update
+    assert len(update["idea_candidates"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# 14-1. "다시 시도"가 전체 회의를 처음부터 다시 실행하지 않고 failed_node부터 재개한다
+#       (2026-07-28, 요청: retry_failed_ideation_conversation_node)
+# ---------------------------------------------------------------------------
+
+
+def test_retry_failed_node_resumes_from_candidate_planning_without_restarting_session():
+    """phase="failed"(failed_node="candidate_planning")인 세션을 재시도하면, 처음부터
+    다시 시작(problem_discovery 등)하지 않고 candidate_planning 노드만 재실행한다 —
+    문제 정의/기존 메시지는 그대로 보존되고, round도 초기화되지 않는다."""
+    llm = DiscoveryScriptedLLM()
+    state = _start_discovery(llm)
+    assert state["phase"] == "awaiting_candidate_selection"
+
+    # 실제로 phase="failed"가 되는 경로(active direction 부족)는 위 테스트에서 이미
+    # 검증했다 — 여기서는 retry 함수 자체의 계약(failed_node부터, state 보존)만 별도로
+    # 검증하기 위해 실패 상태를 직접 구성한다.
+    baseline_message_count = len(state["messages"])
+    baseline_problem_definition = state.get("problem_definition")
+    baseline_round = state.get("round")
+    failed_state = dict(state)
+    failed_state["phase"] = "failed"
+    failed_state["failed_node"] = "candidate_planning"
+
+    llm.call_counts["candidate_planning"] = 0
+    result = retry_failed_ideation_conversation_node(previous_state=failed_state, llm_call=llm)
+
+    assert result["phase"] != "failed"
+    assert result.get("failed_node") is None
+    assert result["round"] == baseline_round
+    assert result.get("problem_definition") == baseline_problem_definition
+    # 기존 메시지가 지워지지 않고(problem_discovery부터 재실행됐다면 메시지가 훨씬
+    # 많아지거나 완전히 새로 만들어졌을 것이다) 그 위에 새 메시지만 덧붙는다.
+    assert result["messages"][:baseline_message_count] == failed_state["messages"][:baseline_message_count]
+    assert len(result["messages"]) >= baseline_message_count
+    # candidate_planning만 다시 불렸다 — problem_discovery/idea_divergence 등 이전
+    # 단계는 재실행되지 않았다는 뜻이다.
+    assert llm.call_counts["candidate_planning"] == 1
+
+
+def test_retry_failed_node_rejects_non_failed_phase():
+    llm = DiscoveryScriptedLLM()
+    state = _start_discovery(llm)
+    with pytest.raises(ValueError):
+        retry_failed_ideation_conversation_node(previous_state=state, llm_call=llm)
+
+
+def test_retry_failed_node_rejects_unsupported_failed_node():
+    llm = DiscoveryScriptedLLM()
+    state = _start_discovery(llm)
+    failed_state = dict(state)
+    failed_state["phase"] = "failed"
+    failed_state["failed_node"] = "candidate_feasibility"
+    with pytest.raises(ValueError):
+        retry_failed_ideation_conversation_node(previous_state=failed_state, llm_call=llm)
 
 
 def test_candidate_feasibility_llm_failure_falls_back_to_failed_phase():
@@ -714,6 +1053,11 @@ def test_discovery_final_result_includes_13_fields_and_discovery_history():
     llm = DiscoveryScriptedLLM(dev_next_action="await_user_decision")
     state = _start_discovery(llm)
     state = reply_ideation_conversation(previous_state=state, user_message="1번", llm_call=llm)
+    assert state["phase"] == "awaiting_concept_confirmation"
+    # 용준/Claude(2026-07-27) — concept_confirmation에서 사용자가 실제로 확정해야
+    # idea_locked=True가 되고 라운드테이블(refinement)이 시작된다(요청 2·3번).
+    state = reply_ideation_conversation(previous_state=state, user_message="확정할게요", llm_call=llm)
+    assert state["idea_locked"] is True
     assert state["phase"] == "discussion_complete"
 
     state = finalize_ideation_conversation(previous_state=state, llm_call=llm)
@@ -901,8 +1245,9 @@ def test_combine_high_fit_finalizes_selection_normally():
     state = _start_discovery(llm)
     state = reply_ideation_conversation(previous_state=state, user_message="1번과 2번 결합", llm_call=llm)
 
-    assert state["phase"] == "discussion_complete"
-    assert state["selected_idea"] is not None
+    assert state["phase"] == "awaiting_concept_confirmation"
+    assert state["provisional_idea"] is not None
+    assert state["selected_idea"] is None
     assert state["merge_analysis"]["fit"] == "high"
 
 
@@ -914,11 +1259,11 @@ def test_combine_medium_fit_finalizes_and_preserves_primary_secondary_features()
     state = _start_discovery(llm)
     state = reply_ideation_conversation(previous_state=state, user_message="1번과 2번 결합", llm_call=llm)
 
-    # 용준/Claude(2026-07-21, 요청: 전문가 라운드테이블 전환) — 결합 확정 직후 라운드테이블
-    # 이 곧바로 실행돼 "awaiting_user_decision"으로 멈춘다("[핵심 질문]" 형식의 1:1 인터뷰
-    # 질문은 더 이상 생성되지 않는다).
-    assert state["phase"] == "discussion_complete"
-    assert state["selected_idea"] is not None
+    # 용준/Claude(2026-07-27) — 결합 확정 직후에는 provisional_idea만 채워지고
+    # awaiting_concept_confirmation에서 멈춘다(즉시 selected_idea로 잠기지 않는다).
+    assert state["phase"] == "awaiting_concept_confirmation"
+    assert state["provisional_idea"] is not None
+    assert state["selected_idea"] is None
     assert state["merge_analysis"]["fit"] == "medium"
     assert state["merge_analysis"]["primary_features"] == ["문의 자동응답"]
     assert state["merge_analysis"]["secondary_features"] == ["예약 관리"]
@@ -1008,6 +1353,23 @@ def _fake_external_evidence_lookup(calls_log):
     return lookup
 
 
+def _start_discovery_to_candidates(llm, session_id, external_evidence_lookup=None):
+    """용준/Claude(2026-07-27) — external_evidence_lookup은 candidate_planning/
+    candidate_feasibility에만 연결되므로(problem_discovery 등 신규 단계는 이 콜백을
+    받지 않는다), problem_focus_selection까지 진행한 뒤(문제 영역 1번 선택) 그 다음
+    호출에서 콜백을 전달해야 실제로 호출된다."""
+    state = start_ideation_conversation(
+        session_id=session_id,
+        notice_and_criteria=NOTICE_AND_CRITERIA,
+        user_idea={"description": ""},
+        llm_call=llm,
+    )
+    assert state["phase"] == "awaiting_problem_focus_selection"
+    return reply_ideation_conversation(
+        previous_state=state, user_message="1번", llm_call=llm, external_evidence_lookup=external_evidence_lookup
+    )
+
+
 def test_external_evidence_lookup_is_called_for_planning_and_dev_roles():
     """요청 4/5번 — candidate_planning은 persona_id="planning_expert", candidate_feasibility는
     persona_id="dev_expert"로 external_evidence_lookup을 호출해야 한다(role 매핑 자체는
@@ -1015,13 +1377,7 @@ def test_external_evidence_lookup_is_called_for_planning_and_dev_roles():
     콜백을 호출하는지만 검증한다)."""
     calls: list[tuple[str, str]] = []
     llm = DiscoveryScriptedLLM()
-    state = start_ideation_conversation(
-        session_id="EXT-EVID-TEST-1",
-        notice_and_criteria=NOTICE_AND_CRITERIA,
-        user_idea={"description": ""},
-        llm_call=llm,
-        external_evidence_lookup=_fake_external_evidence_lookup(calls),
-    )
+    state = _start_discovery_to_candidates(llm, "EXT-EVID-TEST-1", _fake_external_evidence_lookup(calls))
     persona_ids = [c[0] for c in calls]
     assert "planning_expert" in persona_ids
     assert "dev_expert" in persona_ids
@@ -1033,13 +1389,7 @@ def test_external_evidence_appears_in_prompt_with_url_and_is_exposed_in_state():
     retrieval 관련 정보 노출 확인(요청 11번)."""
     calls: list[tuple[str, str]] = []
     llm = DiscoveryScriptedLLM()
-    state = start_ideation_conversation(
-        session_id="EXT-EVID-TEST-2",
-        notice_and_criteria=NOTICE_AND_CRITERIA,
-        user_idea={"description": ""},
-        llm_call=llm,
-        external_evidence_lookup=_fake_external_evidence_lookup(calls),
-    )
+    state = _start_discovery_to_candidates(llm, "EXT-EVID-TEST-2", _fake_external_evidence_lookup(calls))
     planning_prompts = [p for p in llm.captured_prompts if "[후보 생성 규칙]" in p]
     assert planning_prompts
     assert "통계청" in planning_prompts[0]
@@ -1059,13 +1409,7 @@ def test_no_external_evidence_lookup_proceeds_like_before():
     회의는 기존 흐름 그대로 진행되고, 프롬프트에는 빈 배열만 들어간다(문자열 그대로
     "[]")."""
     llm = DiscoveryScriptedLLM()
-    state = start_ideation_conversation(
-        session_id="EXT-EVID-TEST-3",
-        notice_and_criteria=NOTICE_AND_CRITERIA,
-        user_idea={"description": ""},
-        llm_call=llm,
-        external_evidence_lookup=None,
-    )
+    state = _start_discovery_to_candidates(llm, "EXT-EVID-TEST-3", external_evidence_lookup=None)
     assert state["phase"] == "awaiting_candidate_selection"
     assert state.get("external_evidence") == []
     assert state.get("external_evidence_meta") == {
@@ -1084,13 +1428,7 @@ def test_external_evidence_lookup_failure_does_not_break_candidate_generation():
         raise RuntimeError("external research backend unavailable")
 
     llm = DiscoveryScriptedLLM()
-    state = start_ideation_conversation(
-        session_id="EXT-EVID-TEST-4",
-        notice_and_criteria=NOTICE_AND_CRITERIA,
-        user_idea={"description": ""},
-        llm_call=llm,
-        external_evidence_lookup=broken_lookup,
-    )
+    state = _start_discovery_to_candidates(llm, "EXT-EVID-TEST-4", broken_lookup)
     assert state["phase"] == "awaiting_candidate_selection"
     assert state.get("external_evidence") == []
 

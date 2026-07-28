@@ -155,6 +155,7 @@ def _get_indexing_service() -> RAGIndexingService:
             if _indexing_service is None:
                 embedder = KUREEmbedder(
                     EmbeddingConfig(
+                        device=settings.RAG_EMBEDDING_DEVICE,
                         batch_size=settings.RAG_EMBEDDING_BATCH_SIZE,
                         cpu_threads=settings.RAG_TORCH_NUM_THREADS,
                     )

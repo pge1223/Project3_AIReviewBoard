@@ -13,7 +13,9 @@ domain을 참조하는 것은 되지만, domain이 embedding/retrieval을 참조
 # 2026-07-27: v3 세그먼트도 같은 오류가 재발했다. 손상된 v3는 보존하고 v4로 격리한다.
 # backend 테스트가 개발용 Chroma 경로를 열던 문제도 backend/tests/conftest.py에서 별도
 # 테스트 경로로 분리해, 테스트 실행이 이 운영/개발 컬렉션에 접근하지 않도록 함께 막는다.
-DEFAULT_COLLECTION_NAME: str = "project_documents_kure_v4"
+# 2026-07-28: 중복 개발 서버 접근으로 v4 HNSW 로딩 오류가 재발했다.
+# 손상된 v4는 삭제하지 않고 보존하며 새 컬렉션으로 격리한다.
+DEFAULT_COLLECTION_NAME: str = "project_documents_kure_v5"
 
 # Chroma 컬렉션 이름 규칙 (chromadb 실제 검증 메시지 기준: 3~512자, [a-zA-Z0-9._-], 시작/끝은 영숫자)
 COLLECTION_NAME_PATTERN: str = r"^[a-zA-Z0-9][a-zA-Z0-9._-]{1,510}[a-zA-Z0-9]$"

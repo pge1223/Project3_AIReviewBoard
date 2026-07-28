@@ -16,8 +16,9 @@ from typing import Any, Callable
 from prompts import build_ideation_conv_form_draft_prompt
 
 from .application_form_draft import apply_application_form_draft_patch, remaining_content_fields
-from .ideation_conv_build import assemble_ideation_conversation_graph
+from .ideation_conv_build import _ENTRY_NODES, assemble_ideation_conversation_graph
 from .ideation_conv_discovery import MAX_CANDIDATE_REGENERATIONS, is_regenerate_request
+from .ideation_conv_problem import _select_areas_by_action_payload
 from .ideation_conv_nodes import (
     PHASE_TO_PENDING_PERSONA,
     REVISION_TRIGGER_STANCES,
@@ -40,6 +41,7 @@ from .ideation_conv_state import (
     IdeationCancelled,
     IdeationConvState,
     apply_user_answer,
+    contains_pre_lock_banned_content,
     initial_conv_state,
     is_graph_entry_phase,
     request_finalize,
@@ -129,6 +131,85 @@ def _index_user_answer(
             error=sanitize_preview(str(exc), limit=100),
         )
 
+# 용준/Claude(2026-07-27, 후속 요청 2번: "action_code가 명시적으로 전달된 경우 자연어
+# 키워드 판정으로 조용히 폴백하지 말고 명시적 validation error를 내라") — action_code별로
+# 허용되는 previous_state["phase"](=action_code가 의미를 갖는 awaiting_* 정지 지점)를
+# 고정한다. 여기 없는 action_code는 전부 미지원으로 간주한다.
+_ACTION_CODE_ALLOWED_PHASES: dict[str, frozenset[str]] = {
+    "select_problem_focus": frozenset({"awaiting_problem_focus_selection"}),
+    "combine_problem_focus": frozenset({"awaiting_problem_focus_selection"}),
+    "add_solution_direction": frozenset({"awaiting_conflict_resolution"}),
+    "merge_directions": frozenset({"awaiting_conflict_resolution"}),
+    "drop_direction": frozenset({"awaiting_conflict_resolution"}),
+    "proceed_to_validation": frozenset({"awaiting_conflict_resolution"}),
+    "revise_candidate": frozenset({"awaiting_concept_confirmation"}),
+    "confirm_concept": frozenset({"awaiting_concept_confirmation"}),
+    "choose_another_candidate": frozenset({"awaiting_concept_confirmation"}),
+    "return_to_problem_definition": frozenset({"awaiting_conflict_resolution", "awaiting_concept_confirmation"}),
+}
+
+
+def _validate_action_code(state: IdeationConvState, action_code: str, action_payload: dict) -> None:
+    """action_code가 명시적으로 전달됐을 때만 호출된다(호출부 참고). 여기서 걸러내지 못한
+    문제만 각 노드(ideation_conv_problem.py)의 자연어 폴백으로 넘어간다 — action_code 자체가
+    지원 대상이 아니거나, 현재 phase에서 허용되지 않거나, 필수 payload가 없거나, 대상 id가
+    존재하지 않거나 이미 폐기/결합된 경우는 전부 여기서 명시적 ValueError로 막는다(요청:
+    "프론트 버그나 잘못된 요청이 숨겨지지 않아야 한다"). ValueError는 API 레이어
+    (ideation_conversation_preview.py)가 HTTP 400으로 그대로 변환한다."""
+    allowed_phases = _ACTION_CODE_ALLOWED_PHASES.get(action_code)
+    if allowed_phases is None:
+        raise ValueError(f"지원하지 않는 action_code입니다: {action_code!r}")
+    phase = state["phase"]
+    if phase not in allowed_phases:
+        raise ValueError(
+            f"action_code {action_code!r}는 현재 phase({phase!r})에서 허용되지 않습니다. "
+            f"허용된 phase: {sorted(allowed_phases)}"
+        )
+
+    if action_code in ("select_problem_focus", "combine_problem_focus"):
+        areas = state.get("problem_areas") or []
+        selected = _select_areas_by_action_payload(areas, action_payload)
+        if not selected:
+            raise ValueError(
+                f"action_code {action_code!r}의 action_payload가 유효하지 않습니다. "
+                "problem_areas 안에 존재하는 indices(1-based) 또는 area_ids가 필요합니다."
+            )
+        if action_code == "combine_problem_focus" and len(selected) < 2:
+            raise ValueError("combine_problem_focus는 서로 다른 area 2개를 지정해야 합니다.")
+
+    elif action_code in ("merge_directions", "drop_direction"):
+        direction_ids = action_payload.get("direction_ids")
+        if not isinstance(direction_ids, list) or not direction_ids:
+            raise ValueError(f"action_code {action_code!r}는 action_payload.direction_ids(list)가 필요합니다.")
+        if action_code == "merge_directions" and len(direction_ids) < 2:
+            raise ValueError("merge_directions는 서로 다른 direction_id 2개 이상이 필요합니다.")
+        directions_by_id = {d.get("direction_id"): d for d in state.get("solution_directions") or []}
+        for direction_id in direction_ids:
+            target = directions_by_id.get(direction_id)
+            if target is None:
+                raise ValueError(f"존재하지 않는 direction_id입니다: {direction_id!r}")
+            if target.get("status") != "active":
+                raise ValueError(
+                    f"이미 폐기되거나 결합된 direction은 지정할 수 없습니다: "
+                    f"{direction_id!r}(status={target.get('status')!r})"
+                )
+
+    elif action_code == "confirm_concept":
+        if not state.get("provisional_idea"):
+            raise ValueError("확정할 provisional_idea가 없습니다.")
+
+
+def validate_ideation_action_code(state: IdeationConvState, action_code: str, action_payload: dict) -> None:
+    """_validate_action_code의 공개 래퍼. reply_ideation_conversation은 이 검증을 그래프
+    실행 도중(action_code가 주어졌을 때) 자동으로 수행하지만, 스트리밍 API
+    (ideation_conversation_preview.py::reply_conversation_stream)는 StreamingResponse를
+    시작하기 전에 미리 검증해 HTTP 400을 응답해야 한다(스트림이 이미 200으로 시작된 뒤
+    NDJSON error 이벤트로만 실패를 알리면 클라이언트가 이를 정상 200 응답으로 오인할 수
+    있다) — 그 목적으로 밑줄 없는 이름으로 별도 노출한다. 검증 로직 자체는 전혀 새로
+    만들지 않고 _validate_action_code를 그대로 재사용한다."""
+    _validate_action_code(state, action_code, action_payload)
+
+
 # API가 사용자 입력을 받아도 되는(=그래프를 다시 부르지 않고 멈춰 있어야 하는) phase.
 # 용준/Claude(2026-07-21): discovery(아이디어 발굴) 모드의 후보 선택 대기 phase를 추가한다
 # — PHASE_TO_PENDING_PERSONA에는 없는 phase이므로 answer_sufficiency 게이트(아래 참고)는
@@ -140,7 +221,62 @@ REPLYABLE_PHASES = {
     "awaiting_user_decision",
     "discussion_complete",
     "awaiting_candidate_selection",
+    # 용준/Claude(2026-07-27, 요청: "발산 전에 완성, 선택 즉시 확정" 구조 개편) — discovery
+    # 전용 신규 정지 지점 3개.
+    "awaiting_problem_focus_selection",
+    "awaiting_conflict_resolution",
+    "awaiting_concept_confirmation",
 }
+
+# 용준/Claude(2026-07-27, 요청 1·4번: "concept_confirmation 이전 단계에서는 신청서 작성법·
+# 사업계획서 목차 등을 다루지 못하게" / "refinement 모드에서도 idea_locked 이전에는 신청서
+# 문구나 사업계획서 작성으로 바로 넘어가지 않도록") — LLM이 만든 발화에 확정 이전 금지
+# 표현(ideation_conv_state.PRE_LOCK_BANNED_PHRASES)이 섞이면, 그 발화를 그대로 사용자에게
+# 보여주지 않고 이 안내문으로 교체한다. 사용자 요청 원문 예시를 그대로 쓴다.
+_PRE_LOCK_REDIRECT_MESSAGE = (
+    "아직 아이디어를 확정하는 단계가 아닙니다. 문서를 작성하기 전에 해결하려는 문제와 "
+    "가능한 해결 방향을 더 탐색하겠습니다."
+)
+
+
+def _guard_pre_lock_messages(state: IdeationConvState, baseline_message_count: int) -> IdeationConvState:
+    """idea_locked=False인 동안 baseline_message_count 이후에 새로 추가된, 사용자가 아닌
+    발화 중 PRE_LOCK_BANNED_PHRASES가 섞인 것을 찾아 교체한다. discovery 모드의 새 단계
+    (problem_discovery~concept_confirmation)는 프롬프트 규칙 자체가 신청서/사업계획서
+    언급을 요구하지 않지만, refinement 모드(초기 아이디어를 이미 입력해 곧바로
+    expert_discussion부터 시작하는 세션)는 idea_locked=False로 finalize 전까지 계속 대화가
+    이어지므로 이 후처리 가드가 실질적인 방어선이다(요청 1번) — LLM이 "이건 신청서
+    작성이 아니다"라고 스스로 판단하게 맡기지 않고, 이미 나온 발화를 코드가 검사한다."""
+    if state.get("idea_locked"):
+        return state
+    messages = state.get("messages") or []
+    if len(messages) <= baseline_message_count:
+        return state
+    changed = False
+    new_messages = list(messages)
+    for i in range(baseline_message_count, len(new_messages)):
+        message = new_messages[i]
+        if message.get("speaker_id") == "user":
+            continue
+        if not contains_pre_lock_banned_content(message.get("content"), phase=state.get("phase")):
+            continue
+        changed = True
+        redirected = dict(message)
+        redirected["content"] = _PRE_LOCK_REDIRECT_MESSAGE
+        structured = redirected.get("structured")
+        if isinstance(structured, dict):
+            redirected["structured"] = {**structured, "spoken_text": _PRE_LOCK_REDIRECT_MESSAGE, "pre_lock_guard_triggered": True}
+        new_messages[i] = redirected
+        trace_event(
+            "IDEATION_PRE_LOCK_CONTENT_GUARD_TRIGGERED",
+            level=30,
+            session_id=state.get("session_id"),
+            speaker_id=message.get("speaker_id"),
+            phase=state.get("phase"),
+        )
+    if not changed:
+        return state
+    return IdeationConvState(**{**state, "messages": new_messages})
 
 # 같은 쟁점(pending_question)으로 재질문할 수 있는 최대 횟수. 요청 3번(재질문 조건)의 예시
 # "재질문이 2회 이상 반복되면... 합리적인 가정을 제시하고 다음 단계로 진행한다"를 그대로
@@ -281,6 +417,25 @@ def _drive_graph(
     try:
         for snapshot in graph.stream(state, stream_mode="values"):
             final_state = snapshot
+            snapshot_messages = snapshot.get("messages") or []
+            trace_event(
+                "IDEATION_GRAPH_SNAPSHOT",
+                phase=snapshot.get("phase"),
+                message_count=len(snapshot_messages),
+                solution_direction_count=len(snapshot.get("solution_directions") or []),
+                critique_count=sum(
+                    1
+                    for item in (snapshot.get("idea_evolution") or [])
+                    if item.get("action_type") == "critique"
+                ),
+                merge_or_revision_count=sum(
+                    1
+                    for item in (snapshot.get("idea_evolution") or [])
+                    if item.get("action_type") in {"merge", "revision"}
+                ),
+                conflict_round_count=snapshot.get("conflict_round_count", 0),
+                stop_after_expert_turn=stop_after_expert_turn,
+            )
             if on_progress is not None:
                 on_progress(_progress(snapshot))
             if stop_after_expert_turn:
@@ -292,14 +447,39 @@ def _drive_graph(
                     new_messages = messages[len(messages) - new_count :]
                     previous_message_count = len(messages)
                     last_speaker = new_messages[-1].get("speaker_id")
-                    if last_speaker in _SINGLE_TURN_STOP_SPEAKERS:
+                    # 용준/Claude(2026-07-27, 실측: "discovery 모드에서 기획 의원 발언 1건
+                    # 후 회의가 영원히 멈춤") — _SINGLE_TURN_STOP_SPEAKERS는 원래 기존
+                    # 라운드테이블(expert_discussion, planning_expert_discussion/
+                    # dev_expert_discussion 노드)에서 아바타가 한 발언씩만 재생하도록 만든
+                    # 정지 지점이다. 그런데 discovery 모드의 idea_divergence 노드도 같은
+                    # persona_id("planning_expert")로 메시지를 만들어서, phase 구분 없이
+                    # speaker_id만 보면 idea_divergence 직후에도 잘못 멈춰버린다(그
+                    # 노드는 "정지 없이 바로 idea_conflict_and_merge로 이어진다"는 설계다 —
+                    # ideation_conv_problem.py::make_idea_divergence_node 참고). discovery
+                    # 모드 노드들은 phase를 "expert_discussion"으로 두지 않으므로(성공
+                    # 경로에서 phase 키 자체를 반환하지 않아 이전 phase가 그대로 유지된다),
+                    # phase가 "expert_discussion"일 때만 이 정지 조건을 적용해 legacy
+                    # 라운드테이블에만 국한시킨다. continue_ideation_expert_turn도 정확히
+                    # 같은 조건(phase == "expert_discussion")으로만 재개를 허용하므로 이
+                    # 정지 지점과 재개 지점의 전제가 항상 일치한다.
+                    if last_speaker in _SINGLE_TURN_STOP_SPEAKERS and snapshot.get("phase") == "expert_discussion":
                         break
-                    if new_count > 1 and all(
-                        m.get("speaker_id") == "ideation_facilitator" for m in new_messages
-                    ):
-                        break
-                    if new_count == 1 and last_speaker == "ideation_facilitator":
-                        stop_after_next_snapshot = True
+                    # 용준/Claude(2026-07-28, 실측 후속: "idea_divergence까지는 통과했는데
+                    # 그 다음 스냅샷에서 또 멈춤") — 아래 두 facilitator 전용 정지 조건도
+                    # 위와 같은 이유(legacy expert_discussion 라운드테이블 전용 설계)로
+                    # discovery 모드에서 오작동한다. problem_definition 노드가 만드는
+                    # "문제 정의" 요약 메시지도 speaker_id="ideation_facilitator" 단독
+                    # 1건이라, 이 조건이 그대로 걸리면 stop_after_next_snapshot이 True가
+                    # 되어 바로 다음 스냅샷(idea_divergence 실행 결과)에서 idea_conflict_and_merge
+                    # 로 넘어가기도 전에 루프가 끊긴다. 두 조건 모두 phase가
+                    # "expert_discussion"일 때만 적용해 legacy 라운드테이블에 국한시킨다.
+                    if snapshot.get("phase") == "expert_discussion":
+                        if new_count > 1 and all(
+                            m.get("speaker_id") == "ideation_facilitator" for m in new_messages
+                        ):
+                            break
+                        if new_count == 1 and last_speaker == "ideation_facilitator":
+                            stop_after_next_snapshot = True
     except IdeationCancelled as exc:
         exc.partial_state = final_state if final_state is not state else None
         raise
@@ -328,7 +508,8 @@ def start_ideation_conversation(
     추가 파라미터다(기본값 None) — 넘기지 않으면 기존 호출부와 완전히 동일하게 동작한다.
 
     용준/Claude(2026-07-27, RAG-007 연결): external_evidence_lookup도 순수 추가 파라미터다
-    (기본값 None) — candidate_planning/candidate_feasibility 노드에만 전달된다."""
+    (기본값 None) — problem_discovery, candidate_planning/candidate_feasibility,
+    idea_validation 노드에 전달된다."""
     graph = assemble_ideation_conversation_graph(
         llm_call,
         evidence_lookup=evidence_lookup,
@@ -341,7 +522,54 @@ def start_ideation_conversation(
         session_id, notice_and_criteria, user_idea, max_rounds=max_rounds,
         application_form_items=application_form_items,
     )
-    return _drive_graph(graph, state, on_progress, on_snapshot)
+    baseline_message_count = len(state["messages"])
+    result_state = _drive_graph(graph, state, on_progress, on_snapshot)
+    return _guard_pre_lock_messages(result_state, baseline_message_count)
+
+
+# 용준/Claude(2026-07-28, 요청: "다시 시도"가 전체 회의를 처음부터 다시 실행하지 않게)
+# — failed_node -> 그 노드의 진입 phase 역매핑. _ENTRY_NODES(ideation_conv_build.py)가
+# "이 phase로 그래프를 시작하면 이 노드가 실행된다"는 정방향 매핑이므로, 그 역방향을 그대로
+# 재사용한다(새 매핑 테이블을 따로 관리하지 않는다 — 두 테이블이 어긋날 위험을 없앤다).
+_FAILED_NODE_TO_RETRY_PHASE: dict[str, str] = {node_name: phase for phase, node_name in _ENTRY_NODES.items()}
+
+
+def retry_failed_ideation_conversation_node(
+    *,
+    previous_state: IdeationConvState,
+    llm_call: LLMCall,
+    evidence_lookup=None,
+    ground_claims=None,
+    index_target_evidence: IndexTargetEvidenceFn | None = None,
+    evidence_planner=None,
+    external_evidence_lookup=None,
+    on_progress: IdeationConvProgressCallback | None = None,
+    on_snapshot: IdeationConvSnapshotCallback | None = None,
+) -> IdeationConvState:
+    """phase="failed"인 세션을 failed_node부터 재개한다 — 새 세션을 만들거나 messages/
+    problem_definition/idea_evolution 등 기존 state를 지우지 않는다(phase/failed_node만
+    되돌린다). reply_ideation_conversation을 그대로 쓸 수 없는 이유: "failed"는
+    REPLYABLE_PHASES에 없고(그래프 자체도 "failed"에서는 절대 시작하지 않는다,
+    _route_entry 참고) 사용자 메시지 없이 노드를 그냥 재실행해야 하기 때문이다."""
+    if previous_state.get("phase") != "failed":
+        raise ValueError(f"실패 상태(phase='failed')의 세션만 재시도할 수 있습니다: phase={previous_state.get('phase')!r}")
+    failed_node = previous_state.get("failed_node")
+    retry_phase = _FAILED_NODE_TO_RETRY_PHASE.get(failed_node or "")
+    if retry_phase is None:
+        raise ValueError(f"이 노드는 failed_node부터 재시도를 지원하지 않습니다: {failed_node!r}")
+
+    graph = assemble_ideation_conversation_graph(
+        llm_call,
+        evidence_lookup=evidence_lookup,
+        ground_claims=ground_claims,
+        index_target_evidence=index_target_evidence,
+        evidence_planner=evidence_planner,
+        external_evidence_lookup=external_evidence_lookup,
+    )
+    retry_state = IdeationConvState(**{**previous_state, "phase": retry_phase, "failed_node": None})
+    baseline_message_count = len(retry_state.get("messages") or [])
+    result_state = _drive_graph(graph, retry_state, on_progress, on_snapshot)
+    return _guard_pre_lock_messages(result_state, baseline_message_count)
 
 
 _DELEGATION_COUNTERPART = {"planning_expert": "dev_expert", "dev_expert": "planning_expert"}
@@ -698,6 +926,8 @@ def reply_ideation_conversation(
     on_progress: IdeationConvProgressCallback | None = None,
     on_snapshot: IdeationConvSnapshotCallback | None = None,
     stop_after_expert_turn: bool = False,
+    action_code: str | None = None,
+    action_payload: dict | None = None,
 ) -> IdeationConvState:
     """사용자 답변을 반영해 다음 정지 지점까지 그래프를 이어간다.
 
@@ -718,19 +948,37 @@ def reply_ideation_conversation(
     stop_after_expert_turn을 그대로 전달한다 — 즉 "사용자가 방금 답해서 라운드가 새로
     시작되는 바로 그 첫 순간"에도 기획/개발 위원 발언 1건에서 멈춘다. 이래야 라운드의
     첫 발언부터 마지막(진행자 정리)까지 전부 아바타 재생 페이싱(끝나기 3초 전 다음 요청)을
-    거치게 된다 — 첫 턴만 통째로 오고 그 다음부터만 끊기는 반쪽짜리 페이싱이 되지 않는다."""
+    거치게 된다 — 첫 턴만 통째로 오고 그 다음부터만 끊기는 반쪽짜리 페이싱이 되지 않는다.
+
+    용준/Claude(2026-07-27, 후속 요청 4번: "2차 프론트에서는 action code를 함께 보낼
+    예정 — 백엔드는 action code를 우선 사용하고 자연어 키워드 판정은 하위 호환용
+    폴백으로 유지") — action_code/action_payload는 순수 추가 파라미터다(기본값 None).
+    넘기면 이번 한 번의 그래프 호출에서만 state["pending_user_action"]으로 실려
+    problem_focus_selection/conflict_resolution/concept_confirmation 노드가 텍스트
+    파싱보다 먼저 확인한다(ideation_conv_problem.py 각 노드 참고). 넘기지 않으면(기존
+    클라이언트) 기존과 완전히 동일하게 자연어 파싱만 동작한다."""
     if previous_state["phase"] not in REPLYABLE_PHASES:
         raise ValueError(
             f"사용자 답변을 받을 수 없는 phase입니다: {previous_state['phase']!r}. "
             f"허용된 phase: {sorted(REPLYABLE_PHASES)}"
         )
 
+    # 용준/Claude(2026-07-27, 후속 요청 2번) — action_code가 명시적으로 전달되면 여기서
+    # 먼저 검증한다. 실패하면 ValueError를 그대로 던진다(자연어 폴백으로 조용히 넘어가지
+    # 않는다) — 아래 재생성 키워드 단축 경로와 자연어 파싱 전부보다 먼저 실행되어야
+    # "action_code는 있는데 메시지 텍스트가 우연히 다른 키워드와 겹쳐 엉뚱하게 처리되는"
+    # 상황을 막을 수 있다.
+    if action_code:
+        _validate_action_code(previous_state, action_code, action_payload or {})
+
     # discovery 세션에서는 후보를 선택한 뒤 기획/개발 질문으로 넘어간
     # 상태에서도 "아이디어 다시 짜줘" 의도를 최우선으로 처리한다. 이 가드가
     # 재질문 충분성 판정보다 먼저 실행되어야 재생성 요청을 "질문에 대한
-    # 불충분한 답변"으로 오판해 동일한 질문을 반복하지 않는다.
+    # 불충분한 답변"으로 오판해 동일한 질문을 반복하지 않는다. action_code가 명시적으로
+    # 전달됐으면 이 자연어 단축 경로 자체를 건너뛴다 — 이미 검증된 구조화 액션이 우선이다.
     if (
-        previous_state.get("ideation_mode") == "discovery"
+        not action_code
+        and previous_state.get("ideation_mode") == "discovery"
         and previous_state["phase"] != "awaiting_candidate_selection"
         and is_regenerate_request(user_message)
     ):
@@ -785,7 +1033,11 @@ def reply_ideation_conversation(
             evidence_planner=evidence_planner,
             external_evidence_lookup=external_evidence_lookup,
         )
-        return _drive_graph(graph, restart_state, on_progress, on_snapshot, stop_after_expert_turn=stop_after_expert_turn)
+        restart_baseline = len(restart_state["messages"])
+        restart_result = _drive_graph(
+            graph, restart_state, on_progress, on_snapshot, stop_after_expert_turn=stop_after_expert_turn
+        )
+        return _guard_pre_lock_messages(restart_result, restart_baseline)
 
     pending_persona = PHASE_TO_PENDING_PERSONA.get(previous_state["phase"])
     extra_message: ConvMessage | None = None
@@ -822,6 +1074,10 @@ def reply_ideation_conversation(
         index_target_evidence=index_target_evidence,
     )
     state = apply_user_answer(previous_state, answer_message)
+    if action_code:
+        state = IdeationConvState(
+            **{**state, "pending_user_action": {"code": action_code, "payload": action_payload or {}}}
+        )
     if extra_messages:
         # 전문가 위임 제안 흐름(요청: "모르겠다" UX 개선 + 위원 간 상호 검토 확장) — 사용자의
         # 원문 메시지 바로 다음에 [담당 위원 제안, 반대 위원 검토, (있으면) 수정, 진행자
@@ -842,6 +1098,7 @@ def reply_ideation_conversation(
         evidence_planner=evidence_planner,
         external_evidence_lookup=external_evidence_lookup,
     )
+    reply_baseline = len(state["messages"])
     result_state = _drive_graph(graph, state, on_progress, on_snapshot, stop_after_expert_turn=stop_after_expert_turn)
 
     if result_state.get("forced_next_speaker") is not None:
@@ -852,7 +1109,7 @@ def reply_ideation_conversation(
         # 노드와 달리 원래 forced 진입 대상이 아니었던 노드라서 — continue_ideation_expert_turn의
         # 같은 정리 로직 참고) 다음 요청에 잔류하지 않도록 여기서 확실히 지운다.
         result_state = IdeationConvState(**{**result_state, "forced_next_speaker": None})
-    return result_state
+    return _guard_pre_lock_messages(result_state, reply_baseline)
 
 
 def continue_ideation_expert_turn(
@@ -942,6 +1199,7 @@ def continue_ideation_expert_turn(
         evidence_planner=evidence_planner,
         external_evidence_lookup=external_evidence_lookup,
     )
+    turn_baseline = len(state["messages"])
     result_state = _drive_graph(graph, state, on_progress, on_snapshot, stop_after_expert_turn=True)
 
     if result_state.get("forced_next_speaker") is not None:
@@ -953,7 +1211,7 @@ def continue_ideation_expert_turn(
         # 시작될 때 이 값이 그대로 남아있으면 _route_entry가 엉뚱하게 facilitator로 바로
         # 진입해버리므로, 여기서 확실히 지운다.
         result_state = IdeationConvState(**{**result_state, "forced_next_speaker": None})
-    return result_state
+    return _guard_pre_lock_messages(result_state, turn_baseline)
 
 
 def finalize_ideation_conversation(
