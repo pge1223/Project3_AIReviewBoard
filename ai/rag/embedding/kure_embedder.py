@@ -34,13 +34,26 @@ class KUREEmbedder:
 
     def __init__(self, config: Optional[EmbeddingConfig] = None):
         self._config = config or EmbeddingConfig()
+        import torch
+
+        if self._config.cpu_threads is not None:
+            torch.set_num_threads(self._config.cpu_threads)
+        self._effective_cpu_threads = torch.get_num_threads()
+        resolved_device = self._resolve_device(self._config.device)
         self._model = SentenceTransformer(
             self._config.model_name,
-            device=self._resolve_device(self._config.device),
+            device=resolved_device,
             cache_folder=self._config.model_cache_dir,
             trust_remote_code=self._config.trust_remote_code,
         )
         self._dimension = self._model.get_embedding_dimension()
+        logger.info(
+            "rag.embed.runtime_config model=%s device=%s batch_size=%d cpu_threads=%d",
+            self._config.model_name,
+            resolved_device,
+            self._config.batch_size,
+            self._effective_cpu_threads,
+        )
         # SentenceTransformer/PyTorch의 동일 모델 인스턴스를 여러 FastAPI background
         # thread가 동시에 encode하면 tokenizer/model 내부 상태가 충돌할 수 있다.
         # 파일 여러 개와 URL을 한 번에 등록하는 화면은 실제로 이 경로를 만든다.
@@ -125,20 +138,38 @@ class KUREEmbedder:
         total_chars = sum(len(t) for t in embed_texts)
         max_chars = max((len(t) for t in embed_texts), default=0)
         logger.info(
-            "rag.embed.encode_start document_id=%s text_count=%d total_chars=%d max_chars=%d batch_size=%d",
-            context.document_id, len(embed_texts), total_chars, max_chars, self._config.batch_size,
+            "rag.embed.encode_start document_id=%s text_count=%d total_chars=%d max_chars=%d "
+            "batch_size=%d batch_count=%d cpu_threads=%s",
+            context.document_id,
+            len(embed_texts),
+            total_chars,
+            max_chars,
+            self._config.batch_size,
+            math.ceil(len(embed_texts) / self._config.batch_size),
+            self._effective_cpu_threads,
         )
-        t0 = time.monotonic()
+        wait_started = time.monotonic()
         with self._encode_lock:
+            lock_wait_ms = (time.monotonic() - wait_started) * 1000
+            encode_started = time.monotonic()
             vectors = self._model.encode(
                 embed_texts,
                 batch_size=self._config.batch_size,
                 normalize_embeddings=self._config.normalize_embeddings,
                 show_progress_bar=self._config.show_progress,
             )
+            encode_elapsed_ms = (time.monotonic() - encode_started) * 1000
+        total_elapsed_ms = (time.monotonic() - wait_started) * 1000
         logger.info(
-            "rag.embed.encode_done document_id=%s elapsed_ms=%.0f",
-            context.document_id, (time.monotonic() - t0) * 1000,
+            "rag.embed.encode_done document_id=%s elapsed_ms=%.0f encode_ms=%.0f "
+            "lock_wait_ms=%.0f text_count=%d batch_size=%d batch_count=%d",
+            context.document_id,
+            total_elapsed_ms,
+            encode_elapsed_ms,
+            lock_wait_ms,
+            len(embed_texts),
+            self._config.batch_size,
+            math.ceil(len(embed_texts) / self._config.batch_size),
         )
         self._validate_finite(vectors)
 

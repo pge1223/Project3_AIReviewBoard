@@ -146,31 +146,22 @@ service = ExternalResearchService(dataset_provider, config=config)
 
 ## 8. PublicApiProvider 활성화 조건
 
-**이 프로젝트는 실제 공공데이터 API를 연결하지 않았다.** 섹션 5/25 조건(API
-확정, 인증키, 이용약관, 비용, 응답 스키마, 출처 URL/기준일 확인 가능 여부)이 모두
-확인되기 전까지는 `PublicApiProvider`가 실제 HTTP 호출을 하지 않는다.
+백엔드는 NAVER API HUB 뉴스 검색을 실시간 보조 자료 provider로 연결할 수 있다.
+`backend/.env`에 아래 값을 설정해야 하며, 키는 Git에 커밋하지 않는다.
 
-```python
-from ai.rag.external_research import PublicApiProvider, PublicApiProviderConfig
-
-def my_fetch(request, query_text) -> list[dict]:
-    """실제 승인된 공공데이터 API를 호출하는 코드는 여기(호출자 쪽)에 구현한다.
-    반환값은 raw dict 목록이며, 최소한 source_url/publisher/evidence_type이
-    있어야 정상 결과로 채택된다."""
-    ...
-
-provider = PublicApiProvider(
-    fetch=my_fetch,
-    config=PublicApiProviderConfig(timeout_seconds=5.0, max_results=10),
-    enabled=True,
-)
-service = ExternalResearchService(dataset_provider, public_api_provider=provider, config=config)
+```env
+NAVER_CLIENT_ID=
+NAVER_CLIENT_SECRET=
+RAG_EXTERNAL_ENABLE_PUBLIC_API=true
 ```
 
-`fetch`를 주입하지 않거나 `enabled=False`(기본값, `RAG_EXTERNAL_ENABLE_PUBLIC_API=false`)면
-`search()` 호출 시 `ExternalProviderUnavailableError`를 던진다 — 빈 결과를 조용히
-반환해 "검색했지만 없었다"처럼 보이게 만들지 않는다. `ExternalResearchService`는
-이 예외를 잡아 사전 수집 데이터 결과는 그대로 유지하고 warning만 추가한다.
+호출 주소는 `https://naverapihub.apigw.ntruss.com/search/v1/news`, 인증 헤더는
+`X-NCP-APIGW-API-KEY-ID`와 `X-NCP-APIGW-API-KEY`다. API가 반환하는 제목·설명의
+HTML 태그를 제거하고 원문 URL의 호스트를 발행처로 보존하며, `pubDate`를 ISO 날짜로
+정규화한다. API 장애나 timeout은 기존 사전 수집 데이터 검색을 중단시키지 않는다.
+
+`RAG_EXTERNAL_ENABLE_PUBLIC_API=false`이거나 두 키 중 하나라도 없으면 실시간 검색은
+연결하지 않고 기존 Chroma 데이터셋만 사용한다.
 
 ## 9. 서비스 단독 호출 예시 (LangGraph 없이)
 
@@ -305,9 +296,8 @@ RAG-007 결과는 외부 시장·정책 **환경**을 설명하는 보조 근거
 - 실제 공개 통계·시장·정책 데이터셋이 없어 **진짜 데이터로 색인·검색을 수행한 적이
   없다.** 모든 테스트는 fixture로 만든 가짜 외부자료 데이터와, KURE-v1 대신
   `conftest.py`의 `fake_kure_embedder`/자체 fake 임베더를 사용했다.
-- `PublicApiProvider`는 실제 공공데이터 API에 연결된 적이 없다 — provider
-  인터페이스, timeout, mock fetch 함수로만 검증했다. 실제 API 응답 스키마, 인증
-  방식, 이용약관, 비용은 확인되지 않았다.
+- NAVER 뉴스 검색 결과는 기사 제목과 검색 요약문만 제공하므로 기사 전문을 직접
+  확인한 자료와 동일하게 취급할 수 없다. 항상 보조 참고자료로만 사용한다.
 - 법령(LAW) 최신성 판정은 "개정 이력"이 아니라 `reference_date` 단일 값 + POLICY와
   동일한 임계값으로 근사한다(11번 참고) — 실제 법령 개정 여부를 검증하지 않는다.
 - `criteria_score`/`role_score`는 문자열 정확 일치(대소문자만 무시) 기반이라

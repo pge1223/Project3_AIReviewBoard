@@ -47,6 +47,11 @@ class Settings(BaseSettings):
     NCP_SECRET_KEY: str = ""
     NCP_BUCKET_NAME: str = ""
 
+    # NAVER API HUB 뉴스 검색(RAG-007 실시간 외부 근거)
+    NAVER_CLIENT_ID: str = ""
+    NAVER_CLIENT_SECRET: str = ""
+    RAG_EXTERNAL_ENABLE_PUBLIC_API: bool = False
+
     # 재인/Claude (2026-07-16): 위원 발언 영상(TTS+MuseTalk 립싱크) 생성 서버 주소.
     # 실제 생성은 별도 MuseTalk 서버(현재 Colab, Cloudflare Quick Tunnel로 노출)가 하고,
     # backend/app/api/routes/media.py가 이 값으로 그 서버에 연결해 중계한다.
@@ -55,6 +60,8 @@ class Settings(BaseSettings):
 
     # RAG (Chroma)
     CHROMA_PERSIST_DIR: str = "./chroma_db"
+    RAG_EMBEDDING_BATCH_SIZE: int = Field(default=32, ge=1)
+    RAG_TORCH_NUM_THREADS: int | None = Field(default=None, ge=1)
 
     # JWT
     JWT_SECRET_KEY: str = "sherpa-secret-key-change-in-production"
@@ -82,6 +89,11 @@ class Settings(BaseSettings):
     ENABLE_IDEATION_TRACE_LOGS: bool = False
     IDEATION_TRACE_CONTENT_MAX_CHARS: int = 500
     IDEATION_TRACE_STREAM_DELTAS: bool = False
+
+    # 가은/Claude(2026-07-27, 요청: "검증 실패까지 포함한 LLM 원본 응답을 로그로 남겨서
+    # 버그 재현") — 위 trace 로그와 달리 마스킹 없이 LLM 원본 응답 전체를 로컬
+    # logs/ideation_llm_calls/*.txt에 남긴다. 원본 그대로라 운영 기본값은 항상 False다.
+    ENABLE_IDEATION_LLM_RESPONSE_LOG: bool = False
 
     # 용준/Claude(2026-07-22, 요청: RAG 품질 오프라인 평가 도구): Faithfulness/Persona
     # Evidence Fit LLM-as-judge 전용 모델. 실제 답변을 생성하는 모델(DEV_LLM_REVIEWER_MODEL

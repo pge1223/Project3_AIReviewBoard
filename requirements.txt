@@ -53,6 +53,7 @@ langchain-huggingface
 langchain-chroma
 
 # ai/rag 테스트
+requests
 requests-mock
 openai
 

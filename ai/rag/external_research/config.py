@@ -11,8 +11,9 @@ External Research Configuration (RAG-007)
     RAG_EXTERNAL_TOP_K                 (기본 5)
     RAG_EXTERNAL_MIN_SCORE             (기본 0.45)
     RAG_EXTERNAL_ENABLE_DATASET        (기본 true)
-    RAG_EXTERNAL_ENABLE_PUBLIC_API     (기본 false — 실제 API가 정해지지 않아 기본 비활성화)
+    RAG_EXTERNAL_ENABLE_PUBLIC_API     (기본 false — 키가 있어도 명시적으로 켜야 활성화)
     RAG_EXTERNAL_DOMAIN_FALLBACK       (기본 true)
+    RAG_EXTERNAL_NEWS_FRESHNESS_WEIGHT (기본 0.30)
 """
 
 import os
@@ -31,6 +32,7 @@ DEFAULT_SEMANTIC_WEIGHT: float = 0.55
 DEFAULT_ROLE_WEIGHT: float = 0.20
 DEFAULT_CRITERIA_WEIGHT: float = 0.15
 DEFAULT_FRESHNESS_WEIGHT: float = 0.10
+DEFAULT_NEWS_FRESHNESS_WEIGHT: float = 0.30
 
 DEFAULT_MAX_EVIDENCE_PER_SOURCE: int = 3
 DEFAULT_CANDIDATE_K_MULTIPLIER: int = 4
@@ -101,6 +103,15 @@ class ExternalResearchConfig(BaseModel):
     role_weight: float = DEFAULT_ROLE_WEIGHT
     criteria_weight: float = DEFAULT_CRITERIA_WEIGHT
     freshness_weight: float = DEFAULT_FRESHNESS_WEIGHT
+    # 뉴스는 시의성이 핵심이므로 별도 최신성 비중을 사용한다. 나머지 세 가중치는
+    # search_service에서 기존 비율을 유지한 채 합계가 1이 되도록 재조정한다.
+    news_freshness_weight: float = Field(
+        default_factory=lambda: _env_float(
+            "RAG_EXTERNAL_NEWS_FRESHNESS_WEIGHT", DEFAULT_NEWS_FRESHNESS_WEIGHT
+        ),
+        ge=0.0,
+        le=1.0,
+    )
 
     max_evidence_per_source: int = Field(default=DEFAULT_MAX_EVIDENCE_PER_SOURCE, ge=1)
     candidate_k_multiplier: int = Field(default=DEFAULT_CANDIDATE_K_MULTIPLIER, ge=1)
@@ -122,6 +133,7 @@ class ExternalResearchConfig(BaseModel):
 # 갖고 있지 않으므로 reference_date(자료가 표시하는 기준일 = 통상 최신 개정일)를 그대로
 # 사용하고 GUIDELINE과 동일한 임계값을 적용한다 — README 한계 항목에 명시.
 DEFAULT_FRESHNESS_THRESHOLD_DAYS: dict[ExternalEvidenceType, int] = {
+    ExternalEvidenceType.NEWS: 30,
     ExternalEvidenceType.STATISTICS: 3 * 365,
     ExternalEvidenceType.MARKET: 2 * 365,
     ExternalEvidenceType.POLICY: 2 * 365,
@@ -164,6 +176,7 @@ __all__ = [
     "DEFAULT_ROLE_WEIGHT",
     "DEFAULT_CRITERIA_WEIGHT",
     "DEFAULT_FRESHNESS_WEIGHT",
+    "DEFAULT_NEWS_FRESHNESS_WEIGHT",
     "DEFAULT_MAX_EVIDENCE_PER_SOURCE",
     "DEFAULT_CANDIDATE_K_MULTIPLIER",
     "DEFAULT_ENABLE_DATASET_SEARCH",

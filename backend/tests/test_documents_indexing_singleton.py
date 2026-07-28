@@ -49,9 +49,11 @@ class _FakeEmbedder:
     """실제 SentenceTransformer 로딩 없이 생성 횟수만 센다."""
 
     instances = 0
+    last_config = None
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, config=None, *args, **kwargs):
         type(self).instances += 1
+        type(self).last_config = config
         self.model_name = "fake-model"
         self.embedding_dimension = 4
 
@@ -78,6 +80,7 @@ class _FakeChromaClient:
 @pytest.fixture
 def fake_dependencies(monkeypatch):
     _FakeEmbedder.instances = 0
+    _FakeEmbedder.last_config = None
     _FakeChromaClient.instances = 0
     monkeypatch.setattr(documents_module, "KUREEmbedder", _FakeEmbedder)
     monkeypatch.setattr(documents_module.chromadb, "PersistentClient", _FakeChromaClient)
@@ -119,6 +122,18 @@ class TestSingletonConcurrency:
         assert first is second
         assert fake_embedder_cls.instances == 1
         assert fake_client_cls.instances == 1
+
+    def test_embedding_runtime_settings_are_passed_to_embedder(
+        self, reset_indexing_singleton, fake_dependencies, monkeypatch
+    ):
+        fake_embedder_cls, _ = fake_dependencies
+        monkeypatch.setattr(documents_module.settings, "RAG_EMBEDDING_BATCH_SIZE", 16)
+        monkeypatch.setattr(documents_module.settings, "RAG_TORCH_NUM_THREADS", 4)
+
+        documents_module._get_indexing_service()
+
+        assert fake_embedder_cls.last_config.batch_size == 16
+        assert fake_embedder_cls.last_config.cpu_threads == 4
 
 
 class TestCanonicalChromaPersistDir:

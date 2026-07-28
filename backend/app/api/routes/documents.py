@@ -49,6 +49,7 @@ from ai.rag.chunking.schemas import ChunkSourceContext, SourceType
 from ai.rag.domain.schemas import IndexingContext
 from ai.rag.domain.config import DEFAULT_COLLECTION_NAME
 from ai.rag.embedding.kure_embedder import KUREEmbedder
+from ai.rag.embedding.schemas import EmbeddingConfig
 from ai.rag.retrieval.chroma_store import ChromaVectorStore
 from ai.rag.retrieval.service import RAGIndexingService
 from ai.rag.retrieval.exceptions import RAGIndexingError
@@ -87,7 +88,9 @@ project_repo = ProjectRepository()
 contest_work_repo = ContestWorkRepository()
 notice_cache_repo = NoticeAnalysisCacheRepository()
 
-UPLOAD_DIR = "uploads"
+_BACKEND_ROOT = Path(__file__).resolve().parents[3]
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
+UPLOAD_DIR = str((_BACKEND_ROOT / "uploads").resolve())
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 _GENERIC_ERROR_MESSAGE = "URL 문서를 처리하는 중 오류가 발생했습니다."
@@ -101,7 +104,24 @@ _indexing_service: RAGIndexingService | None = None
 # 로딩 비용 큼)가 여러 번 생성되는 TOCTOU 레이스가 생긴다. 방어적으로 락을 건다
 # (락 경합은 최초 1회 초기화 이후엔 없음 — 매 요청마다 비용 없음).
 _indexing_service_lock = threading.Lock()
-_REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
+
+
+def _resolve_stored_file_path(file_path: str) -> Path:
+    """Resolve both legacy ``uploads/...`` paths and new absolute upload paths.
+
+    Older document records stored a path relative to the directory from which
+    uvicorn happened to be launched.  Resolve that legacy shape against the
+    backend directory so retry/preview behavior no longer depends on CWD.
+    """
+    raw_path = Path(file_path).expanduser()
+    if raw_path.is_absolute():
+        return raw_path
+
+    cwd_candidate = raw_path.resolve()
+    backend_candidate = (_BACKEND_ROOT / raw_path).resolve()
+    if cwd_candidate.is_file():
+        return cwd_candidate
+    return backend_candidate
 
 
 def _canonical_chroma_persist_dir() -> str:
@@ -133,7 +153,12 @@ def _get_indexing_service() -> RAGIndexingService:
     if _indexing_service is None:
         with _indexing_service_lock:
             if _indexing_service is None:
-                embedder = KUREEmbedder()
+                embedder = KUREEmbedder(
+                    EmbeddingConfig(
+                        batch_size=settings.RAG_EMBEDDING_BATCH_SIZE,
+                        cpu_threads=settings.RAG_TORCH_NUM_THREADS,
+                    )
+                )
                 client = chromadb.PersistentClient(path=_canonical_chroma_persist_dir())
                 vector_store = ChromaVectorStore(
                     client=client,
@@ -141,6 +166,11 @@ def _get_indexing_service() -> RAGIndexingService:
                     embedding_model=embedder.model_name,
                     embedding_dimension=embedder.embedding_dimension,
                     embedding_version=EMBEDDING_VERSION,
+                )
+                logger.info(
+                    "rag.indexing.service_ready collection=%s persist_dir=%s",
+                    DEFAULT_COLLECTION_NAME,
+                    _canonical_chroma_persist_dir(),
                 )
                 _indexing_service = RAGIndexingService(embedder, vector_store)
     return _indexing_service
@@ -892,8 +922,9 @@ async def retry_document_indexing(
             )
         )
     else:
-        file_path = str(document.get("file_path") or "")
-        if not file_path or not Path(file_path).is_file():
+        stored_file_path = str(document.get("file_path") or "")
+        file_path = _resolve_stored_file_path(stored_file_path) if stored_file_path else None
+        if file_path is None or not file_path.is_file():
             await document_repo.update_fields(
                 document_id,
                 {
@@ -910,7 +941,7 @@ async def retry_document_indexing(
             _index_file_background(
                 document_id=document_id,
                 project_id=project_id,
-                file_path=file_path,
+                file_path=str(file_path),
                 filename=document.get("original_filename") or Path(file_path).name,
                 document_role=document.get("document_role", "target"),
             )
@@ -950,7 +981,7 @@ async def preview_document(
 # 살아나오고, 그 외 형식(HWP 등 PDF로 변환되는 경로)은 runs가 없어 일반 문단으로만
 # 나온다(html_render.render_blocks_to_html의 폴백) - 크래시 없이 항상 뭔가는 반환됨.
 def _render_document_html(file_path: str) -> str:
-    source_path = Path(file_path)
+    source_path = _resolve_stored_file_path(file_path)
     conversion_result = None
     try:
         conversion_result = convert_if_needed(source_path)
@@ -974,8 +1005,9 @@ async def preview_document_html(
     if not document:
         raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다")
 
-    file_path = document.get("file_path")
-    if not file_path or not os.path.exists(file_path):
+    stored_file_path = str(document.get("file_path") or "")
+    file_path = _resolve_stored_file_path(stored_file_path) if stored_file_path else None
+    if file_path is None or not file_path.is_file():
         raise HTTPException(status_code=404, detail="원본 파일을 찾을 수 없습니다 (다시 업로드해주세요)")
 
     try:
@@ -1014,7 +1046,7 @@ async def preview_document_pdf(
     if not file_path or not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="원본 파일을 찾을 수 없습니다 (다시 업로드해주세요)")
 
-    if Path(file_path).suffix.lower() == ".pdf":
+    if file_path.suffix.lower() == ".pdf":
         return FileResponse(file_path, media_type="application/pdf")
 
     output_dir = HwpConversionConfig().resolve_temp_dir() / "preview_pdf"

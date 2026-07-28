@@ -56,12 +56,11 @@ class RAGIndexingService:
         wait_started = time.monotonic()
         with self._index_lock:
             waited_ms = (time.monotonic() - wait_started) * 1000
-            if waited_ms >= 1:
-                logger.info(
-                    "rag.indexing.lock_acquired document_id=%s waited_ms=%.0f",
-                    context.document_id,
-                    waited_ms,
-                )
+            logger.info(
+                "rag.indexing.lock_acquired document_id=%s waited_ms=%.0f",
+                context.document_id,
+                waited_ms,
+            )
             return self._index_chunking_result_locked(chunking_result, context)
 
     def _index_chunking_result_locked(
@@ -78,8 +77,11 @@ class RAGIndexingService:
         document_id = context.document_id
         project_id = context.project_id
         logger.info(
-            "rag.indexing.start document_id=%s project_id=%s chunk_count=%d",
-            document_id, project_id, chunking_result.chunk_count,
+            "rag.indexing.start document_id=%s project_id=%s collection=%s chunk_count=%d",
+            document_id,
+            project_id,
+            self._vector_store.collection_name,
+            chunking_result.chunk_count,
         )
 
         t0 = time.monotonic()

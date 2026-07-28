@@ -353,3 +353,24 @@ def test_short_specific_document_ranks_below_long_vague_document():
 
     assert short_result["total_score"] <= 20
     assert short_result["total_score"] < vague_result["total_score"]
+
+
+def test_empty_section_is_not_used_for_calibration():
+    """제목만 있고 본문이 없는 섹션은 상한 판정 재료로 쓰지 않는다(전체 본문 폴백).
+
+    실측(2026-07-27, 수행보고서 v1.3): '실현 가능성' 제목만 있는 0자 섹션이 매칭되어
+    빈 문자열에 S2(정량 없음)+S4(실체 없음)가 발동 → MULTI 25% 상한으로 최고 문서의
+    실현 가능성이 19.33→7.5점으로 뭉개졌다. 빈 텍스트는 근거 판정이 불가능한 입력이다.
+    """
+    from scoring.calibration import _criterion_evidence_text
+
+    text = (
+        "1) 개요\n"
+        "서비스 전체 개요를 설명한다.\n"
+        "4) 상세 설명\n"
+        "5) 창의성\n"
+        "독창적인 접근을 제시한다.\n"
+    )
+    crit = {"criterion_id": "feasibility", "criterion_name": "실현 가능성", "description": ""}
+    # '상세 설명'(실현 별칭) 섹션은 본문이 없으므로 매칭에서 제외 → 전체 본문 폴백
+    assert _criterion_evidence_text(text, crit) == text

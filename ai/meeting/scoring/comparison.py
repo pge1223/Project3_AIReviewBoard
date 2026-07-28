@@ -117,6 +117,10 @@ def build_version_history(documents: list[dict[str, Any]]) -> list[dict[str, Any
                     "committee": committee,
                     "score": b.get("raw_score", 0),
                     "max": b.get("max_score", m.get("max_score")),
+                    # 이 항목을 실제로 채점한 위원 수(점수 변화 팝업 "위원 N명 평균" 표시용,
+                    # 경이 2026-07-27) — 저장된 breakdown의 source_review_ids에서 산출되므로
+                    # 기존 회의에도 소급 적용된다. 없으면 None(프론트는 표시 생략).
+                    "reviewers": len(b.get("source_review_ids") or []) or None,
                     "judgment": judgments.get(cid) or "acceptable",
                     "issues": d.get("issues", []),
                     "suggestions": d.get("suggestions", []),

@@ -15,6 +15,7 @@ import {
   getContestWorksByTitle,
   deleteDocument,
   getDocuments,
+  retryDocumentIndexing,
 } from "../../api/documentApi";
 import { analyzeProject, getAnalyzeProgress, getMentorCandidates } from "../../api/projectApi";
 import { isAcceptedDocument, formatFileSize, ACCEPTED_DOCUMENT_EXTENSIONS } from "../../utils/file";
@@ -360,6 +361,7 @@ function EntryScreen({ onEnter, onModeSelect, loading, error, projectId, ensureP
   const [criteriaError, setCriteriaError] = useState('');
   const [isCriteriaDragging, setIsCriteriaDragging] = useState(false);
   const [deletingIds, setDeletingIds] = useState([]);
+  const [retryingIds, setRetryingIds] = useState([]);
   const criteriaFileInputRef = useRef(null);
 
   function updateDoc(id, patch) {
@@ -381,6 +383,37 @@ function EntryScreen({ onEnter, onModeSelect, loading, error, projectId, ensureP
     } catch (err) {
       setCriteriaError(err.message)
       setDeletingIds((prev) => prev.filter((id) => id !== doc.id))
+    }
+  }
+
+  async function handleRetryDoc(doc) {
+    if (!doc.backendId || !projectId || retryingIds.includes(doc.id)) return
+    setRetryingIds((prev) => [...prev, doc.id])
+    setCriteriaError('')
+    try {
+      await retryDocumentIndexing(projectId, doc.backendId)
+      updateDoc(doc.id, {
+        status: 'embedding',
+        progress: 70,
+        meta: '문서를 다시 색인하는 중...',
+      })
+      const completedStatus = doc.unsupportedLinks?.length ? 'warning' : 'done'
+      const completedMeta = completedStatus === 'warning'
+        ? '본문은 색인했지만 일부 첨부파일은 직접 확인이 필요합니다.'
+        : '재색인이 완료되었습니다.'
+      pollDocumentIndexing(
+        projectId,
+        doc.backendId,
+        doc.id,
+        completedStatus,
+        completedMeta,
+        updateDoc,
+      )
+    } catch (err) {
+      updateDoc(doc.id, { status: 'error', meta: err.message })
+      setCriteriaError(err.message)
+    } finally {
+      setRetryingIds((prev) => prev.filter((id) => id !== doc.id))
     }
   }
 
@@ -719,6 +752,17 @@ function EntryScreen({ onEnter, onModeSelect, loading, error, projectId, ensureP
                           {doc.status === 'done' && <span className="badge green mono">분석 준비 완료</span>}
                           {doc.status === 'warning' && <span className="badge amber mono">확인 필요</span>}
                           {doc.status === 'error' && <span className="badge coral mono">처리 실패</span>}
+                          {doc.status === 'error' && doc.backendId && (
+                            <button
+                              type="button"
+                              className="btn-ghost"
+                              onClick={() => handleRetryDoc(doc)}
+                              disabled={retryingIds.includes(doc.id)}
+                              style={{ padding: '5px 9px', fontSize: 12.5 }}
+                            >
+                              {retryingIds.includes(doc.id) ? '재시도 중...' : '다시 시도'}
+                            </button>
+                          )}
                           <button
                             type="button"
                             onClick={() => handleDeleteDoc(doc)}
@@ -1748,11 +1792,27 @@ function AnalysisScreen({ mode, onNext, onBack, projectId }) {
 }
 
 function overallPercent(snapshot) {
-  if (!snapshot) return 0
-  if (snapshot.chair_done) return 100
-  if (snapshot.score_done) return 85
-  if (snapshot.reviews_total) return 10 + (snapshot.reviews_done / snapshot.reviews_total) * 60
-  return 5
+  if (!snapshot) return 2
+  // 채점(score_done)까지 끝나면 사용자 기준 분석 완료 — 이 시점에 "피드백 확인하기" 버튼이
+  // 이미 활성화되므로 바를 85%에 세워두지 않고 100%로 채운다. 위원장 종합(chair)은
+  // 백그라운드로 이어지고 리포트 화면에서 따로 채워진다(경이/Claude 2026-07-27).
+  if (snapshot.chair_done || snapshot.score_done) return 100
+  if (snapshot.reviews_total) return 15 + (snapshot.reviews_done / snapshot.reviews_total) * 70
+  // 준비 단계(경이/Claude 2026-07-27, 가은 코드 확장): 백엔드가 진행률 토큰을 분석 초입에
+  // 등록하면서 준비 구간도 stage 문자열로 세분화됨 — 5% 고정 대신 단계 따라 전진.
+  if (snapshot.stage === '근거 검색') return 10
+  if (snapshot.stage === '평가 기준 추출') return 6
+  return 4
+}
+
+// 로딩 카드 문구 — 지금 어느 단계인지 사용자에게 그대로 보여준다(경이/Claude 2026-07-27).
+function analyzeStageLabel(snapshot) {
+  if (!snapshot) return '문서 피드백 준비중'
+  if (snapshot.chair_done || snapshot.score_done) return '분석 완료 — 피드백을 확인할 수 있어요'
+  if (snapshot.reviews_total) return `AI 위원 검토 중 (${snapshot.reviews_done}/${snapshot.reviews_total}명 완료)`
+  if (snapshot.stage === '근거 검색') return '공고 자료에서 평가 근거 검색 중'
+  if (snapshot.stage === '평가 기준 추출') return '공고문에서 평가 기준 추출 중'
+  return '문서 피드백 준비중'
 }
 
 /* ---------------- 5. 작성 후: 기획서 업로드 → 분석 시작 → 피드백 확인 (실제 API) ----------------
@@ -1977,7 +2037,7 @@ function UploadAndAnalyzeScreen({ projectId, onFeedbackReady, onBack, initialDoc
       {analyzing && (
         <div className="card glass">
           <p style={{ fontSize: 13, color: 'var(--text-1)', marginBottom: 16 }}>
-            문서 피드백 준비중
+            {analyzeStageLabel(snapshot)}
           </p>
           <div className="progress-track" style={{ marginBottom: 6 }}>
             <div className="progress-fill" style={{ width: `${analyzePercent}%` }} />
@@ -2155,6 +2215,7 @@ export default function ReviewBoardPrototype() {
         setTargetDocuments(
           targetDocs.map((d) => ({
             id: d.id,
+            backendId: d.id,
             name: d.original_filename,
             meta: formatFileSize(d.file_size),
             status: _resumedDocStatus(d.status),

@@ -104,6 +104,14 @@ def build_rubric(mapping: dict[str, Any]) -> dict[str, Any]:
 #     화이트리스트 검증).
 # 검증 실패 시 ValueError를 던진다 — 호출부(backend/app/api/routes/meetings.py)가
 # 잡아서 정적 템플릿(base_mapping)으로 폴백한다.
+# 추출 파이프라인 버전 — 캐시 무효화 기준. backend(meetings.py)의 캐시 판정과 여기
+# meta 저장이 반드시 같은 값을 봐야 하므로 상수는 이 한 곳에만 둔다(경이 2026-07-27).
+# 실측 사고: 판정 쪽만 v7로 올리고 저장은 3으로 남아 "저장 버전(3) < 요구 버전(7)"이
+# 항상 참 → 캐시가 영원히 무효 → 같은 프로젝트에서 매 분석마다 rubric LLM 재추출
+# (~9초/회 + 토큰 비용, 서버 로그로 확인).
+RUBRIC_EXTRACTION_VERSION = 8  # v8: 항목별 적정 위원(1~2명) 배정 규칙 강화 — 재추출로 새 배정 적용(캐시 무효화)
+
+
 def build_dynamic_rubric_mapping(
     base_mapping: dict[str, Any],
     extracted_items: list[dict[str, Any]],
@@ -186,6 +194,12 @@ def build_dynamic_rubric_mapping(
             raise ValueError(
                 f"primary_persona_id({primary_persona_id!r})가 committee({sorted(committee)})에 없습니다."
             )
+        # 항목별 채점 위원 1~2명(경이 확정 2026-07-27): 주 담당 1명 + 보조 0~1명(단수 필드).
+        # 배정된 위원만 그 항목을 채점한다(transform.py에서 집계 강제). 보조를 리스트로
+        # 확장하는 안은 RAG 배정 순회(ai/rag iter_persona_criteria, 용준 영역) 변경이
+        # 필요해 채택하지 않았다 — 기존 primary/secondary 스키마 그대로 유지.
+        if secondary_persona_id == primary_persona_id:
+            secondary_persona_id = None  # 주 담당과 같으면 보조 의미가 없어 조용히 정리
         if secondary_persona_id is not None and secondary_persona_id not in committee:
             raise ValueError(
                 f"secondary_persona_id({secondary_persona_id!r})가 committee({sorted(committee)})에 없습니다."
@@ -261,7 +275,7 @@ def build_dynamic_rubric_mapping(
             "source_document_id": source_document_id,
             "source_document_ids": source_document_ids or [source_document_id],
             "dynamic": True,
-            "rubric_extraction_version": 3,
+            "rubric_extraction_version": RUBRIC_EXTRACTION_VERSION,
         },
         "total_max_score": total_max_score,
         "rubric": normalized,

@@ -168,6 +168,7 @@ if str(_MEETING_DIR) not in sys.path:
 # ai/meeting/graph/reevaluate.py, MTG-007 재평가 임시 구현)는 경이 버전으로 교체하고
 # 아래(analyze_project/reevaluate_reviewer)에 주석으로만 남겨둔다.
 from graph import (  # noqa: E402
+    RUBRIC_EXTRACTION_VERSION,
     build_dynamic_rubric_mapping,
     build_rubric,
     combine_criteria_documents,
@@ -244,19 +245,26 @@ _similar_case_service = SimilarCaseSearchService(_similar_case_repo, _kure_embed
 # 캐시가 필요 없어 MeetingEvidenceOrchestrationService와 달리 요청마다 새로 만들지 않는다).
 # 용준/Claude(2026-07-27, RAG-007 연결): _similar_case_repo/_similar_case_service와 동일한
 # 패턴 — documents.py의 client/embedder 싱글턴을 그대로 재사용하고(새 PersistentClient/
-# KUREEmbedder 생성 금지, 위 주석 참고) DatasetProvider만 연결한다. 실시간 공공데이터 API
-# (PublicApiProvider)는 아직 실제 fetch 구현이 없어(config.py의 enable_public_api_search
-# 기본값 False) 여기서는 연결하지 않는다 — 단순히 환경변수만 켜면 PublicApiProvider.search()가
-# ExternalProviderUnavailableError를 던지므로, 실제 fetch 콜러블을 구현하기 전까지는 이
-# 상태(dataset-only)를 유지해야 한다(README.md 8절).
+# KUREEmbedder 생성 금지, 위 주석 참고) DatasetProvider를 연결한다. NAVER API HUB
+# 인증 정보와 활성화 플래그가 모두 있으면 실시간 뉴스 검색도 보조 provider로 연결한다.
 from ai.rag.external_research import (  # noqa: E402
     DatasetProvider,
     ExternalEvidenceRepository,
     ExternalResearchConfig,
     ExternalResearchService,
+    NaverNewsFetcher,
+    PublicApiProvider,
+    PublicApiProviderConfig,
 )
 
-_external_research_config = ExternalResearchConfig()
+_naver_news_enabled = bool(
+    settings.RAG_EXTERNAL_ENABLE_PUBLIC_API
+    and settings.NAVER_CLIENT_ID.strip()
+    and settings.NAVER_CLIENT_SECRET.strip()
+)
+_external_research_config = ExternalResearchConfig(
+    enable_public_api_search=_naver_news_enabled,
+)
 _external_evidence_repo = ExternalEvidenceRepository(
     client=_chroma_client,
     collection_name=_external_research_config.collection_name,
@@ -265,7 +273,24 @@ _external_evidence_repo = ExternalEvidenceRepository(
     embedding_version="embedding_v1",
 )
 _external_dataset_provider = DatasetProvider(_external_evidence_repo, _kure_embedder, config=_external_research_config)
-_external_research_service = ExternalResearchService(_external_dataset_provider, config=_external_research_config)
+_external_public_api_provider = None
+if _naver_news_enabled:
+    _naver_provider_config = PublicApiProviderConfig()
+    _external_public_api_provider = PublicApiProvider(
+        fetch=NaverNewsFetcher(
+            client_id=settings.NAVER_CLIENT_ID,
+            client_secret=settings.NAVER_CLIENT_SECRET,
+            timeout_seconds=_naver_provider_config.timeout_seconds,
+            display=_naver_provider_config.max_results,
+        ),
+        config=_naver_provider_config,
+        enabled=True,
+    )
+_external_research_service = ExternalResearchService(
+    _external_dataset_provider,
+    public_api_provider=_external_public_api_provider,
+    config=_external_research_config,
+)
 
 _CHAIR_MARKER = "위원장(review_chair)입니다"
 
@@ -437,7 +462,10 @@ def _load_rubric_mapping(domain: str) -> dict:
 # (government_support는 role_mapping.py 미확정 등으로 아직 범위 밖, PER-002 우선순위
 # 합의 참고).
 _RUBRIC_EXTRACTION_MAX_ITEMS = 8
-_RUBRIC_EXTRACTION_VERSION = 7  # v7: 균등배분 금지+배점 숫자 원문 확인 필수(양식 제목 지어내기 차단) — 캐시 무효화
+# 추출 파이프라인 버전은 ai/meeting/graph/rubric.py의 RUBRIC_EXTRACTION_VERSION 한 곳에서만
+# 관리한다(경이 2026-07-27). 여기 로컬 상수(7)와 저장 쪽 하드코딩(3)이 어긋나 캐시가 영원히
+# 무효 → 같은 프로젝트도 매 분석마다 rubric LLM 재추출(~9초/회)되던 실측 버그의 재발 방지.
+_RUBRIC_EXTRACTION_VERSION = RUBRIC_EXTRACTION_VERSION
 
 # 공고문(criteria) 텍스트 예산 — 배점표가 뒤쪽에 있거나 공고 자료가 여러 개(공고문+신청서식)여도
 # 배점표가 잘리지 않도록 submission(6000자)보다 넉넉하게 잡는다.
@@ -588,7 +616,13 @@ def _build_rubric_extraction_prompt(
   요약하세요. 항목명만 반복하지 말고, 무엇을 충족해야 하는지 채점 가능한 문장으로 적으세요.
 - primary_perspective_id는 반드시 그 위원의 평가관점(perspective_id) 목록 중 하나를
   그대로 쓰세요. 목록에 없는 값을 지어내지 마세요.
-- 필요하면 secondary_persona_id를 다른 위원 한 명으로 추가할 수 있습니다(선택, 없으면 null).
+- [항목별 채점 위원 1~2명] 각 평가항목은 **그 항목의 세부 평가내용과 실제로 관련 있는
+  위원만** 채점합니다. 주 담당(primary_persona_id) 1명은 필수이고, 세부 평가내용이 두
+  위원의 전문 영역에 걸칠 때만 secondary_persona_id에 보조 위원 1명을 추가하세요(선택,
+  없으면 null). 예: 구현 가능성·완결성·예산·추진체계가 섞인 항목은 기술 위원(주) +
+  전략 또는 완성도 위원(보조), 순수 기술 항목은 기술 위원 1명만. 항목 성격과 무관한
+  위원을 머릿수 채우기로 배정하는 것은 금지입니다 — 배정된 위원만 그 항목을 채점하므로,
+  배정이 곧 "누가 이 항목을 심사하는가"입니다.
 - required_keywords에는 공고문이 해당 평가항목에서 제출물에 반드시 포함하라고 명시한 구체
   요소만 원문 표현으로 넣으세요. 단순 권장사항이나 평가항목명 자체는 넣지 말고, 명시된 필수
   요소가 없으면 빈 배열로 두세요.
@@ -1197,6 +1231,27 @@ async def analyze_project(
         "[analyze] 평가 대상 문서 확정: %s (%d자)", submission["document_name"], len(submission["text"])
     )
 
+    # 경이/Claude(2026-07-27, 가은 progress 코드 확장 — 경이 승인): 진행률 토큰을 분석
+    # 초입에 바로 등록한다. 원래는 rubric 추출·근거 검색이 다 끝난 뒤(run_meeting 직전)에야
+    # 등록해서, 가장 오래 걸리는 준비 구간 내내 GET 폴링이 빈 응답을 받아 로딩바가 5%에
+    # 고정돼 보였다. 준비 단계는 stage 문자열("평가 기준 추출"/"근거 검색")로 세분화하고,
+    # reviews_total은 committee 확정 전이라 0으로 둔다(기존 소비처 3곳 모두
+    # reviews_total>0 조건이라 준비 단계에선 기존과 동일하게 동작 — 새 프론트 매핑만
+    # stage를 읽는다). run_meeting 직전의 기존 등록 블록이 reviews_total을 채운다.
+    progress_token = request.progress_token if request else None
+
+    def _set_stage(stage: str) -> None:
+        if progress_token:
+            _analyze_progress[progress_token] = {
+                "stage": stage,
+                "reviews_done": 0,
+                "reviews_total": 0,
+                "score_done": False,
+                "chair_done": False,
+            }
+
+    _set_stage("평가 기준 추출")
+
     base_mapping = _load_rubric_mapping(domain)
     mapping = await _get_or_build_rubric_mapping(project, project_id, domain, base_mapping)
     rubric = build_rubric(mapping)
@@ -1220,6 +1275,8 @@ async def analyze_project(
     # 엔진 영역이라 위험 부담이 크다고 보고 이번엔 안전한 쪽(0점 처리)으로 감.
     committee = (request.committee if request else None) or full_committee
     if not (2 <= len(committee) <= 4) or not set(committee) <= set(full_committee):
+        if progress_token:  # 조기 등록한 진행률 토큰 정리(경이 2026-07-27)
+            _analyze_progress.pop(progress_token, None)
         raise HTTPException(
             status_code=400,
             detail=f"committee는 {full_committee} 중 2~4명이어야 합니다.",
@@ -1253,12 +1310,20 @@ async def analyze_project(
         evidence_sufficiency_service=_evidence_sufficiency_service,
         top_k=5,
     )
-    evidence_context = evidence_service.prepare_meeting_evidence(
-        project_id=project_id,
-        domain=domain,
-        rubric_mapping=mapping,
-        trace_id=meeting_id,
-    )
+    _set_stage("근거 검색")
+    try:
+        evidence_context = evidence_service.prepare_meeting_evidence(
+            project_id=project_id,
+            domain=domain,
+            rubric_mapping=mapping,
+            trace_id=meeting_id,
+        )
+    except Exception:
+        # 조기 등록한 진행률 토큰 정리 — 여기서 죽는데 엔트리가 남으면 프론트 폴링이
+        # "준비 단계"에 영원히 갇힌 것처럼 보인다(run_meeting 실패 시의 pop과 동일 정책).
+        if progress_token:
+            _analyze_progress.pop(progress_token, None)
+        raise
     _log_evidence_context(project_id, evidence_context)
     evidence_callback = evidence_service.create_evidence_callback(trace_id=meeting_id)
     # MeetingModel.retrieved_evidence(MTG-007 rerun_reviewer()용 flat 레거시 포맷)와
@@ -1291,11 +1356,12 @@ async def analyze_project(
     # GET .../analyze/progress로 중간 상태를 볼 수 있게 한다. on_progress는
     # run_meeting() 내부(threadpool 워커 스레드)에서 동기로 호출된다 — 여기선 dict
     # 값을 통째로 교체만 하므로 별도 락 없이도 안전하다.
-    progress_token = request.progress_token if request else None
+    # progress_token은 위(분석 초입 조기 등록)에서 이미 정의됨 — 여기선 committee가
+    # 확정됐으므로 reviews_total을 채워 "위원 검토" 단계로 넘긴다(경이 2026-07-27).
     on_progress = None
     if progress_token:
         _analyze_progress[progress_token] = {
-            "stage": "준비",
+            "stage": "위원 검토",
             "reviews_done": 0,
             "reviews_total": len(committee),
             "score_done": False,

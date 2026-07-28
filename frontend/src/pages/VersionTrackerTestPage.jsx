@@ -16,7 +16,7 @@ import { useNavigate } from 'react-router-dom'
 import {
   ArrowLeft, TrendingUp, TrendingDown, CheckCircle2, AlertCircle, Plus,
   Lightbulb, Compass, Cpu, FlaskConical,
-  AlertTriangle, Zap, ChevronDown, FileText,
+  AlertTriangle, Zap, ChevronDown, FileText, Info,
 } from 'lucide-react'
 import { getMyProfile } from '../api/profileApi'
 import { getProjectReport, getProjectComparison, analyzeProject, getAnalyzeProgress } from '../api/projectApi'
@@ -644,6 +644,19 @@ const WHY_JUDGMENT_LABEL = {
   critical_risk: '중대 리스크', insufficient_evidence: '근거 부족', not_applicable: '해당 없음',
 }
 
+// 판정별 점수 구간(reviewer_prompt 밴드·judgmentFromScore와 동일 경계) — 점수 변화 팝업에서
+// "왜 이 점수 구간인가"를 배점 기준 실제 점수로 보여준다(경이 요청 2026-07-27 상세화).
+const JUDGMENT_BANDS = [
+  { key: 'critical_risk', lo: 0, hi: 0.4 },
+  { key: 'needs_improvement', lo: 0.4, hi: 0.65 },
+  { key: 'acceptable', lo: 0.65, hi: 0.85 },
+  { key: 'strong', lo: 0.85, hi: 1 },
+]
+const trimNum = (n) => {
+  const v = Math.round(n * 10) / 10
+  return Number.isInteger(v) ? String(v) : v.toFixed(1)
+}
+
 function CriterionCard({ c, before, index, animKey, isDev, profile, accent, realGuides, citations, priority, rubricInfo, noticeName }) {
   // 우선순위 팝업 — "왜 이 순위인가"(판정·감점·근거 기반 점수 상한)를 배지 클릭 시 보여준다
   // (경이 요청 2026-07-25: 상한 배너를 카드에 늘어놓지 않고 우선순위 근거로 접어 넣기).
@@ -720,12 +733,48 @@ function CriterionCard({ c, before, index, animKey, isDev, profile, accent, real
                     {(fCounts.resolved || 0) > 0 && <div>· 이전 버전 지적 <b>{fCounts.resolved}건이 해결</b>되어 해당 감점 요인이 사라졌습니다.</div>}
                     {(fCounts.new || 0) > 0 && <div>· 이번 버전에서 <b>신규 지적 {fCounts.new}건</b>이 나와 상승 폭을 제한했습니다.</div>}
                     {(fCounts.open || 0) > 0 && <div>· <b>보완 필요 {fCounts.open}건</b>이 남아 있어, 반영하면 추가 상승 여지가 있습니다.</div>}
-                    <div>· 이번 버전 판정은 <b>「{WHY_JUDGMENT_LABEL[c.judgment] || c.judgment}」</b> — 배점 <b className="mono">{c.max}점</b>에 판정별 점수 밴드 비율을 적용해 산정됩니다.</div>
-                    {c.calibration && (
-                      <div>· 근거 신호 부족으로 <b>결정론적 상한 {c.calibration.cap_score}점</b>이 적용되었습니다{c.calibration.original_score != null ? ` (위원 제안 ${c.calibration.original_score}점)` : ''}.</div>
+                    <div>
+                      · 위원{c.reviewers > 1 ? ` ${c.reviewers}명 평균` : ''} 제안 점수는{' '}
+                      <b className="mono">{c.calibration?.original_score ?? c.score}점</b>이며, 판정별 점수 구간
+                      안에서만 제안됩니다 (현재 판정 「{WHY_JUDGMENT_LABEL[c.judgment] || c.judgment}」):
+                    </div>
+                    {/* 판정별 점수 구간 — 이 항목 배점 기준, 최종 점수가 속한 구간 강조 */}
+                    <div style={{ margin: '4px 0 2px', padding: '6px 9px', borderRadius: 8, background: 'rgba(28,26,46,0.045)' }}>
+                      {JUDGMENT_BANDS.map((bd) => {
+                        const on = bd.key === c.judgment
+                        return (
+                          <div key={bd.key} className="mono" style={{ fontSize: 11, display: 'flex', justifyContent: 'space-between', gap: 8, fontWeight: on ? 800 : 500, color: on ? '#1c1a2e' : '#918d9f' }}>
+                            <span>{on ? '▶ ' : '· '}{WHY_JUDGMENT_LABEL[bd.key]} {Math.round(bd.lo * 100)}–{Math.round(bd.hi * 100)}%</span>
+                            <span>{trimNum(bd.lo * c.max)}–{trimNum(bd.hi * c.max)}점</span>
+                          </div>
+                        )
+                      })}
+                    </div>
+                    {c.calibration ? (
+                      <>
+                        <div>
+                          · 그런데 <b>근거 상한 {c.calibration.cap_score}점</b>
+                          {c.calibration.cap_ratio != null ? ` (배점의 ${Math.round(c.calibration.cap_ratio * 100)}%)` : ''}이 위원 제안보다
+                          낮아 최종 점수가 <b className="mono">{c.score}점</b>이 되었습니다. 문서 원문 검사에서 발동한 신호:
+                        </div>
+                        <div style={{ margin: '2px 0 2px 12px' }}>
+                          {(c.calibration.signals || []).map((s, i) => (
+                            <div key={i} style={{ color: '#a6541f' }}>– {s.reason}</div>
+                          ))}
+                        </div>
+                        <div style={{ color: '#918d9f' }}>
+                          상한이란? 문서 원문을 코드 규칙으로 검사해 "근거가 뒷받침하는 최대 점수"를 계산한
+                          값입니다. 위원 제안이 상한보다 높으면 상한까지만 인정하고(올리지는 않음), 같은
+                          문서에는 항상 같은 상한이 나옵니다. 위 신호를 문서에서 보완하면 상한이 풀립니다.
+                        </div>
+                      </>
+                    ) : (
+                      <div>· 근거 상한(문서 원문 검사) 발동 없음 — 위원 제안이 그대로 최종 점수입니다.</div>
                     )}
                     <div style={{ marginTop: 7, paddingTop: 7, borderTop: '1px dashed rgba(28,26,46,0.14)', color: '#918d9f' }}>
-                      점수 체계: 위원이 문서 근거를 들어 판정(우수·적정·보완 필요·중대 리스크)을 내리면 판정별 점수 밴드로 환산되고, 지적이 해결될수록 판정이 올라가 점수가 상승합니다.
+                      점수 체계: 위원이 문서 근거를 들어 판정을 내리면 위 구간 안에서 점수를 제안하고, 지적이
+                      해결될수록 판정이 올라가 점수가 상승합니다. 화면의 판정 표시는 최종 점수의 배점 대비
+                      비율로 정해집니다.
                     </div>
                   </div>
                 </div>
@@ -932,6 +981,7 @@ function reportToVersions(report) {
       score: b.raw_score ?? 0,
       max: b.max_score ?? CRITERION_MAX,
       calibration: b.calibration || null,
+      reviewers: (b.source_review_ids || []).length || null, // 이 항목을 채점한 위원 수(점수 변화 팝업 표시용)
       judgment: judgmentFromScore(b.raw_score ?? 0, b.max_score ?? CRITERION_MAX),
       feedback,
     }
@@ -1096,6 +1146,7 @@ function buildVersionsFromHistory(versions) {
         score: c.score ?? 0,
         max: c.max ?? CRITERION_MAX,
         calibration: c.calibration || null,
+        reviewers: c.reviewers ?? null, // 비교 API(comparison.py)가 채워줌 — 없으면 표시 생략
         judgment: judgmentFromScore(c.score ?? 0, c.max ?? CRITERION_MAX),
         feedback,
       }
@@ -1244,8 +1295,6 @@ function AiFeedbackPanel({ findings, format, missingVersion }) {
 // 제외된 항목(사유) ③ 가점 요소(항상 제외)를 한 표로 보여준다. "왜 이렇게 채점할 수밖에
 // 없었는지"를 리포트 안에서 설명하는 역할.
 function ScoringSchemeCard({ rubric, open, onToggle }) {
-  // 총점 참고용 안내 — 상단 배너 대신 헤더 ⚠️ 아이콘 클릭 팝업으로 제공 (경이 요청 2026-07-26)
-  const [noticeOpen, setNoticeOpen] = useState(false)
   if (!rubric) return null
   const criteria = rubric.criteria || []
   const excluded = rubric.excluded_criteria || []
@@ -1265,33 +1314,12 @@ function ScoringSchemeCard({ rubric, open, onToggle }) {
         style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', background: 'none', border: 'none', cursor: 'pointer', padding: '14px 0', textAlign: 'left' }}>
         <span style={{ fontSize: 14.5, fontWeight: 800, color: '#1c1a2e' }}>점수 체계표</span>
         {extracted ? (
-          <>
-            <span style={{ fontSize: 11.5, color: '#918d9f' }}>측정 가능 항목만 채점</span>
-            <span role="button" tabIndex={0} aria-label="총점 참고용 안내"
-              onClick={(e) => { e.stopPropagation(); setNoticeOpen((v) => !v) }}
-              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); setNoticeOpen((v) => !v) } }}
-              style={{ display: 'inline-flex', alignItems: 'center', padding: '2px 4px', borderRadius: 6, flex: 1 }}>
-              <AlertTriangle size={15} style={{ color: '#b8830b', flexShrink: 0 }} />
-            </span>
-          </>
+          <span style={{ fontSize: 11.5, color: '#918d9f', flex: 1 }}>측정 가능 항목만 채점</span>
         ) : (
           <span style={{ fontSize: 11.5, color: '#e0603d', fontWeight: 700, flex: 1 }}>⚠️ 공고문 기준이 아님 — 기본 템플릿으로 채점됨 (만점 {rubric.total_max_score}점)</span>
         )}
         <ChevronDown size={16} style={{ color: '#918d9f', transition: 'transform 0.2s', transform: open ? 'rotate(180deg)' : 'none', flexShrink: 0 }} />
       </button>
-      {/* ⚠️ 클릭 팝업 — 총점 참고용 안내 (기존 상단 배너를 이 팝업으로 이동, 경이 요청 2026-07-26) */}
-      {extracted && noticeOpen && (
-        <div className="vt-fade" style={{ position: 'absolute', top: 46, left: 110, right: 0, zIndex: 60, background: '#fff', border: '1px solid rgba(184,131,11,0.35)', borderLeft: '4px solid #b8830b', borderRadius: 12, boxShadow: '0 14px 34px rgba(28,26,46,0.16)', padding: '12px 16px', display: 'flex', alignItems: 'flex-start', gap: 10 }}>
-          <AlertTriangle size={16} style={{ color: '#b8830b', flexShrink: 0, marginTop: 2 }} />
-          <div style={{ fontSize: 12.5, lineHeight: 1.7, color: '#5b5770' }}>
-            <b style={{ color: '#8a6508' }}>제시된 총점은 참고용입니다.</b>{' '}
-            공고문 평가 항목 중 <b>문서 내용으로 측정 가능한 항목만</b> 근거를 들어 채점하며,
-            정성 판단이 필요한 <b>주관적 항목</b>과 공모전마다 기준이 달라지는 <b>가점 요소</b>는
-            총점에서 제외됩니다. 항목별 채점·제외 사유는 아래 <b>점수 체계표</b>에서 확인할 수
-            있으며, 실제 심사 결과와는 다를 수 있습니다.
-          </div>
-        </div>
-      )}
       {!extracted && (
         <div style={{ margin: '0 0 12px', padding: '10px 14px', borderRadius: 10, background: 'rgba(224,96,61,0.08)', border: '1px solid rgba(224,96,61,0.3)', fontSize: 12.5, lineHeight: 1.65, color: '#8a4a30' }}>
           공고문에서 <b>평가기준·배점을 추출하지 못해</b> 서비스 기본 템플릿으로 채점되었습니다. 이 표와 총점은 <b>공고문 기준이 아니므로 참고하지 마세요.</b>{' '}
@@ -1353,6 +1381,8 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
   // 상세(탭 영역)는 처음에 숨기고, 점수 추이의 버전 점(v1.0…)을 클릭해야 열린다.
   const [detailOpen, setDetailOpen] = useState(false)
   const [schemeOpen, setSchemeOpen] = useState(false) // 점수 체계표 접기/펼치기
+  const [noticeOpen, setNoticeOpen] = useState(false) // 총점 참고용 안내 — 제목 옆 ⓘ 클릭 팝업
+  const [versionListOpen, setVersionListOpen] = useState(false) // "버전별 상세 리포트" 박스 → 버전 목록 드롭다운
   const [statusFilter, setStatusFilter] = useState('all') // 전체/신규/보완필요(남음)/해결 필터
   const detailRef = useRef(null)
   const [profileKey, setProfileKey] = useState('nonmajor')
@@ -1432,6 +1462,8 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
   }, [versionPayload, report])
   const usingReal = Boolean(realVersions)
   const ALL = usingReal ? realVersions : ALL_VERSIONS
+  // 총점 참고용 안내(ⓘ)는 공고문에서 실제 추출한 rubric으로 채점했을 때만 의미가 있다
+  const noticeAvailable = usingReal && report?.rubric?.extracted_from_notice === true
   const realGuides = useMemo(() => {
     if (!usingReal) return null
     const m = new Map()
@@ -1697,7 +1729,30 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
         {!detailOpen && (<>
         {/* 히어로 */}
         <div className="card glass" style={{ padding: '26px 28px', marginBottom: 18 }}>
-          <h1 style={{ fontSize: 32, fontWeight: 800, lineHeight: 1.3, textAlign: 'center', margin: '2px 0 18px' }}>종합 리포트</h1>
+          <div style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, margin: '2px 0 18px' }}>
+            <h1 style={{ fontSize: 32, fontWeight: 800, lineHeight: 1.3, margin: 0 }}>종합 리포트</h1>
+            {noticeAvailable && (
+              <span role="button" tabIndex={0} aria-label="총점 참고용 안내"
+                onClick={() => setNoticeOpen((v) => !v)}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setNoticeOpen((v) => !v) } }}
+                style={{ display: 'inline-flex', alignItems: 'center', cursor: 'pointer', padding: 2, borderRadius: 8 }}>
+                <Info size={22} style={{ color: '#b8830b', flexShrink: 0 }} />
+              </span>
+            )}
+            {/* ⓘ 클릭 팝업 — 총점 참고용 안내 (제목 옆 ⓘ 아래로 펼침) */}
+            {noticeAvailable && noticeOpen && (
+              <div className="vt-fade" style={{ position: 'absolute', top: 'calc(100% + 8px)', left: '50%', transform: 'translateX(-50%)', zIndex: 60, width: 'min(560px, 86vw)', textAlign: 'left', background: '#fff', border: '1px solid rgba(184,131,11,0.35)', borderLeft: '4px solid #b8830b', borderRadius: 12, boxShadow: '0 14px 34px rgba(28,26,46,0.16)', padding: '12px 16px', display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                <Info size={16} style={{ color: '#b8830b', flexShrink: 0, marginTop: 2 }} />
+                <div style={{ fontSize: 12.5, lineHeight: 1.7, color: '#5b5770' }}>
+                  <b style={{ color: '#8a6508' }}>제시된 총점은 참고용입니다.</b>{' '}
+                  공고문 평가 항목 중 <b>문서 내용으로 측정 가능한 항목만</b> 근거를 들어 채점하며,
+                  정성 판단이 필요한 <b>주관적 항목</b>과 공모전마다 기준이 달라지는 <b>가점 요소</b>는
+                  총점에서 제외됩니다. 항목별 채점·제외 사유는 아래 <b>점수 체계표</b>에서 확인할 수
+                  있으며, 실제 심사 결과와는 다를 수 있습니다.
+                </div>
+              </div>
+            )}
+          </div>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 24, flexWrap: 'wrap' }}>
             <div style={{ flex: 1, minWidth: 300 }}>
               <div style={{ maxWidth: 500, display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -1727,7 +1782,7 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
           </div>
         </div>
 
-        {/* 점수 체계표(접힘 탭 — 클릭해서 펼침, 총점 참고용 안내는 헤더 ⚠️ 팝업) — 실데이터 모드에서만 */}
+        {/* 점수 체계표(접힘 탭 — 클릭해서 펼침, 총점 참고용 안내는 히어로 총점 옆 ⓘ 팝업) — 실데이터 모드에서만 */}
         {usingReal && report?.rubric && (
           <ScoringSchemeCard rubric={report.rubric} open={schemeOpen} onToggle={() => setSchemeOpen((v) => !v)} />
         )}
@@ -1743,6 +1798,27 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
                 <TrendingUp size={17} color="#7c5cea" /> 버전별 점수 추이
               </h2>
               <span style={{ fontSize: 12, color: '#918d9f' }}>버전 점(v1.0 …)을 클릭하면 그 버전의 상세 리포트 화면으로 이동합니다.</span>
+            </div>
+            {/* 버전별 상세 리포트 — 클릭하면 v1.0 → v1.1 → … 목록이 펼쳐지고, 버전을 고르면 그 버전 상세 화면으로 이동 */}
+            <div style={{ position: 'relative' }}>
+              <button type="button" onClick={() => setVersionListOpen((v) => !v)}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 14px', borderRadius: 10, border: '1.5px solid rgba(28,26,46,0.18)', background: 'rgba(255,255,255,0.85)', fontSize: 12.5, fontWeight: 800, color: '#1c1a2e', cursor: 'pointer' }}>
+                버전별 상세 리포트
+                <ChevronDown size={14} style={{ color: '#918d9f', transition: 'transform 0.2s', transform: versionListOpen ? 'rotate(180deg)' : 'none' }} />
+              </button>
+              {versionListOpen && (
+                <div className="vt-fade" style={{ position: 'absolute', top: 'calc(100% + 6px)', right: 0, zIndex: 60, minWidth: 210, background: '#fff', border: '1px solid rgba(28,26,46,0.12)', borderRadius: 12, boxShadow: '0 14px 34px rgba(28,26,46,0.16)', padding: 6, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  {versions.map((v, i) => (
+                    <button key={v.version} type="button" className="btn-ghost"
+                      onClick={() => { setSelectedIndex(i); setDetailOpen(true); setStatusFilter('all'); setVersionListOpen(false) }}
+                      style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '8px 10px', borderRadius: 8, fontSize: 12.5, textAlign: 'left' }}>
+                      <span className="mono" style={{ fontWeight: 800, color: '#7c5cea', flexShrink: 0 }}>{v.version}</span>
+                      <span style={{ color: '#5b5770', flex: 1, whiteSpace: 'nowrap' }}>{v.label}</span>
+                      <span className="mono" style={{ fontWeight: 700, color: '#918d9f', flexShrink: 0 }}>{v.total_score}점</span>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
           {/* 업로드+재분석 진행/에러 배너 */}

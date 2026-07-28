@@ -131,6 +131,13 @@ def raw_reviewer_to_v2(
         judgment = item["judgment"]
         in_scope = expected_criterion_ids is None or cid in expected_criterion_ids
 
+        # 경이 확정(2026-07-27): 항목마다 배정된 적정 위원(주 담당 1 + 보조 0~2)만 채점한다 —
+        # 담당 아닌 위원의 항목은 점수·지적 모두 집계에서 완전히 제외. 이전에는 근거 게이트만
+        # 통과하면 비담당 위원 점수도 calculator 평균에 섞여, 배정과 무관하게 항목당 3명
+        # 평균(1/3 단위 점수)이 생겼다. expected_criterion_ids가 None인 레거시 경로는 기존대로.
+        if not in_scope:
+            continue
+
         if judgment in _UNSCORABLE_JUDGMENTS:
             if in_scope:
                 unscored_criteria.append(
