@@ -21,14 +21,28 @@ from .application_form_draft import initialize_application_form_draft
 # 이 phase는 프론트가 직접 분기 렌더링에 쓰는 값이라(요구된 8개 상태 그대로) 계약을
 # 영문으로 고정해 프론트/백엔드 문자열 매칭 실수를 줄인다.
 #
-# 용준/Claude(2026-07-21): discovery(아이디어 발굴) 모드용 phase 3개를 추가한다 —
-# candidate_generation(기획 후보 생성 -> 개발 실현가능성 검토, 정지 없이 연속 실행),
-# awaiting_candidate_selection(후보 제시 후 사용자 선택 대기, 정지 지점),
-# candidate_selection(사용자의 선택/결합/재추천/전문가추천 요청 처리). refinement 전용
-# phase(planning_question 등)는 값 하나도 바꾸지 않는다 — discovery는 이 phase들을 거쳐
-# 최종적으로 정확히 refinement의 "planning_question" phase로 합류한다(요청 4번).
+# 용준/Claude(2026-07-21): discovery(아이디어 발굴) 모드용 phase를 추가한다 —
+# awaiting_candidate_selection(주제 제시 후 사용자 선택 대기, 정지 지점), candidate_selection
+# (사용자의 선택/결합/재추천/전문가추천 요청 처리). refinement 전용 phase(planning_question
+# 등)는 값 하나도 바꾸지 않는다 — discovery는 이 phase들을 거쳐 최종적으로 정확히 refinement의
+# "planning_question" phase로 합류한다(요청 4번).
+#
+# pge/Claude(2026-07-27, 주제 브레인스토밍 재설계 — 키워드 선택 방식): 옛 "candidate_generation"
+# (기획 위원이 트렌드+공모전 근거로 곧바로 완성된 후보를 만들던 단계)을 없애고,
+# keyword_generation(트렌드/공모전/사용자 이슈 키워드 추천) -> awaiting_keyword_selection
+# (사용자가 키워드 다중 선택 대기) -> keyword_selection(선택 파싱 또는 재추천 판단, LLM 호출
+# 없음 — candidate_selection과 동일한 "결정적 처리" 원칙) -> topic_generation(선택 키워드
+# 조합으로 가벼운 주제 목록 생성)으로 대체한다. topic_generation의 결과도 기존과 동일하게
+# "awaiting_candidate_selection"으로 멈추므로 그 이후(후보 선택/결합/재추천)는 전혀 안
+# 바뀐다 — "무엇을(주제) 다룰지"를 정하는 앞단만 키워드 선택을 거치도록 바꾼 것이다.
+# idea_candidates/selected_idea 등 기존 필드명은 그대로 재사용한다(이제 완성된 후보 대신
+# 가벼운 주제를 담을 뿐 — CandidateCard/candidate_selection/_resolve_selection 등 하위
+# 코드를 안 건드리기 위함).
 ConvPhase = Literal[
-    "candidate_generation",
+    "keyword_generation",
+    "awaiting_keyword_selection",
+    "keyword_selection",
+    "topic_generation",
     "awaiting_candidate_selection",
     "candidate_selection",
     "planning_question",
@@ -54,7 +68,9 @@ ConvPhase = Literal[
 MessageType = Literal["question", "answer", "interjection", "opinion", "agreement", "disagreement", "summary"]
 
 _TERMINAL_ENTRY_PHASES = {
-    "candidate_generation",
+    "keyword_generation",
+    "keyword_selection",
+    "topic_generation",
     "candidate_selection",
     "planning_question",
     "developer_question",
@@ -140,7 +156,10 @@ ActiveStage = Literal["candidate_discovery", "candidate_selection", "refinement"
 # 다듬는 "refinement"(아이디어 발전 모드), finalized/finalizing은 "finalized"다. failed는
 # 별도로 처리한다(고정 4단계에 없음 — 아래 active_stage_for 참고).
 _PHASE_TO_ACTIVE_STAGE: dict[str, ActiveStage] = {
-    "candidate_generation": "candidate_discovery",
+    "keyword_generation": "candidate_discovery",
+    "awaiting_keyword_selection": "candidate_discovery",
+    "keyword_selection": "candidate_discovery",
+    "topic_generation": "candidate_discovery",
     "awaiting_candidate_selection": "candidate_discovery",
     "candidate_selection": "candidate_selection",
     "planning_question": "refinement",
@@ -335,7 +354,16 @@ class IdeationConvState(TypedDict):
     ideation_mode: IdeationMode
     initial_idea: str | None
     contest_analysis: dict | None
-    # 현재 유효한 후보 목록 — "다시 추천" 시 이 리스트가 교체된다.
+    # pge/Claude(2026-07-27, 주제 브레인스토밍 재설계 — 키워드 선택 방식): keyword_recommendation
+    # 노드가 채우는 키워드 후보 목록(trend/contest/user_issue 세 출처 혼합, 각 항목
+    # {keyword_id, keyword, source, rationale}). "다시 추천" 시 이 리스트가 교체된다.
+    keyword_options: list[dict]
+    # 사용자가 실제로 고른 키워드 id 목록 — topic_generation이 이 값으로 keyword_options에서
+    # 선택된 항목만 골라 주제 생성 프롬프트에 넣는다.
+    selected_keyword_ids: list[str]
+    # 현재 유효한 후보(주제) 목록 — "다시 추천" 시 이 리스트가 교체된다. 완성된 후보가 아니라
+    # 가벼운 주제(candidate_id/title/problem/target_user/contest_fit 정도)만 담는다 —
+    # 실제 설계(solution/기능/리스크 등)는 AI 아이디어 회의에서 만든다.
     idea_candidates: list[dict]
     # 최초로 생성된 후보 목록 — 재추천으로 idea_candidates가 바뀌어도 이 값은 보존된다
     # (요청 8번 "discovery 모드의 최종 결과에는 최초 생성 후보... 이력을 포함").
@@ -374,6 +402,35 @@ class IdeationConvState(TypedDict):
     # candidate_selection 노드가 "combine" 해석 시 함께 만드는 결합 분석 결과(공통 문제/
     # 공통 가치/결합 적합도/주 기능/보조 기능/충돌 지점/미확정 사항). combine이 아니면 None.
     merge_analysis: dict | None
+
+    # pge/Claude(2026-07-28, 실측 요청: "브레인스토밍 페이지에서 아이디어 후보를 누르면
+    # 이전 내역이 남아있음") — 프론트 IdeationScreen(라운드테이블)이 ideationConv.messages를
+    # 통째로 보여주다 보니, discovery 단계(키워드 추천/재추천 문답, 주제 선택 문답)가 그대로
+    # 라운드테이블 채팅 위에 쌓여 보였다. _resolve_selection이 선택을 확정하는 시점, 자신이
+    # "선택된 아이디어: ..."/회의 안건 메시지를 추가하기 *직전*의 messages 길이를 여기 담아
+    # 둔다 — 프론트는 이 값 이후의 메시지만 라운드테이블 채팅으로 보여준다(discovery 문답은
+    # state에는 그대로 남아 있으니 최종 결과/디버깅용으로는 여전히 조회 가능하다). 재추천/
+    # 재선택으로 다시 확정되면 이 값도 그 시점 길이로 다시 덮어써진다(operator.add 리듀서가
+    # 아닌 일반 필드 — messages/discussion_rounds와 다름).
+    refinement_message_offset: int
+
+    # pge/Claude(2026-07-27, 주제 브레인스토밍 — 네이버 트렌드 검색 연동): discovery 모드
+    # candidate_planning 노드 진입 직전에 딱 한 번 실행되는 실시간 이슈 검색(트렌드) 결과.
+    # ai/rag/orchestration/ideation_trend_search_service.py::make_ideation_trend_search_lookup이
+    # 채운다 — external_evidence(RAG-007, 사전 색인 통계·정책)와는 완전히 별도 채널이다.
+    # 구버전 저장 state에는 이 키들이 없을 수 있으므로 읽는 쪽은 항상 `.get(...)`로 접근한다.
+    # 사용자가 브레인스토밍 화면에서 입력한 이슈/관심사 원문(선택 입력 — 없으면 None).
+    initial_issue: str | None
+    # "issue"/"interest"/"technology"/"rough_idea" 중 하나 — 트렌드 검색 질의문 구성과
+    # candidate_planning 프롬프트의 참고 컨텍스트로만 쓰인다.
+    input_type: str | None
+    # candidate_planning이 실제로 트렌드 검색에 사용한 질의문(공모전명+이슈 등 조합).
+    trend_query: str | None
+    # 검색·정리(dedup/출처 검증)까지 끝난 트렌드 근거 목록. 항상 참고 자료다.
+    trend_evidence: list[dict]
+    # "skipped"(비활성/미사용) / "ok"(검색 성공, 결과 0건 포함) / "failed"(검색 자체 실패).
+    trend_search_status: str | None
+    trend_searched_at: str | None
 
     # 용준/Claude(2026-07-21, 요청: 위원 간 실제 회의로 개편): expert_discussion phase가
     # 실행될 때마다(라운드마다) 1건씩 쌓인다(리듀서 operator.add — messages와 같은 원칙).
@@ -534,15 +591,17 @@ def initial_conv_state(
     user_idea: dict,
     max_rounds: int = 3,
     application_form_items: list[dict] | None = None,
+    initial_issue: str | None = None,
+    input_type: str | None = None,
 ) -> IdeationConvState:
     """준비 상태. user_idea(trim 결과)가 있으면 refinement로 시작한다 — 용준/Claude(2026-07-21,
     요청: 전문가 라운드테이블 전환) 진행자의 안건 제시 메시지(LLM 호출 없음, 위
     build_roundtable_opening_message 참고)를 messages에 먼저 넣고, phase는 더 이상
     "planning_question"(1:1 인터뷰 진입점)이 아니라 "expert_discussion"(라운드테이블
     진입점)이다 — 기획/개발 위원이 서로를 상대로 먼저 토론하고, 사용자에게 직접 질문하는
-    것은 진행자만 한다. 비어 있으면 discovery로 시작해 후보 생성 단계(candidate_generation)
-    부터 진행한다(요청 1~2번, 변경 없음). ideation_mode는 여기서 딱 한 번 결정되어 이후
-    그래프 전체가 이 값을 그대로 읽는다."""
+    것은 진행자만 한다. 비어 있으면 discovery로 시작해 키워드 추천 단계(keyword_generation)
+    부터 진행한다(요청 1~2번, pge/Claude(2026-07-27) 키워드 선택 방식으로 재설계). ideation_mode는
+    여기서 딱 한 번 결정되어 이후 그래프 전체가 이 값을 그대로 읽는다."""
     initial_idea = _extract_initial_idea_text(user_idea)
     mode: IdeationMode = "refinement" if initial_idea else "discovery"
     opening_messages = [build_roundtable_opening_message(initial_idea, round_number=1)] if mode == "refinement" else []
@@ -553,7 +612,7 @@ def initial_conv_state(
         round=1,
         max_rounds=max_rounds,
         messages=opening_messages,
-        phase="expert_discussion" if mode == "refinement" else "candidate_generation",
+        phase="expert_discussion" if mode == "refinement" else "keyword_generation",
         pending_question=None,
         pending_expected_answer_type=None,
         pending_question_topic=None,
@@ -573,6 +632,8 @@ def initial_conv_state(
         ideation_mode=mode,
         initial_idea=initial_idea or None,
         contest_analysis=None,
+        keyword_options=[],
+        selected_keyword_ids=[],
         idea_candidates=[],
         original_idea_candidates=[],
         selected_idea=None,
@@ -583,6 +644,7 @@ def initial_conv_state(
         user_selection_message=None,
         source_candidates=[],
         merge_analysis=None,
+        refinement_message_offset=0,
         discussion_rounds=[],
         discussion_planning_position=None,
         discussion_development_review=None,
@@ -608,6 +670,12 @@ def initial_conv_state(
         asked_decision_fingerprints=[],
         external_evidence=[],
         external_evidence_meta={},
+        initial_issue=initial_issue or None,
+        input_type=input_type or None,
+        trend_query=None,
+        trend_evidence=[],
+        trend_search_status=None,
+        trend_searched_at=None,
     )
 
 
@@ -628,6 +696,14 @@ def apply_user_answer(previous_state: IdeationConvState, answer_message: ConvMes
         # 함수가 하지 않는다 — candidate_selection 노드가 담당한다(요청: 단순 선택은
         # 코드로 결정적으로, 자연어 결합/수정은 LLM으로).
         next_phase = "candidate_selection"
+    elif prev_phase == "awaiting_keyword_selection":
+        # pge/Claude(2026-07-27, 주제 브레인스토밍 재설계): 사용자가 키워드를 선택했거나
+        # (정상 진행) 키워드를 다시 추천해 달라고 요청했을 수 있다. 실제 판단(선택 파싱인지
+        # 재추천 요청인지)은 이 함수가 하지 않는다 — keyword_selection 노드가 담당한다
+        # (candidate_selection 노드의 재추천 처리와 동일한 원칙 — 단순 전이는 여기서,
+        # 자연어/형식 판단은 노드에서. circular import를 피하려고 is_regenerate_request를
+        # 여기로 끌어오지 않는다).
+        next_phase = "keyword_selection"
     elif prev_phase == "awaiting_planning_answer":
         next_phase = "developer_question"
     elif prev_phase == "awaiting_developer_answer":

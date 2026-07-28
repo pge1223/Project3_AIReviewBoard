@@ -15,7 +15,7 @@ from graph import reply_ideation_conversation  # noqa: E402
 
 from test_ideation_discovery_graph import (  # noqa: E402
     DiscoveryScriptedLLM,
-    _start_discovery,
+    _start_discovery_to_topics,
 )
 
 
@@ -44,7 +44,7 @@ class _RecordingIndexer:
 
 def test_candidate_selection_calls_index_target_evidence_and_stores_document_id():
     llm = DiscoveryScriptedLLM()
-    state = _start_discovery(llm)
+    state = _start_discovery_to_topics(llm)
     indexer = _RecordingIndexer()
 
     state = reply_ideation_conversation(
@@ -65,7 +65,7 @@ def test_candidate_selection_without_indexer_leaves_document_id_none():
     """index_target_evidence를 주입하지 않으면(use_rag=False 등) 색인을 건너뛰고
     selected_idea_document_id=None으로 안전하게 진행한다."""
     llm = DiscoveryScriptedLLM()
-    state = _start_discovery(llm)
+    state = _start_discovery_to_topics(llm)
 
     state = reply_ideation_conversation(previous_state=state, user_message="1번", llm_call=llm)
 
@@ -77,7 +77,7 @@ def test_candidate_selection_indexing_failure_does_not_corrupt_state():
     """색인이 실패해도(요청 17-4번) 회의 state는 손상되지 않고, 그냥 target 근거 없이
     진행된다."""
     llm = DiscoveryScriptedLLM()
-    state = _start_discovery(llm)
+    state = _start_discovery_to_topics(llm)
     indexer = _RecordingIndexer(fail_kinds={"candidate"})
 
     state = reply_ideation_conversation(
@@ -107,7 +107,7 @@ def test_user_answer_calls_index_target_evidence_before_next_expert_turn():
     호출이 곧 다음 그래프 실행보다 먼저 일어난다는 것을(동기 호출 순서) 확인한다 — 인덱서가
     이번 답변에 대해 정확히 한 번, 그래프 재실행 이전에 호출됐는지로 순서를 검증한다."""
     llm = DiscoveryScriptedLLM()
-    state = _start_discovery(llm)
+    state = _start_discovery_to_topics(llm)
     indexer = _RecordingIndexer()
     state = reply_ideation_conversation(
         previous_state=state, user_message="1번", llm_call=llm, index_target_evidence=indexer
@@ -133,7 +133,7 @@ def test_user_answer_calls_index_target_evidence_before_next_expert_turn():
 def test_short_greeting_reply_is_not_indexed_as_target_evidence():
     """요청 17-2번 — 단순 동의·감탄 같은 짧은 문구는 색인 대상에서 제외된다."""
     llm = DiscoveryScriptedLLM()
-    state = _start_discovery(llm)
+    state = _start_discovery_to_topics(llm)
     indexer = _RecordingIndexer()
     state = reply_ideation_conversation(
         previous_state=state, user_message="1번", llm_call=llm, index_target_evidence=indexer
@@ -174,7 +174,7 @@ def test_same_reply_expert_search_uses_freshly_selected_candidate_document_id():
     evidence_lookup을 만들 때(요청 시작 시점, previous_state.selected_idea_document_id=None)
     캡처된 stale 값이 아니라, 노드가 실제로 호출하는 순간의 최신 state 값이어야 한다."""
     llm = DiscoveryScriptedLLM()
-    state = _start_discovery(llm)
+    state = _start_discovery_to_topics(llm)
     indexer = _RecordingIndexer()
     lookup = _RecordingEvidenceLookup()
 
@@ -199,7 +199,7 @@ def test_candidate_reselection_within_same_request_scopes_to_new_candidate():
     """요청 7번 — 같은 세션에서 후보를 다시 선택(재추천 후 재선택)해도, 그 요청의 첫 전문가
     검색은 새로 선택된 후보의 document_id로 스코프된다(이전 후보 id가 남지 않는다)."""
     llm = DiscoveryScriptedLLM()
-    state = _start_discovery(llm)
+    state = _start_discovery_to_topics(llm)
     indexer = _RecordingIndexer()
 
     # 1차 선택: candidate_1.
@@ -213,7 +213,7 @@ def test_candidate_reselection_within_same_request_scopes_to_new_candidate():
     # candidate_2를 바로 선택해 "다른 후보가 선택되면 다른 document_id가 나온다"는 계약만
     # 별도로 확인한다(같은 요청 안에서 재선택 시나리오는 candidate_selection 노드 자체가
     # 사용자 텍스트 파싱으로 결정하므로, 이 테스트는 그 id 계산 계약을 검증한다).
-    state2 = _start_discovery(llm)
+    state2 = _start_discovery_to_topics(llm)
     indexer2 = _RecordingIndexer()
     state2 = reply_ideation_conversation(
         previous_state=state2, user_message="2번", llm_call=llm, index_target_evidence=indexer2
@@ -225,7 +225,7 @@ def test_candidate_reselection_within_same_request_scopes_to_new_candidate():
 
 def test_user_answer_indexing_failure_does_not_stop_meeting():
     llm = DiscoveryScriptedLLM()
-    state = _start_discovery(llm)
+    state = _start_discovery_to_topics(llm)
     indexer = _RecordingIndexer()
     state = reply_ideation_conversation(
         previous_state=state, user_message="1번", llm_call=llm, index_target_evidence=indexer

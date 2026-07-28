@@ -98,7 +98,7 @@ const IDEATION_AVATAR_ENABLED = import.meta.env.VITE_IDEATION_AVATAR_ENABLED !==
 // "summary"라 타입으로는 구분이 안 되고, 이 접두어가 가장 안정적인 구분 방법이다.
 const AVATAR_EXCLUDED_CONTENT_PREFIX = '선택된 아이디어:'
 
-function ideationSessionStorageKey(projectId) {
+export function ideationSessionStorageKey(projectId) {
   return projectId ? `ideation-conv-session:${projectId}` : null
 }
 
@@ -435,7 +435,7 @@ function InterruptionMarker({ speakerId }) {
 // candidateSelectMessage)은 그대로다 — 프론트가 후보를 자체 해석하지 않고 항상 "n번"
 // 문구로 백엔드 candidate_selection 로직을 거치는 기존 방식을 그대로 유지한다. "상세
 // 보기" 토글은 카드 클릭(선택)과 별개 동작이라 stopPropagation으로 분리한다.
-function CandidateCard({ candidate, index, onSelect, disabled, selected = false }) {
+export function CandidateCard({ candidate, index, onSelect, disabled, selected = false }) {
   const [expanded, setExpanded] = useState(false)
 
   function handleCardActivate() {
@@ -1143,7 +1143,13 @@ export function IdeationScreen({
   // 뒤에 온 비아바타 메시지 포함) 전부 숨긴다 — 순서를 지키기 위해서다(나중에 온 문구가
   // 아직 재생 안 한 위원 발언보다 먼저 보이면 안 됨). 아바타 대상이 아닌 메시지(고정
   // 문구 중 코랩 제외 대상, 사용자 메시지 등)는 게이팅 없이 즉시 보인다.
-  const rawMessages = ideationConv?.messages || []
+  // pge/Claude(2026-07-28, 실측 요청: "브레인스토밍 페이지에서 아이디어 후보를 누르면
+  // 이전 내역이 남아있음") — ideationConv.messages는 discovery 단계(키워드 추천/재추천,
+  // 주제 선택) 문답까지 전부 포함한 세션 전체 이력이다. 라운드테이블은 그 문답이 아니라
+  // refinement_message_offset(백엔드가 후보 확정 시점에 기록) 이후 메시지만 채팅으로
+  // 보여준다 — discovery 문답 자체는 지워지지 않고 state에 그대로 남는다(최종 결과·
+  // 디버깅용), 화면에만 안 보일 뿐이다.
+  const rawMessages = (ideationConv?.messages || []).slice(ideationConv?.refinement_message_offset || 0)
   let avatarSeenCount = 0
   // IDEATION_AVATAR_ENABLED=false(개발자용)면 영상 재생을 기다리지 않고 항상 -1(=자르지
   // 않음)로 취급한다 — 아바타 서버가 없어도 회의 메시지가 즉시 전부 보인다.
@@ -1708,18 +1714,28 @@ export function IdeationScreen({
               요청 전에 동기적으로 true가 되므로, 클릭 즉시 선택지 묶음 자체를 감춘다. */}
           {latestFacilitatorChoices.length > 0 && !sending && (
             <div style={{ marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-              {latestFacilitatorChoices.map((choice, i) => (
-                <button
-                  key={choice.id || i}
-                  type="button"
-                  className="btn-ghost"
-                  style={{ padding: '8px 14px', fontSize: 14.5, borderRadius: 999, textAlign: 'left' }}
-                  onClick={() => handleSend(choice.label)}
-                  disabled={!canReplyOrContinue}
-                >
-                  {choice.label}
-                </button>
-              ))}
+              {latestFacilitatorChoices.map((choice, i) => {
+                // pge/Claude(2026-07-28, 실측 요청: "선택 버블 내용이 짤림, 선택할 때도
+                // 사용자 버블로 입력됐을 때도") — choice.label은 버튼용 22자 축약본
+                // (_short_label_from_alternative_text)일 뿐이라 "…"로 잘려 있다. 화면에도
+                // 잘린 채 보이고, 클릭 시 그 잘린 텍스트가 그대로 사용자 발언으로 전송·저장돼
+                // 영구히 남는 게 실제 버그였다 — 이제 화면 표시와 전송 둘 다 축약 전 원문
+                // (choice.detail)을 쓴다. LLM이 직접 만든 choices(게이트를 안 거친 경로)는
+                // 애초에 detail이 없으므로 label로 폴백한다.
+                const fullText = choice.detail || choice.label
+                return (
+                  <button
+                    key={choice.id || i}
+                    type="button"
+                    className="btn-ghost"
+                    style={{ padding: '8px 14px', fontSize: 14.5, borderRadius: 14, textAlign: 'left', maxWidth: '100%' }}
+                    onClick={() => handleSend(fullText)}
+                    disabled={!canReplyOrContinue}
+                  >
+                    {fullText}
+                  </button>
+                )
+              })}
             </div>
           )}
         </div>
@@ -2009,7 +2025,7 @@ export function IdeationResultScreen({ ideationConv, setIdeationConv, onBack, on
       <div className="card glass">
         {PROPOSAL_ROWS.map(([key, label], i) => (
           <div key={key} style={{ display: 'grid', gridTemplateColumns: '150px 1fr', gap: 16, padding: '14px 0', borderTop: i > 0 ? '1px solid var(--glass-border)' : 'none' }}>
-            <div style={{ fontSize: 13.5, color: 'var(--text-2)', fontFamily: 'var(--mono)' }}>{label}</div>
+            <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--text-2)' }}>{label}</div>
             <div style={{ fontSize: 14.5, lineHeight: 1.6 }}>{proposalValueDisplay(proposal[key])}</div>
           </div>
         ))}

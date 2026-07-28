@@ -32,6 +32,12 @@ export async function startIdeationConversation({
   // 결과의 items를 그대로 넘기면 discussion 프롬프트에 참고 자료로만 주입된다(질문
   // 주제·순서는 안 바뀜). 순수 추가 파라미터 — 비워도 기존 호출부와 동일하게 동작한다.
   applicationFormItems,
+  // pge/Claude(2026-07-27, 주제 브레인스토밍 — 네이버 트렌드 검색 연동): 순수 추가
+  // 파라미터. useTrendSearch는 useRag와 별개 토글이고, initialIssue/inputType은
+  // userIdea와 별개다 — userIdea는 계속 빈 문자열로 보내야 discovery 모드가 유지된다.
+  useTrendSearch = false,
+  initialIssue,
+  inputType,
 }) {
   const res = await fetch(`${API_BASE_URL}/ideation-conversation/start`, {
     method: 'POST',
@@ -46,16 +52,26 @@ export async function startIdeationConversation({
       project_id: projectId || undefined,
       model: model || undefined,
       application_form_items: applicationFormItems || undefined,
+      use_trend_search: useTrendSearch,
+      initial_issue: initialIssue || undefined,
+      input_type: inputType || undefined,
     }),
   })
   return handleResponse(res)
 }
 
-export async function replyIdeationConversation(sessionId, message, model) {
+// pge/Claude(2026-07-28, 실측 요청: "브레인스토밍에서 주제 선택하면 이미 2턴 진행돼 있음")
+// — singleTurn=true면 백엔드가 이번 reply로 새 라운드가 시작돼도(예: 주제 선택 직후) 그
+// 첫 위원 발언 1건에서 멈춘다(ReplyRequest.single_turn, 기존에 아바타 화면만 쓰던 필드를
+// 재사용). 주제 선택처럼 refinement로 막 넘어가는 시점에 이 옵션 없이 보내면 백엔드가
+// 첫 라운드 전체(때로는 다음 라운드까지)를 한 응답 안에서 다 끝내버려, 화면이 뜰 때 이미
+// 여러 턴이 지나가 있었다 — single_turn으로 첫 턴만 받고, 이후 턴은 IdeationScreen의 기존
+// continue-turn 루프(eager fetch effect)가 이어받아 하나씩 자연스럽게 진행한다.
+export async function replyIdeationConversation(sessionId, message, model, singleTurn = false) {
   const res = await fetch(`${API_BASE_URL}/ideation-conversation/${sessionId}/reply`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
-    body: JSON.stringify({ message, model: model || undefined }),
+    body: JSON.stringify({ message, model: model || undefined, single_turn: singleTurn }),
   })
   return handleResponse(res)
 }
@@ -114,6 +130,10 @@ export async function startIdeationConversationStream(
     projectId,
     model,
     applicationFormItems, // 가은/Claude(2026-07-22, 요청: 신청양식 항목 약한 주입) — startIdeationConversation과 동일한 순수 추가 필드.
+    // pge/Claude(2026-07-27, 주제 브레인스토밍 — 네이버 트렌드 검색 연동) — startIdeationConversation과 동일한 순수 추가 필드.
+    useTrendSearch = false,
+    initialIssue,
+    inputType,
   },
   { signal, onEvent } = {},
 ) {
@@ -129,6 +149,9 @@ export async function startIdeationConversationStream(
       project_id: projectId || undefined,
       model: model || undefined,
       application_form_items: applicationFormItems || undefined,
+      use_trend_search: useTrendSearch,
+      initial_issue: initialIssue || undefined,
+      input_type: inputType || undefined,
     }),
     signal,
   })

@@ -140,6 +140,10 @@ REPLYABLE_PHASES = {
     "awaiting_user_decision",
     "discussion_complete",
     "awaiting_candidate_selection",
+    # pge/Claude(2026-07-27, 주제 브레인스토밍 재설계): 키워드 선택 대기도 같은 이유로
+    # 추가한다 — PHASE_TO_PENDING_PERSONA에 없으므로 answer_sufficiency 게이트를 자동으로
+    # 건너뛰고 apply_user_answer -> keyword_selection 노드로 그대로 이어진다.
+    "awaiting_keyword_selection",
 }
 
 # 같은 쟁점(pending_question)으로 재질문할 수 있는 최대 횟수. 요청 3번(재질문 조건)의 예시
@@ -318,9 +322,12 @@ def start_ideation_conversation(
     index_target_evidence: IndexTargetEvidenceFn | None = None,
     evidence_planner=None,
     external_evidence_lookup=None,
+    trend_search_lookup=None,
     on_progress: IdeationConvProgressCallback | None = None,
     on_snapshot: IdeationConvSnapshotCallback | None = None,
     application_form_items: list[dict] | None = None,
+    initial_issue: str | None = None,
+    input_type: str | None = None,
 ) -> IdeationConvState:
     """세션을 시작해 기획 전문가의 첫 질문 하나만 만들고 멈춘다(요청 목표 흐름 1~3번).
 
@@ -328,7 +335,12 @@ def start_ideation_conversation(
     추가 파라미터다(기본값 None) — 넘기지 않으면 기존 호출부와 완전히 동일하게 동작한다.
 
     용준/Claude(2026-07-27, RAG-007 연결): external_evidence_lookup도 순수 추가 파라미터다
-    (기본값 None) — candidate_planning/candidate_feasibility 노드에만 전달된다."""
+    (기본값 None) — candidate_planning/candidate_feasibility 노드에만 전달된다.
+
+    pge/Claude(2026-07-27, 주제 브레인스토밍 — 네이버 트렌드 검색 연동): trend_search_lookup/
+    initial_issue/input_type도 순수 추가 파라미터다 — user_idea 기반 discovery/refinement
+    모드 분기에는 전혀 영향을 주지 않는다(initial_issue는 트렌드 검색 질의문·candidate_planning
+    프롬프트 참고 컨텍스트로만 쓰인다)."""
     graph = assemble_ideation_conversation_graph(
         llm_call,
         evidence_lookup=evidence_lookup,
@@ -336,10 +348,13 @@ def start_ideation_conversation(
         index_target_evidence=index_target_evidence,
         evidence_planner=evidence_planner,
         external_evidence_lookup=external_evidence_lookup,
+        trend_search_lookup=trend_search_lookup,
     )
     state = initial_conv_state(
         session_id, notice_and_criteria, user_idea, max_rounds=max_rounds,
         application_form_items=application_form_items,
+        initial_issue=initial_issue,
+        input_type=input_type,
     )
     return _drive_graph(graph, state, on_progress, on_snapshot)
 
@@ -695,6 +710,7 @@ def reply_ideation_conversation(
     index_target_evidence: IndexTargetEvidenceFn | None = None,
     evidence_planner=None,
     external_evidence_lookup=None,
+    trend_search_lookup=None,
     on_progress: IdeationConvProgressCallback | None = None,
     on_snapshot: IdeationConvSnapshotCallback | None = None,
     stop_after_expert_turn: bool = False,
@@ -729,9 +745,17 @@ def reply_ideation_conversation(
     # 상태에서도 "아이디어 다시 짜줘" 의도를 최우선으로 처리한다. 이 가드가
     # 재질문 충분성 판정보다 먼저 실행되어야 재생성 요청을 "질문에 대한
     # 불충분한 답변"으로 오판해 동일한 질문을 반복하지 않는다.
+    #
+    # pge/Claude(2026-07-28, 실측 버그 발견 — "다른 키워드 추천받기 눌러도 키워드가 안
+    # 쌓이고 매번 통째로 리셋됨"): 이 가드는 원래 awaiting_candidate_selection만 제외했다 —
+    # awaiting_keyword_selection에서 보낸 "다시 추천"(REGENERATE_MESSAGE)도 is_regenerate_
+    # request에 걸리므로, keyword_selection 노드의 자체 재추천 처리(누적)로 가지 못하고
+    # 매번 여기서 가로채 세션 전체를 재시작해왔다(키워드까지 통째로 비움) — 두 동작이 겉보기
+    # 결과가 비슷해(둘 다 "새 키워드 목록") 그동안 드러나지 않았다. awaiting_keyword_selection도
+    # 제외해 keyword_selection 노드가 담당하게 한다.
     if (
         previous_state.get("ideation_mode") == "discovery"
-        and previous_state["phase"] != "awaiting_candidate_selection"
+        and previous_state["phase"] not in ("awaiting_candidate_selection", "awaiting_keyword_selection")
         and is_regenerate_request(user_message)
     ):
         regeneration_count = previous_state.get("candidate_regeneration_count", 0)
@@ -755,8 +779,22 @@ def reply_ideation_conversation(
         restart_state = IdeationConvState(
             **{
                 **previous_state,
-                "messages": previous_state["messages"] + [answer_message],
-                "phase": "candidate_generation",
+                # pge/Claude(2026-07-28, 실측 버그 수정 — "라운드 1에서 멈춤" + "이전 대화
+                # 내용이 안 지워짐"): "완전히 새로 시작"이라면서 이전 채팅 내역·라운드테이블
+                # 기록을 그대로 이어붙이고 있었다 — round=1로는 리셋해 놓고 messages/
+                # discussion_rounds는 안 비워서, 새 세션이 시작돼도 화면엔 옛 대화가 계속
+                # 쌓여 보였고("라운드 1에서 멈췄다"는 사실 라운드테이블이 통째로 재시작된
+                # 것이었다). 사용자가 재시작을 요청한 이 메시지만 남기고 나머지는 진짜
+                # 새 세션처럼 비운다.
+                "messages": [answer_message],
+                "discussion_rounds": [],
+                # pge/Claude(2026-07-27, 주제 브레인스토밍 재설계): 전면 재시작이므로
+                # 키워드부터 다시 추천한다(주제만 다시 만드는 candidate_selection의 재추천과
+                # 달리, 여기는 이미 설계 단계까지 간 뒤의 "완전히 새로 시작" 요청이라 이전
+                # 키워드 선택에 얽매일 이유가 없다).
+                "phase": "keyword_generation",
+                "keyword_options": [],
+                "selected_keyword_ids": [],
                 "round": 1,
                 "pending_question": None,
                 "pending_expected_answer_type": None,
@@ -784,6 +822,7 @@ def reply_ideation_conversation(
             index_target_evidence=index_target_evidence,
             evidence_planner=evidence_planner,
             external_evidence_lookup=external_evidence_lookup,
+            trend_search_lookup=trend_search_lookup,
         )
         return _drive_graph(graph, restart_state, on_progress, on_snapshot, stop_after_expert_turn=stop_after_expert_turn)
 
@@ -841,6 +880,7 @@ def reply_ideation_conversation(
         index_target_evidence=index_target_evidence,
         evidence_planner=evidence_planner,
         external_evidence_lookup=external_evidence_lookup,
+        trend_search_lookup=trend_search_lookup,
     )
     result_state = _drive_graph(graph, state, on_progress, on_snapshot, stop_after_expert_turn=stop_after_expert_turn)
 
@@ -864,6 +904,7 @@ def continue_ideation_expert_turn(
     index_target_evidence: IndexTargetEvidenceFn | None = None,
     evidence_planner=None,
     external_evidence_lookup=None,
+    trend_search_lookup=None,
     on_progress: IdeationConvProgressCallback | None = None,
     on_snapshot: IdeationConvSnapshotCallback | None = None,
 ) -> IdeationConvState:
@@ -941,6 +982,7 @@ def continue_ideation_expert_turn(
         index_target_evidence=index_target_evidence,
         evidence_planner=evidence_planner,
         external_evidence_lookup=external_evidence_lookup,
+        trend_search_lookup=trend_search_lookup,
     )
     result_state = _drive_graph(graph, state, on_progress, on_snapshot, stop_after_expert_turn=True)
 

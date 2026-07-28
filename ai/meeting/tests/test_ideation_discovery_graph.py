@@ -1,10 +1,12 @@
-# 작성자: 용준/Claude(2026-07-21)
+# 작성자: 용준/Claude(2026-07-21) / pge/Claude(2026-07-27, 주제 브레인스토밍 재설계 — 키워드
+#         선택 방식)
 # 목적: 대화형 아이디어 발전 회의(ideation-conversation)의 discovery(아이디어 발굴) 모드
-#       검증 — 초기 아이디어 유무에 따른 모드 자동 결정, 기획/개발 전문가의 후보 생성·검토,
-#       사용자의 번호/제목/결합/재추천/전문가추천 처리, 선택 이후 refinement 흐름으로의
-#       전환, 최종 결과의 discovery 이력 포함 여부를 실제 LLM 호출 없이 확인한다.
-#       기존 test_ideation_conv_graph.py의 stub 패턴을 그대로 따른다.
-# import: 표준 라이브러리 json/sys/pathlib, pytest; ai/meeting/graph 패키지.
+#       검증 — 초기 아이디어 유무에 따른 모드 자동 결정, 키워드 추천(트렌드/공모전/사용자
+#       이슈)과 사용자의 다중 선택, 선택된 키워드로 주제 목록 생성, 사용자의 번호/제목/결합/
+#       재추천/전문가추천 처리, 선택 확정 시 선택된 주제 1개에만 수행되는 실현 가능성 검토,
+#       선택 이후 refinement 흐름으로의 전환, 최종 결과의 discovery 이력 포함 여부를 실제
+#       LLM 호출 없이 확인한다. 기존 test_ideation_conv_graph.py의 stub 패턴을 그대로 따른다.
+# import: 표준 라이브러리 json/re/sys/pathlib, pytest; ai/meeting/graph 패키지.
 
 import json
 import re
@@ -22,14 +24,16 @@ from graph import (  # noqa: E402
     reply_ideation_conversation,
     start_ideation_conversation,
 )
-from graph.ideation_conv_discovery import make_candidate_selection_node  # noqa: E402
+from graph.ideation_conv_discovery import (  # noqa: E402
+    KEYWORD_RESELECT_MESSAGE,
+    MAX_ACCUMULATED_KEYWORDS_BY_SOURCE,
+    _apply_keyword_accumulation_caps,
+    make_candidate_selection_node,
+)
 from graph.ideation_conv_nodes import make_conv_question_node  # noqa: E402
 from graph.ideation_conv_run import _new_user_message  # noqa: E402
 from graph.ideation_conv_state import apply_user_answer  # noqa: E402
-from prompts import (  # noqa: E402
-    build_ideation_conv_candidate_feasibility_prompt,
-    build_ideation_conv_candidate_planning_prompt,
-)
+from prompts import build_ideation_conv_candidate_feasibility_prompt  # noqa: E402
 
 _REMAINING_TOPICS_RE = re.compile(
     r"\[아직 확인되지 않은 주제\(우선순위 순\) remaining_topics\]\n(.*?)\n\n", re.S
@@ -55,14 +59,15 @@ CANVAS_STUB_RESPONSE = json.dumps(
 
 
 def test_candidate_novelty_prompt_is_enabled_by_default(monkeypatch):
+    """pge/Claude(2026-07-27, 주제 브레인스토밍 재설계): 참신성 강화 스플라이스는 이제
+    build_ideation_conv_candidate_feasibility_prompt에만 남아 있다 — 옛
+    build_ideation_conv_candidate_planning_prompt(완성된 후보 생성)는 더 이상 존재하지
+    않고, 대체한 topic_generation 프롬프트는 애초에 differentiation 필드가 없어(가벼운
+    주제 스키마) 이 스플라이스 대상이 아니다."""
     monkeypatch.delenv("IDEATION_NOVELTY_PROMPT_ENABLED", raising=False)
 
-    planning = build_ideation_conv_candidate_planning_prompt({}, [], [], None)
     feasibility = build_ideation_conv_candidate_feasibility_prompt({}, [], [])
 
-    assert "[참신성 강화 규칙" in planning
-    assert '"innovation_axis": "string"' in planning
-    assert '"novel_mechanism": "string"' in planning
     assert "[참신성 보존 검토" in feasibility
     assert '"novelty_preservation": "string"' in feasibility
 
@@ -70,11 +75,8 @@ def test_candidate_novelty_prompt_is_enabled_by_default(monkeypatch):
 def test_candidate_novelty_prompt_can_be_rolled_back_with_env(monkeypatch):
     monkeypatch.setenv("IDEATION_NOVELTY_PROMPT_ENABLED", "false")
 
-    planning = build_ideation_conv_candidate_planning_prompt({}, [], [], None)
     feasibility = build_ideation_conv_candidate_feasibility_prompt({}, [], [])
 
-    assert "[참신성 강화 규칙" not in planning
-    assert '"innovation_axis": "string"' not in planning
     assert "[참신성 보존 검토" not in feasibility
     assert '"novelty_preservation": "string"' not in feasibility
 
@@ -109,26 +111,50 @@ NOTICE_AND_CRITERIA = {
 }
 
 
-def _candidate(cid, title, problem, target_user):
+# pge/Claude(2026-07-27, 주제 브레인스토밍 재설계): 키워드 출처 3묶음 기본 픽스처.
+def _default_keywords():
+    return [
+        {"keyword_id": "kw_1", "keyword": "고령층 디지털 접근성", "source": "trend", "rationale": "최근 이슈1"},
+        {"keyword_id": "kw_2", "keyword": "무인기기 사용 두려움", "source": "trend", "rationale": "최근 이슈2"},
+        {"keyword_id": "kw_3", "keyword": "실현 가능성", "source": "contest", "rationale": "평가 기준1"},
+        {"keyword_id": "kw_4", "keyword": "차별성", "source": "contest", "rationale": "평가 기준2"},
+        {"keyword_id": "kw_5", "keyword": "키오스크", "source": "user_issue", "rationale": "사용자 입력"},
+    ]
+
+
+def _second_batch_keywords():
+    return [
+        {"keyword_id": "kw_1", "keyword": "새 키워드1", "source": "trend", "rationale": "새 이슈1"},
+        {"keyword_id": "kw_2", "keyword": "새 키워드2", "source": "contest", "rationale": "새 기준1"},
+        {"keyword_id": "kw_3", "keyword": "새 키워드3", "source": "user_issue", "rationale": "새 입력"},
+    ]
+
+
+def _topic(cid, title, problem, target_user, keyword_ids=None):
     return {
         "candidate_id": cid,
         "title": title,
         "problem": problem,
         "target_user": target_user,
-        "usage_scenario": f"{title} 사용 상황",
         "core_value": f"{title} 핵심 가치",
-        "solution": f"{title} 해결 방식",
-        "main_features": [f"{title} 기능1"],
-        "differentiation": f"{title} 차별성",
         "contest_fit": f"{title} 공모전 적합성",
-        "success_metrics": [f"{title} 지표"],
+        "keyword_ids": keyword_ids or ["kw_1", "kw_3"],
     }
 
 
-def _default_candidates():
+def _default_topics():
     return [
-        _candidate("candidate_1", "후보1: 문의 자동응답", "반복 문의 응대 부담", "동네 카페 사장님"),
-        _candidate("candidate_2", "후보2: 예약 관리", "예약 누락과 중복", "동네 미용실 사장님"),
+        _topic("candidate_1", "후보1: 문의 자동응답", "반복 문의 응대 부담", "동네 카페 사장님"),
+        _topic("candidate_2", "후보2: 예약 관리", "예약 누락과 중복", "동네 미용실 사장님"),
+        _topic("candidate_3", "후보3: 재고 알림", "재고 파악 지연", "동네 편의점 사장님"),
+    ]
+
+
+def _second_batch_topics():
+    return [
+        _topic("candidate_1", "새 후보1", "새 문제1", "새 사용자1"),
+        _topic("candidate_2", "새 후보2", "새 문제2", "새 사용자2"),
+        _topic("candidate_3", "새 후보3", "새 문제3", "새 사용자3"),
     ]
 
 
@@ -144,48 +170,63 @@ def _review(cid, feasibility="high"):
     }
 
 
+_CANDIDATE_ID_IN_PROMPT_RE = re.compile(r'"candidate_id":\s*"([^"]+)"')
+
+
 class DiscoveryScriptedLLM:
     """프롬프트 마커로 노드를 판별해 고정 응답을 돌려주는 discovery 전용 stub.
 
-    candidates_queue: candidate_planning 호출마다 순서대로 꺼내 쓰는 candidates 리스트
-    (재추천 시나리오에서 매번 다른 후보를 반환하도록). 비어 있으면 _default_candidates()를
+    keywords_queue: keyword_recommendation 호출마다 순서대로 꺼내 쓰는 keywords 리스트
+    (재추천 시나리오에서 매번 다른 키워드를 반환하도록). 비어 있으면 _default_keywords()를
     반복 사용한다.
+    candidates_queue: topic_generation 호출마다 순서대로 꺼내 쓰는 candidates(주제) 리스트.
+    비어 있으면 _default_topics()를 반복 사용한다.
     selection_response: candidate_selection(LLM 해석) 호출 시 반환할 고정 응답(dict) 또는
     호출마다 꺼내 쓸 리스트.
-    broken_for: {"candidate_planning", "candidate_feasibility", "candidate_selection",
-    "planning_question"} 중 지정된 노드는 파싱 불가능한 텍스트를 반환한다.
+    broken_for: {"keyword_recommendation", "topic_generation", "feasibility_review",
+    "candidate_selection", "planning_question"} 중 지정된 노드는 파싱 불가능한 텍스트를
+    반환한다.
     """
 
     def __init__(
         self,
+        keywords_queue=None,
         candidates_queue=None,
         selection_responses=None,
         broken_for=None,
         dev_next_action="await_user_decision",
+        fixed_invalid_keywords=None,
         fixed_invalid_candidates=None,
     ):
         self.captured_prompts: list[str] = []
+        self.keywords_queue = list(keywords_queue) if keywords_queue else []
         self.candidates_queue = list(candidates_queue) if candidates_queue else []
         self.selection_responses = list(selection_responses) if selection_responses else []
         self.broken_for = broken_for or set()
         self.dev_next_action = dev_next_action
+        self.fixed_invalid_keywords = fixed_invalid_keywords
         # 항상 이 값(스키마상 유효하지 않은 후보 목록)을 반환한다 — 재시도해도 계속 실패하는
         # 상황을 흉내내기 위함(candidates_queue는 pop 방식이라 재시도 때 다른 값이 나가버려
         # "계속 무효한 응답"을 표현할 수 없다).
         self.fixed_invalid_candidates = fixed_invalid_candidates
-        self.call_counts = {"candidate_planning": 0, "candidate_feasibility": 0, "candidate_selection": 0}
+        self.call_counts = {
+            "keyword_recommendation": 0,
+            "topic_generation": 0,
+            "feasibility_review": 0,
+            "candidate_selection": 0,
+        }
 
     def __call__(self, prompt: str) -> str:
         self.captured_prompts.append(prompt)
 
-        if "[후보 생성 규칙]" in prompt:
-            self.call_counts["candidate_planning"] += 1
-            if "candidate_planning" in self.broken_for:
+        if "[키워드 추천 규칙]" in prompt:
+            self.call_counts["keyword_recommendation"] += 1
+            if "keyword_recommendation" in self.broken_for:
                 return "이것은 JSON이 아닙니다"
-            if self.fixed_invalid_candidates is not None:
-                candidates = self.fixed_invalid_candidates
+            if self.fixed_invalid_keywords is not None:
+                keywords = self.fixed_invalid_keywords
             else:
-                candidates = self.candidates_queue.pop(0) if self.candidates_queue else _default_candidates()
+                keywords = self.keywords_queue.pop(0) if self.keywords_queue else _default_keywords()
             return json.dumps(
                 {
                     "contest_analysis": {
@@ -196,16 +237,30 @@ class DiscoveryScriptedLLM:
                         "constraints": ["제약1"],
                         "unknown_from_notice": ["미상1"],
                     },
-                    "candidates": candidates,
+                    "keywords": keywords,
                 },
                 ensure_ascii=False,
             )
 
-        if "[검토 규칙]" in prompt:
-            self.call_counts["candidate_feasibility"] += 1
-            if "candidate_feasibility" in self.broken_for:
+        if "[주제 생성 규칙]" in prompt:
+            self.call_counts["topic_generation"] += 1
+            if "topic_generation" in self.broken_for:
                 return "이것은 JSON이 아닙니다"
-            return json.dumps({"candidate_reviews": [_review("candidate_1"), _review("candidate_2", "medium")]}, ensure_ascii=False)
+            if self.fixed_invalid_candidates is not None:
+                candidates = self.fixed_invalid_candidates
+            else:
+                candidates = self.candidates_queue.pop(0) if self.candidates_queue else _default_topics()
+            return json.dumps({"candidates": candidates}, ensure_ascii=False)
+
+        if "[검토 규칙]" in prompt:
+            self.call_counts["feasibility_review"] += 1
+            if "feasibility_review" in self.broken_for:
+                return "이것은 JSON이 아닙니다"
+            # pge/Claude(2026-07-27, 주제 브레인스토밍 재설계): 이제 선택된 주제 1개만
+            # 검토 대상이다 — 프롬프트에 실제로 주입된 candidate_id를 그대로 리뷰에 담는다.
+            match = _CANDIDATE_ID_IN_PROMPT_RE.search(prompt)
+            cid = match.group(1) if match else "candidate_1"
+            return json.dumps({"candidate_reviews": [_review(cid)]}, ensure_ascii=False)
 
         if "[해석 규칙]" in prompt:
             self.call_counts["candidate_selection"] += 1
@@ -329,6 +384,25 @@ def _start_discovery(llm, user_idea=""):
     )
 
 
+def _keyword_select_message(state, indices=None):
+    """pge/Claude(2026-07-27, 주제 브레인스토밍 재설계): 프론트 keywordSelectMessage와
+    약속된 형식("선택한 키워드: A, B, C")을 그대로 재현한다. indices를 안 주면 제시된
+    키워드 전부를 선택한다."""
+    options = state["keyword_options"]
+    chosen = [options[i] for i in indices] if indices is not None else options
+    return "선택한 키워드: " + ", ".join(k["keyword"] for k in chosen)
+
+
+def _start_discovery_to_topics(llm, user_idea="", keyword_indices=None):
+    """키워드 추천까지 마친 뒤(_start_discovery) 곧바로 키워드를 선택해 주제 생성까지
+    끝낸 상태(awaiting_candidate_selection)를 반환한다 — 옛 _start_discovery가 한 번에
+    하던 역할을 이제 두 단계로 나눠 이어 붙인 헬퍼."""
+    state = _start_discovery(llm, user_idea=user_idea)
+    assert state["phase"] == "awaiting_keyword_selection"
+    message = _keyword_select_message(state, keyword_indices)
+    return reply_ideation_conversation(previous_state=state, user_message=message, llm_call=llm)
+
+
 def _legacy_resolve_selection_then_ask_planning_question(llm, state, user_message):
     """용준/Claude(2026-07-21, 요청: 전문가 라운드테이블 전환) 보존 검증용 헬퍼 — 예전에는
     candidate_selection 노드가 선택/결합을 확정한 직후 그대로 1:1 인터뷰 질문 노드
@@ -376,73 +450,189 @@ def test_initial_idea_present_starts_refinement_mode():
     assert state["initial_idea"] == "동네 가게 챗봇"
     assert not any(m["message_type"] == "question" for m in state["messages"])
     # discovery 노드는 전혀 호출되지 않는다.
-    assert llm.call_counts["candidate_planning"] == 0
+    assert llm.call_counts["keyword_recommendation"] == 0
+    # refinement 모드는 discovery 단계 자체가 없으므로 0(전체 메시지가 라운드테이블 채팅).
+    assert state["refinement_message_offset"] == 0
 
 
 def test_no_initial_idea_starts_discovery_mode():
+    """pge/Claude(2026-07-27, 주제 브레인스토밍 재설계): discovery 진입 시 곧바로 완성된
+    후보가 아니라 키워드 추천에서 멈춘다."""
     llm = DiscoveryScriptedLLM()
     state = _start_discovery(llm, user_idea="")
     assert state["ideation_mode"] == "discovery"
-    assert state["phase"] == "awaiting_candidate_selection"
+    assert state["phase"] == "awaiting_keyword_selection"
     assert state["initial_idea"] is None
+    assert len(state["keyword_options"]) == len(_default_keywords())
 
 
 def test_whitespace_only_idea_starts_discovery_mode():
     llm = DiscoveryScriptedLLM()
     state = _start_discovery(llm, user_idea="   \n\t  ")
     assert state["ideation_mode"] == "discovery"
-    assert state["phase"] == "awaiting_candidate_selection"
+    assert state["phase"] == "awaiting_keyword_selection"
 
 
 # ---------------------------------------------------------------------------
-# 5~6. discovery에서 서로 다른 후보 2~3개 생성 + 개발 전문가 실현 가능성 검토
+# 키워드 추천 — 트렌드/공모전/사용자 이슈 3묶음, 사용자 다중 선택, 재추천
 # ---------------------------------------------------------------------------
 
 
-def test_discovery_generates_distinct_candidates_with_feasibility_review():
+def test_keyword_recommendation_produces_three_sources():
     llm = DiscoveryScriptedLLM()
     state = _start_discovery(llm)
+    sources = {k["source"] for k in state["keyword_options"]}
+    assert sources == {"trend", "contest", "user_issue"}
+    assert llm.call_counts["keyword_recommendation"] == 1
+
+
+def test_keyword_selection_parses_exact_matches_without_llm_interpretation():
+    llm = DiscoveryScriptedLLM()
+    state = _start_discovery(llm)
+    message = _keyword_select_message(state, indices=[0, 2])
+    state = reply_ideation_conversation(previous_state=state, user_message=message, llm_call=llm)
 
     assert state["phase"] == "awaiting_candidate_selection"
-    candidates = state["idea_candidates"]
-    assert 2 <= len(candidates) <= 3
-    # 후보끼리 problem/target_user가 본질적으로 달라야 한다.
-    problems = {c["problem"] for c in candidates}
-    targets = {c["target_user"] for c in candidates}
-    assert len(problems) == len(candidates)
-    assert len(targets) == len(candidates)
-    # 개발 전문가 검토 결과(실현 가능성 등)가 병합되어 있어야 한다.
-    for c in candidates:
-        assert c["feasibility"] in {"high", "medium", "low"}
-        assert c["technical_approach"]
-        assert isinstance(c["required_data"], list)
-    assert state["original_idea_candidates"] == candidates
+    assert set(state["selected_keyword_ids"]) == {"kw_1", "kw_3"}
+    assert llm.call_counts["candidate_selection"] == 0  # 선택 파싱은 LLM을 호출하지 않는다.
+    assert llm.call_counts["topic_generation"] == 1
+
+
+def test_keyword_selection_with_no_match_reprompts_without_llm_call():
+    llm = DiscoveryScriptedLLM()
+    state = _start_discovery(llm)
+    state = reply_ideation_conversation(
+        previous_state=state, user_message="선택한 키워드: 존재하지않는키워드", llm_call=llm
+    )
+    assert state["phase"] == "awaiting_keyword_selection"
+    assert "최소 1개" in state["messages"][-1]["content"]
+    assert llm.call_counts["topic_generation"] == 0
+
+
+def test_keyword_regenerate_request_accumulates_instead_of_replacing():
+    """pge/Claude(2026-07-28, 실측 요청: "다른 키워드 추천받기 눌러도 안 사라지고 쌓이게") —
+    재추천은 이전 배치를 지우지 않고 새 배치를 이어붙인다. LLM은 매번 "kw_1"부터 다시
+    번호를 매기므로(프롬프트 출력 규칙), 그대로 이어붙이면 keyword_id가 겹친다 — 노드가
+    누적 개수 기준으로 다시 번호를 매겨 유일성을 보장하는지도 함께 확인한다."""
+    llm = DiscoveryScriptedLLM(keywords_queue=[_default_keywords(), _second_batch_keywords()])
+    state = _start_discovery(llm)
+    first_keywords = {k["keyword"] for k in state["keyword_options"]}
+
+    state = reply_ideation_conversation(previous_state=state, user_message="다시 추천해줘", llm_call=llm)
+
+    assert state["phase"] == "awaiting_keyword_selection"
+    assert state["candidate_regeneration_count"] == 1
+    all_keywords = {k["keyword"] for k in state["keyword_options"]}
+    second_batch_texts = {k["keyword"] for k in _second_batch_keywords()}
+    assert all_keywords == first_keywords | second_batch_texts
+    assert len(state["keyword_options"]) == len(_default_keywords()) + len(_second_batch_keywords())
+    ids = [k["keyword_id"] for k in state["keyword_options"]]
+    assert len(ids) == len(set(ids))  # 배치 간 keyword_id가 겹치지 않는다.
+    assert llm.call_counts["topic_generation"] == 0
+
+
+def test_keyword_accumulation_caps_drop_oldest_per_source():
+    """pge/Claude(2026-07-28, 실측 요청: "키워드 누적 갯수는 트렌드 최대 8개, 공모전 누적
+    최대 5개") — 상한을 넘는 만큼 출처별로 가장 오래된 것부터 버리고, 최신 키워드를
+    유지해야 한다. user_issue는 상한 대상이 아니므로 그대로 다 남아야 한다."""
+    keywords = (
+        [{"keyword_id": f"kw_trend_{i}", "keyword": f"트렌드{i}", "source": "trend", "rationale": "r"} for i in range(10)]
+        + [{"keyword_id": f"kw_contest_{i}", "keyword": f"공모전{i}", "source": "contest", "rationale": "r"} for i in range(7)]
+        + [{"keyword_id": f"kw_issue_{i}", "keyword": f"이슈{i}", "source": "user_issue", "rationale": "r"} for i in range(4)]
+    )
+    capped = _apply_keyword_accumulation_caps(keywords)
+
+    trend_kept = [k for k in capped if k["source"] == "trend"]
+    contest_kept = [k for k in capped if k["source"] == "contest"]
+    issue_kept = [k for k in capped if k["source"] == "user_issue"]
+
+    assert len(trend_kept) == MAX_ACCUMULATED_KEYWORDS_BY_SOURCE["trend"] == 8
+    assert len(contest_kept) == MAX_ACCUMULATED_KEYWORDS_BY_SOURCE["contest"] == 5
+    assert len(issue_kept) == 4  # 상한이 없으므로 그대로 유지.
+    # 가장 오래된 것부터 버려 최신(뒤쪽) 키워드가 남아야 한다.
+    assert {k["keyword"] for k in trend_kept} == {f"트렌드{i}" for i in range(2, 10)}
+    assert {k["keyword"] for k in contest_kept} == {f"공모전{i}" for i in range(2, 7)}
+
+
+def test_keyword_regeneration_capped_and_stops_calling_llm_after_limit():
+    llm = DiscoveryScriptedLLM(
+        keywords_queue=[_default_keywords(), _default_keywords(), _default_keywords()]
+    )
+    state = _start_discovery(llm)
+
+    state = reply_ideation_conversation(previous_state=state, user_message="다시 추천", llm_call=llm)
+    assert state["candidate_regeneration_count"] == 1
+    state = reply_ideation_conversation(previous_state=state, user_message="다시 추천", llm_call=llm)
+    assert state["candidate_regeneration_count"] == 2
+
+    calls_before = llm.call_counts["keyword_recommendation"]
+    state = reply_ideation_conversation(previous_state=state, user_message="다시 추천", llm_call=llm)
+    assert state["phase"] == "awaiting_keyword_selection"
+    assert state["candidate_regeneration_count"] == 2  # 더 늘지 않는다.
+    assert llm.call_counts["keyword_recommendation"] == calls_before
+    assert "최대" in state["messages"][-1]["content"]
+
+
+def test_keyword_recommendation_missing_required_field_does_not_produce_empty_keywords():
+    llm = DiscoveryScriptedLLM(fixed_invalid_keywords=[{"keyword_id": "kw_1"}])
+    state = _start_discovery(llm)
+    assert state["phase"] == "failed"
+    assert state["failed_node"] == "keyword_recommendation"
+    assert state["keyword_options"] == []
+    assert llm.call_counts["keyword_recommendation"] == 2  # 최초 1회 + 재시도 1회, 계속 무효했다.
 
 
 # ---------------------------------------------------------------------------
-# 12. 후보 선택 전에는 refinement 질문(기획/개발 질문 노드)이 절대 실행되지 않는지
+# 5~6. 선택된 키워드로 서로 다른 주제 목록 생성 (개발 검토는 아직 없음 — 선택 후로 이동됨)
+# ---------------------------------------------------------------------------
+
+
+def test_discovery_generates_distinct_topics_from_selected_keywords():
+    llm = DiscoveryScriptedLLM()
+    state = _start_discovery_to_topics(llm)
+
+    assert state["phase"] == "awaiting_candidate_selection"
+    topics = state["idea_candidates"]
+    assert 2 <= len(topics) <= 5
+    problems = {t["problem"] for t in topics}
+    targets = {t["target_user"] for t in topics}
+    assert len(problems) == len(topics)
+    assert len(targets) == len(topics)
+    # pge/Claude(2026-07-27, 주제 브레인스토밍 재설계): 이 시점에는 아직 실현 가능성
+    # 검토가 없다(선택 확정 후에만 수행되므로).
+    for t in topics:
+        assert "feasibility" not in t
+    assert state["original_idea_candidates"] == topics
+    assert llm.call_counts["feasibility_review"] == 0
+
+
+# ---------------------------------------------------------------------------
+# 12. 주제 선택 전에는 refinement 질문(기획/개발 질문 노드)이 절대 실행되지 않는지
 # ---------------------------------------------------------------------------
 
 
 def test_no_refinement_question_runs_before_candidate_selection():
     llm = DiscoveryScriptedLLM()
-    state = _start_discovery(llm)
+    state = _start_discovery_to_topics(llm)
     assert state["phase"] == "awaiting_candidate_selection"
     question_prompts = [p for p in llm.captured_prompts if "[질문 규칙]" in p]
-    assert not question_prompts, "후보 선택 전에 refinement 질문 노드가 호출되면 안 된다"
+    assert not question_prompts, "주제 선택 전에 refinement 질문 노드가 호출되면 안 된다"
 
 
 # ---------------------------------------------------------------------------
-# 7. 후보 번호 선택 후 refinement로 전환(코드가 결정적으로 처리 — LLM 해석 호출 없음)
+# 7. 후보 번호 선택 후 refinement로 전환(코드가 결정적으로 처리 — LLM 해석 호출 없음) +
+#    선택 확정 시점에만 선택된 주제 1개에 실현 가능성 검토가 조용히 수행되는지
 # ---------------------------------------------------------------------------
 
 
 def test_numeric_candidate_selection_switches_to_refinement_without_llm_interpretation():
     """용준/Claude(2026-07-21, 요청: 전문가 라운드테이블 전환) 이후 후보 확정 직후에는
     1:1 인터뷰 질문이 아니라 라운드테이블 한 라운드가 같은 요청 안에서 곧바로 끝까지
-    실행된다."""
+    실행된다. pge/Claude(2026-07-27, 주제 브레인스토밍 재설계) — 그 직전에 선택된 주제
+    1개에만 실현 가능성 검토가 조용히(정지 지점 없이) 수행된다."""
     llm = DiscoveryScriptedLLM()
-    state = _start_discovery(llm)
+    state = _start_discovery_to_topics(llm)
+    discovery_message_count = len(state["messages"])
     state = reply_ideation_conversation(previous_state=state, user_message="1번", llm_call=llm)
 
     assert state["phase"] == "discussion_complete"
@@ -451,14 +641,33 @@ def test_numeric_candidate_selection_switches_to_refinement_without_llm_interpre
     assert state["selected_idea"]["source"] == "select"
     assert state["user_idea"]["candidate_id"] == "candidate_1"
     assert llm.call_counts["candidate_selection"] == 0  # 단순 번호 선택은 LLM을 호출하지 않는다.
+    # 선택된 주제 1개에만 실현 가능성 검토가 수행됐다 — 나머지 주제에는 LLM 비용을 안 썼다.
+    assert llm.call_counts["feasibility_review"] == 1
+    assert state["selected_idea"]["feasibility"] in {"high", "medium", "low"}
+    assert state["selected_idea"]["technical_approach"]
     # 선택 직후 같은 요청 안에서 라운드테이블(기획 위원 최초 의견 -> 개발 위원 검토 -> 진행자
     # 정리)까지 만들어졌다 — 1:1 인터뷰 질문(message_type="question")은 없다.
     assert state["messages"][-1]["speaker_id"] == "ideation_facilitator"
     assert state["messages"][-1]["message_type"] == "summary"
-    # 후보 선택 질문(discovery 단계의 정상적인 message_type="question")을 제외한, 선택
-    # 확정 이후에 생성된 메시지 중에는 1:1 인터뷰 질문이 없어야 한다.
-    after_selection = state["messages"][2:]  # [0]=선택 질문, [1]=사용자의 "1번" 답변
-    assert not any(m["message_type"] == "question" for m in after_selection)
+    # pge/Claude(2026-07-28, 실측 요청: "브레인스토밍 이전 내역이 라운드테이블에 남아있음") —
+    # refinement_message_offset은 discovery 단계(키워드 추천/선택, 주제 생성/선택) 문답 +
+    # 이번 선택 확정 답변("1번") 바로 다음이어야 한다. 그 지점부터가 프론트가 실제로
+    # 라운드테이블 채팅으로 보여줄 부분(선택 확정 요약 + 회의 안건)이다.
+    assert state["refinement_message_offset"] == discovery_message_count + 1
+    refinement_messages = state["messages"][state["refinement_message_offset"] :]
+    assert refinement_messages[0]["content"].startswith("선택된 아이디어:")
+
+
+def test_feasibility_review_failure_does_not_block_selection():
+    """pge/Claude(2026-07-27, 주제 브레인스토밍 재설계): 실현 가능성 검토는 fail-open이다
+    — LLM이 실패해도 선택 확정 자체(라운드테이블 진입)는 막히지 않는다."""
+    llm = DiscoveryScriptedLLM(broken_for={"feasibility_review"})
+    state = _start_discovery_to_topics(llm)
+    state = reply_ideation_conversation(previous_state=state, user_message="1번", llm_call=llm)
+
+    assert state["phase"] == "discussion_complete"
+    assert state["selected_idea"] is not None
+    assert "feasibility" not in state["selected_idea"]  # 검토 실패라 병합되지 않았다.
 
 
 # ---------------------------------------------------------------------------
@@ -476,6 +685,9 @@ def test_active_stage_switches_from_candidate_discovery_to_refinement_after_sele
     assert state["ideation_mode"] == "discovery"
     assert active_stage_for(state["phase"]) == "candidate_discovery"
 
+    state = _start_discovery_to_topics(llm)
+    assert active_stage_for(state["phase"]) == "candidate_discovery"
+
     state = reply_ideation_conversation(previous_state=state, user_message="1번", llm_call=llm)
 
     # 최초 진입 모드 기록은 그대로 유지된다 — active_stage만 바뀐다.
@@ -490,7 +702,7 @@ def test_active_stage_switches_from_candidate_discovery_to_refinement_after_sele
 
 def test_title_candidate_selection_resolves_deterministically():
     llm = DiscoveryScriptedLLM()
-    state = _start_discovery(llm)
+    state = _start_discovery_to_topics(llm)
     title = state["idea_candidates"][1]["title"]
     state = reply_ideation_conversation(previous_state=state, user_message=title, llm_call=llm)
 
@@ -539,7 +751,7 @@ def test_combine_request_uses_llm_interpretation_and_produces_combined_idea():
             }
         ]
     )
-    state = _start_discovery(llm)
+    state = _start_discovery_to_topics(llm)
     # 용준/Claude(2026-07-21, 요청: 전문가 라운드테이블 전환) — 결합 확정 직후 곧바로
     # 라운드테이블이 이어지고, 그 라운드의 dev 의견이 unconfirmed=[]를 반환하면
     # unresolved_issues가 그 값으로 덮어써진다(DiscoveryScriptedLLM의 "[의견 규칙]" stub이
@@ -556,6 +768,9 @@ def test_combine_request_uses_llm_interpretation_and_produces_combined_idea():
     assert update["selected_idea"]["source"] == "combine"
     assert update["selected_idea"]["source_candidate_ids"] == ["candidate_1", "candidate_2"]
     assert "결합 가정1" in update["unresolved_issues"]
+    # pge/Claude(2026-07-27, 주제 브레인스토밍 재설계) — candidate_selection 노드가 선택
+    # 확정 시 선택된 주제 1개에 실현 가능성 검토를 조용히 병합한다.
+    assert update["selected_idea"]["feasibility"] in {"high", "medium", "low"}
     # 용준/Claude(2026-07-22, 요청: "잠시만" 취소 중 phase 오염 수정) — phase는 항상
     # canonical 상태("expert_discussion")를 유지하고, "곧바로 라운드테이블로 이어간다"는
     # 그래프 내부 라우팅 신호는 next_route로 분리됐다(ideation_conv_build.py::
@@ -565,76 +780,141 @@ def test_combine_request_uses_llm_interpretation_and_produces_combined_idea():
 
 
 # ---------------------------------------------------------------------------
-# 10. "다시 추천" 요청 및 반복 상한
+# 10. "다시 추천" 요청 및 반복 상한 (주제 단계 — 키워드는 그대로 유지)
 # ---------------------------------------------------------------------------
 
 
-def test_regenerate_request_produces_new_candidates_without_llm_interpretation():
-    second_batch = [
-        _candidate("candidate_1", "새 후보1", "새 문제1", "새 사용자1"),
-        _candidate("candidate_2", "새 후보2", "새 문제2", "새 사용자2"),
-    ]
-    # candidates_queue는 candidate_planning이 호출될 때마다 순서대로 소비된다 — 최초
-    # 시작(1번째 호출)에는 기본 후보를, 재추천(2번째 호출)에는 second_batch를 받도록 두
+def test_regenerate_request_produces_new_topics_without_llm_interpretation():
+    """pge/Claude(2026-07-28, 실측 요청: "이미 생성된 후보도 그냥 두는 게 좋을 것 같다 —
+    기억X 유지O") — 재추천은 이전 주제 카드를 지우지 않고 새 주제를 이어붙인다(키워드
+    누적과 동일한 원칙). LLM이 매번 "candidate_1"부터 다시 번호를 매기므로, 코드가 누적
+    개수 기준으로 candidate_id를 다시 매겨 충돌을 막는지도 함께 확인한다."""
+    second_batch = _second_batch_topics()
+    # candidates_queue는 topic_generation이 호출될 때마다 순서대로 소비된다 — 최초
+    # 시작(1번째 호출)에는 기본 주제를, 재추천(2번째 호출)에는 second_batch를 받도록 두
     # 항목을 순서대로 넣는다.
-    llm = DiscoveryScriptedLLM(candidates_queue=[_default_candidates(), second_batch])
-    state = _start_discovery(llm)
+    llm = DiscoveryScriptedLLM(candidates_queue=[_default_topics(), second_batch])
+    state = _start_discovery_to_topics(llm)
     first_titles = {c["title"] for c in state["idea_candidates"]}
+    selected_keyword_ids_before = set(state["selected_keyword_ids"])
 
     state = reply_ideation_conversation(previous_state=state, user_message="다시 추천해줘", llm_call=llm)
 
     assert state["phase"] == "awaiting_candidate_selection"
     assert state["candidate_regeneration_count"] == 1
-    new_titles = {c["title"] for c in state["idea_candidates"]}
-    assert new_titles == {"새 후보1", "새 후보2"}
-    assert new_titles.isdisjoint(first_titles)
-    # 최초 생성 후보 이력은 재추천과 무관하게 보존된다.
+    all_titles = {c["title"] for c in state["idea_candidates"]}
+    second_batch_titles = {c["title"] for c in second_batch}
+    assert all_titles == first_titles | second_batch_titles
+    assert len(state["idea_candidates"]) == len(_default_topics()) + len(second_batch)
+    ids = [c["candidate_id"] for c in state["idea_candidates"]]
+    assert len(ids) == len(set(ids))  # 배치 간 candidate_id가 겹치지 않는다.
+    # 키워드 재추천이 아니라 주제만 다시 만든다 — 선택된 키워드는 그대로 유지된다.
+    assert set(state["selected_keyword_ids"]) == selected_keyword_ids_before
+    assert llm.call_counts["keyword_recommendation"] == 1  # 늘지 않았다.
+    # 최초 생성 후보 이력은 재추천과 무관하게 보존된다(최초 배치만, 누적 전체가 아니다).
     assert {c["title"] for c in state["original_idea_candidates"]} == first_titles
     assert llm.call_counts["candidate_selection"] == 0
 
 
-def test_regenerate_request_after_selection_returns_to_new_candidate_list():
-    """후보를 선택해 기획 위원 질문에 진입한 뒤에도 "아이디어 다시 짜줘"는
-    불충분한 답변이 아니라 후보 재생성 의도로 처리되어야 한다."""
-    second_batch = [
-        _candidate("candidate_1", "새 후보1", "새 문제1", "새 사용자1"),
-        _candidate("candidate_2", "새 후보2", "새 문제2", "새 사용자2"),
-    ]
-    llm = DiscoveryScriptedLLM(candidates_queue=[_default_candidates(), second_batch])
-    state = _start_discovery(llm)
+def test_regenerate_request_after_selection_returns_to_new_topic_list():
+    """후보를 선택해 라운드테이블에 진입한 뒤에도 "아이디어 다시 짜줘"는 불충분한 답변이
+    아니라 후보 재생성 의도로 처리되어야 한다. pge/Claude(2026-07-27, 주제 브레인스토밍
+    재설계) — 이 전면 재시작은 주제만이 아니라 키워드부터 다시 추천한다(완전히 새로
+    시작하는 요청이므로)."""
+    second_batch = _second_batch_topics()
+    llm = DiscoveryScriptedLLM(candidates_queue=[_default_topics(), second_batch])
+    state = _start_discovery_to_topics(llm)
     state = reply_ideation_conversation(previous_state=state, user_message="1번", llm_call=llm)
-    # 용준/Claude(2026-07-21, 요청: 전문가 라운드테이블 전환) — 선택 직후 라운드테이블이
-    # 같은 요청 안에서 끝까지 실행돼 "awaiting_user_decision"으로 멈춘다.
     assert state["phase"] == "discussion_complete"
     assert state["selected_idea"] is not None
+    # 라운드테이블 최소 한 라운드는 실제로 돌았어야 아래 "옛 내용이 안 남는다" 검증이 의미가
+    # 있다 — 회귀 테스트: 실측에서 이 회의 내역이 재시작 뒤에도 화면에 그대로 남아 있었다.
+    old_message_count = len(state["messages"])
+    assert old_message_count > 1
+    assert state["discussion_rounds"]  # 최소 한 라운드 기록이 쌓여 있다.
 
     sufficiency_calls_before = sum("[판정 규칙]" in prompt for prompt in llm.captured_prompts)
     state = reply_ideation_conversation(previous_state=state, user_message="아이디어 다시 짜줘", llm_call=llm)
 
-    assert state["phase"] == "awaiting_candidate_selection"
+    # phase="keyword_generation"은 정지 지점이 아니라 그래프 진입점이므로, 이 reply 한 번
+    # 안에서 keyword_recommendation 노드가 곧바로 실행되어 새 키워드로 다시 채워진 채
+    # "awaiting_keyword_selection"에서 멈춘다 — 완전 재시작이라 선택된 키워드는 비어 있다.
+    assert state["phase"] == "awaiting_keyword_selection"
     assert state["candidate_regeneration_count"] == 1
-    assert {c["title"] for c in state["idea_candidates"]} == {"새 후보1", "새 후보2"}
+    assert state["keyword_options"]  # 새로 채워졌다(비어있지 않음).
+    assert state["selected_keyword_ids"] == []
     assert state["selected_idea"] is None
     assert state["selection_reason"] is None
     assert state["resolved_topics"] == []
     assert any(m["speaker_id"] == "user" and m["content"] == "아이디어 다시 짜줘" for m in state["messages"])
+    # pge/Claude(2026-07-28, 실측 버그 수정: "라운드 1에서 멈춤" + "이전 대화 내용이 안
+    # 지워짐") — "완전히 새로 시작"이라면서 옛 라운드테이블 채팅/기록이 그대로 남아 있으면
+    # 안 된다. 새 messages는 재시작 트리거 메시지 + 새 키워드 추천 질문, 딱 둘뿐이어야 한다.
+    assert state["discussion_rounds"] == []
+    assert len(state["messages"]) == 2
+    assert len(state["messages"]) < old_message_count
     assert sum("[판정 규칙]" in prompt for prompt in llm.captured_prompts) == sufficiency_calls_before
 
 
-def test_regeneration_capped_and_stops_calling_llm_after_limit():
-    llm = DiscoveryScriptedLLM(candidates_queue=[_default_candidates(), _default_candidates(), _default_candidates()])
-    state = _start_discovery(llm)
+def test_keyword_reselect_from_topic_stage_accumulates_keywords_and_keeps_topics():
+    """pge/Claude(2026-07-28, 실측 요청: "이미 생성된 후보/키워드도 그냥 두는 게 좋을 것
+    같다 — 기억X 유지O") — KEYWORD_RESELECT_MESSAGE도 이제 아무것도 지우지 않는다. 키워드는
+    기존 배치에 새 배치가 이어붙고(REGENERATE_MESSAGE와 동일 원칙), 주제 카드도 화면에서
+    사라지지 않다가 새 주제가 만들어지면 그 위에 이어붙는다(과거 주제와 안 겹치는 새 주제가
+    추가로 붙는다 — dedup은 여전히 previous_topics로 프롬프트에 전달된다)."""
+    second_batch_topics = _second_batch_topics()
+    llm = DiscoveryScriptedLLM(
+        keywords_queue=[_default_keywords(), _second_batch_keywords()],
+        candidates_queue=[_default_topics(), second_batch_topics],
+    )
+    state = _start_discovery_to_topics(llm)
+    first_titles = {c["title"] for c in state["idea_candidates"]}
+    first_keywords = {k["keyword"] for k in state["keyword_options"]}
+    assert state["phase"] == "awaiting_candidate_selection"
+
+    state = reply_ideation_conversation(previous_state=state, user_message=KEYWORD_RESELECT_MESSAGE, llm_call=llm)
+
+    assert state["phase"] == "awaiting_keyword_selection"
+    assert state["candidate_regeneration_count"] == 1
+    assert state["selected_keyword_ids"] == []
+    # 키워드는 지워지지 않고 이어붙는다.
+    all_keywords = {k["keyword"] for k in state["keyword_options"]}
+    assert all_keywords == first_keywords | {k["keyword"] for k in _second_batch_keywords()}
+    # 직전 주제 카드도 아직 지우지 않는다.
+    assert {c["title"] for c in state["idea_candidates"]} == first_titles
+
+    state = reply_ideation_conversation(
+        previous_state=state, user_message=_keyword_select_message(state), llm_call=llm
+    )
+
+    assert state["phase"] == "awaiting_candidate_selection"
+    all_titles = {c["title"] for c in state["idea_candidates"]}
+    second_batch_titles = {c["title"] for c in second_batch_topics}
+    # 새 주제가 이전 주제 위에 이어붙는다 — 아무것도 사라지지 않는다.
+    assert all_titles == first_titles | second_batch_titles
+    ids = [c["candidate_id"] for c in state["idea_candidates"]]
+    assert len(ids) == len(set(ids))
+    # 새 주제를 만들 때 직전 주제가 실제로 프롬프트의 dedup 근거(previous_topics)로 전달됐다.
+    assert any(
+        "[이전에 제시한 주제 previous_topics]" in prompt and any(t in prompt for t in first_titles)
+        for prompt in llm.captured_prompts
+    )
+
+
+def test_topic_regeneration_capped_and_stops_calling_llm_after_limit():
+    llm = DiscoveryScriptedLLM(candidates_queue=[_default_topics(), _default_topics(), _default_topics()])
+    state = _start_discovery_to_topics(llm)
 
     state = reply_ideation_conversation(previous_state=state, user_message="다시 추천", llm_call=llm)
     assert state["candidate_regeneration_count"] == 1
     state = reply_ideation_conversation(previous_state=state, user_message="다시 추천", llm_call=llm)
     assert state["candidate_regeneration_count"] == 2
 
-    calls_before = llm.call_counts["candidate_planning"]
+    calls_before = llm.call_counts["topic_generation"]
     state = reply_ideation_conversation(previous_state=state, user_message="다시 추천", llm_call=llm)
     assert state["phase"] == "awaiting_candidate_selection"
     assert state["candidate_regeneration_count"] == 2  # 더 늘지 않는다.
-    assert llm.call_counts["candidate_planning"] == calls_before  # LLM이 추가 호출되지 않았다.
+    assert llm.call_counts["topic_generation"] == calls_before  # LLM이 추가 호출되지 않았다.
     assert "최대" in state["messages"][-1]["content"]
 
 
@@ -650,13 +930,19 @@ def test_expert_recommend_request_produces_reasoned_recommendation():
                 "resolution": "recommend",
                 "selected_candidate_ids": ["candidate_2"],
                 "selection_reason": "데이터 확보가 더 쉽고 MVP 구현이 간단합니다.",
-                "combined_idea": _candidate("candidate_2", "후보2: 예약 관리", "예약 누락과 중복", "동네 미용실 사장님"),
+                # _REQUIRED_IDEA_FIELDS(candidate_selection 프롬프트 자체 출력 스키마)는
+                # title/problem/target_user/solution을 요구한다 — _topic()의 가벼운 스키마와
+                # 달리 combined_idea는 LLM이 새로 합성하는 값이라 solution을 포함해야 한다.
+                "combined_idea": {
+                    **_topic("candidate_2", "후보2: 예약 관리", "예약 누락과 중복", "동네 미용실 사장님"),
+                    "solution": "예약 캘린더 자동 동기화",
+                },
                 "unverified_assumptions": ["예약 데이터 형식이 표준화되어 있다는 가정"],
                 "clarifying_question": None,
             }
         ]
     )
-    state = _start_discovery(llm)
+    state = _start_discovery_to_topics(llm)
     # test_combine_request_uses_llm_interpretation_and_produces_combined_idea와 같은 이유로
     # (라운드테이블의 후속 라운드가 unresolved_issues를 덮어쓸 수 있다) candidate_selection
     # 노드를 직접 호출해 그 시점의 값을 검증한다.
@@ -674,29 +960,40 @@ def test_expert_recommend_request_produces_reasoned_recommendation():
 
 
 # ---------------------------------------------------------------------------
-# 14. 필수 키가 없는 후보 생성 응답 — 빈 카드를 만들지 않고 실패 처리
+# 14. 필수 키가 없는 주제 생성 응답 — 빈 카드를 만들지 않고 실패 처리
 # ---------------------------------------------------------------------------
 
 
-def test_candidate_planning_missing_required_field_does_not_produce_empty_candidates():
+def test_topic_generation_missing_required_field_does_not_produce_empty_topics():
     llm = DiscoveryScriptedLLM(fixed_invalid_candidates=[{"candidate_id": "candidate_1", "title": "제목만 있음"}])
     state = _start_discovery(llm)
+    message = _keyword_select_message(state)
+    state = reply_ideation_conversation(previous_state=state, user_message=message, llm_call=llm)
     assert state["phase"] == "failed"
-    assert state["failed_node"] == "candidate_planning"
+    assert state["failed_node"] == "topic_generation"
     assert state["idea_candidates"] == []
-    assert llm.call_counts["candidate_planning"] == 2  # 최초 1회 + 재시도 1회, 계속 무효했다.
+    assert llm.call_counts["topic_generation"] == 2  # 최초 1회 + 재시도 1회, 계속 무효했다.
 
 
-def test_candidate_feasibility_llm_failure_falls_back_to_failed_phase():
-    llm = DiscoveryScriptedLLM(broken_for={"candidate_feasibility"})
+def test_topic_generation_hallucinated_keyword_id_is_rejected():
+    """pge/Claude(2026-07-28, 실측 요청: "LLM이 엉뚱한 id를 지어내도 코드가 못 잡는다") —
+    선택된 키워드 집합에 없는 keyword_id를 담은 응답은 스키마상 필드가 다 채워져 있어도
+    거부돼야 한다(_validate_topic_generation_response의 valid_keyword_ids 검사)."""
+    hallucinated = _topic("candidate_1", "제목1", "문제1", "타깃1", keyword_ids=["kw_999"])
+    fine = _topic("candidate_2", "제목2", "문제2", "타깃2")
+    llm = DiscoveryScriptedLLM(fixed_invalid_candidates=[hallucinated, fine])
     state = _start_discovery(llm)
+    message = _keyword_select_message(state)  # 기본 5개 키워드(kw_1~kw_5) 전부 선택.
+    state = reply_ideation_conversation(previous_state=state, user_message=message, llm_call=llm)
     assert state["phase"] == "failed"
-    assert state["failed_node"] == "candidate_feasibility"
+    assert state["failed_node"] == "topic_generation"
+    assert state["idea_candidates"] == []
+    assert llm.call_counts["topic_generation"] == 2  # 최초 1회 + 재시도 1회, 계속 무효했다.
 
 
 def test_candidate_selection_llm_failure_falls_back_to_failed_phase():
     llm = DiscoveryScriptedLLM(broken_for={"candidate_selection"})
-    state = _start_discovery(llm)
+    state = _start_discovery_to_topics(llm)
     state = reply_ideation_conversation(previous_state=state, user_message="1번과 2번 결합해줘", llm_call=llm)
     assert state["phase"] == "failed"
     assert state["failed_node"] == "candidate_selection"
@@ -712,7 +1009,7 @@ def test_discovery_final_result_includes_13_fields_and_discovery_history():
     같은 요청 안에서 끝까지 실행되므로 "1번" 선택 한 번의 reply로 awaiting_user_decision에
     도달한다(과거처럼 두 번의 추가 질문 답변이 필요하지 않다)."""
     llm = DiscoveryScriptedLLM(dev_next_action="await_user_decision")
-    state = _start_discovery(llm)
+    state = _start_discovery_to_topics(llm)
     state = reply_ideation_conversation(previous_state=state, user_message="1번", llm_call=llm)
     assert state["phase"] == "discussion_complete"
 
@@ -820,10 +1117,10 @@ class _CombineAwareScriptedLLM(DiscoveryScriptedLLM):
 
 
 def test_combine_preserves_both_source_candidates_in_state():
-    """요청 1·11번 — "1번과 2번 결합" 시 두 원본 후보(제목/문제/목표 사용자/핵심 가치/
-    주요 기능)와 사용자 원문 요청, 선택 의도가 state에 그대로 보존되는지."""
+    """요청 1·11번 — "1번과 2번 결합" 시 두 원본 후보(제목/문제/목표 사용자/핵심 가치)와
+    사용자 원문 요청, 선택 의도가 state에 그대로 보존되는지."""
     llm = _CombineAwareScriptedLLM(selection_responses=[_combine_selection_response("high")])
-    state = _start_discovery(llm)
+    state = _start_discovery_to_topics(llm)
     original_candidates = {c["candidate_id"]: c for c in state["idea_candidates"]}
 
     state = reply_ideation_conversation(previous_state=state, user_message="1번과 2번 결합", llm_call=llm)
@@ -838,7 +1135,6 @@ def test_combine_preserves_both_source_candidates_in_state():
         assert c["problem"] == original["problem"]
         assert c["target_user"] == original["target_user"]
         assert c["core_value"] == original["core_value"]
-        assert c["main_features"] == original["main_features"]
     assert state["merge_analysis"]["fit"] == "high"
 
 
@@ -853,9 +1149,11 @@ def test_combine_first_question_prompt_includes_both_candidate_titles_and_conten
     작업 범위 밖). 아래는 그 레거시 코드 경로(candidate_selection -> planning_question)가
     여전히 올바르게 동작하는지 손으로 이어 붙여 검증한다."""
     llm = _CombineAwareScriptedLLM(selection_responses=[_combine_selection_response("high")])
-    state = _start_discovery(llm)
-    titles = [c["title"] for c in state["idea_candidates"]]
-    problems = [c["problem"] for c in state["idea_candidates"]]
+    state = _start_discovery_to_topics(llm)
+    # "1번과 2번 결합"이 실제로 언급하는 두 후보만 확인한다 — idea_candidates가 3개라
+    # 전체를 확인하면 결합 대상이 아닌 나머지 후보의 제목까지 있어야 한다고 잘못 요구하게 된다.
+    titles = [c["title"] for c in state["idea_candidates"][:2]]
+    problems = [c["problem"] for c in state["idea_candidates"][:2]]
 
     _legacy_resolve_selection_then_ask_planning_question(llm, state, "1번과 2번 결합")
 
@@ -877,8 +1175,8 @@ def test_combine_first_expert_message_mentions_both_candidates_concretely():
     레거시 1:1 인터뷰 질문 노드(planning_question) 경로 보존 검증 — 위 테스트와 같은 이유로
     레거시 헬퍼를 사용한다."""
     llm = _CombineAwareScriptedLLM(selection_responses=[_combine_selection_response("high")])
-    state = _start_discovery(llm)
-    titles = [c["title"] for c in state["idea_candidates"]]
+    state = _start_discovery_to_topics(llm)
+    titles = [c["title"] for c in state["idea_candidates"][:2]]
 
     state = _legacy_resolve_selection_then_ask_planning_question(llm, state, "1번과 2번 결합")
 
@@ -898,7 +1196,7 @@ def test_combine_high_fit_finalizes_selection_normally():
     (2026-07-21, 요청: 전문가 라운드테이블 전환) 이후에는 refinement 첫 질문 대신
     라운드테이블 한 라운드까지 같은 요청 안에서 정상적으로 이어지는지."""
     llm = _CombineAwareScriptedLLM(selection_responses=[_combine_selection_response("high")])
-    state = _start_discovery(llm)
+    state = _start_discovery_to_topics(llm)
     state = reply_ideation_conversation(previous_state=state, user_message="1번과 2번 결합", llm_call=llm)
 
     assert state["phase"] == "discussion_complete"
@@ -911,7 +1209,7 @@ def test_combine_medium_fit_finalizes_and_preserves_primary_secondary_features()
     사용자에게 우선순위를 묻는 것은 프롬프트가 실제 LLM에게 지시하는 부분이므로, 여기서는
     "주 기능/보조 기능 구분이 state에 실제로 남아있는지"를 배선 수준에서 검증한다."""
     llm = _CombineAwareScriptedLLM(selection_responses=[_combine_selection_response("medium")])
-    state = _start_discovery(llm)
+    state = _start_discovery_to_topics(llm)
     state = reply_ideation_conversation(previous_state=state, user_message="1번과 2번 결합", llm_call=llm)
 
     # 용준/Claude(2026-07-21, 요청: 전문가 라운드테이블 전환) — 결합 확정 직후 라운드테이블
@@ -933,8 +1231,8 @@ def test_combine_low_fit_does_not_finalize_and_asks_for_primary_direction():
             _combine_selection_response("low", conflicts=["목표 사용자가 서로 다릅니다"])
         ]
     )
-    state = _start_discovery(llm)
-    titles = [c["title"] for c in state["idea_candidates"]]
+    state = _start_discovery_to_topics(llm)
+    titles = [c["title"] for c in state["idea_candidates"][:2]]
 
     state = reply_ideation_conversation(previous_state=state, user_message="1번과 2번 결합", llm_call=llm)
 
@@ -954,6 +1252,8 @@ def test_combine_low_fit_does_not_finalize_and_asks_for_primary_direction():
         p for p in llm.captured_prompts if "[결합 직후 첫 메시지 여부 require_combine_structure]\ntrue" in p
     ]
     assert not combine_question_prompts
+    # low fit이면 실현 가능성 검토도 아직 수행되지 않는다(선택이 확정되지 않았으므로).
+    assert llm.call_counts["feasibility_review"] == 0
 
 
 def test_combine_does_not_reask_already_selected_candidates():
@@ -965,7 +1265,7 @@ def test_combine_does_not_reask_already_selected_candidates():
     레거시 1:1 인터뷰 질문 노드(planning_question) 경로 보존 검증 — 위 두 combine 프롬프트
     테스트와 같은 이유로 레거시 헬퍼를 사용한다."""
     llm = _CombineAwareScriptedLLM(selection_responses=[_combine_selection_response("high")])
-    state = _start_discovery(llm)
+    state = _start_discovery_to_topics(llm)
     state = _legacy_resolve_selection_then_ask_planning_question(llm, state, "1번과 2번 결합")
 
     combine_question_prompts = [
@@ -978,120 +1278,30 @@ def test_combine_does_not_reask_already_selected_candidates():
     assert len(ctx.get("source_candidates") or []) == 2
 
 
-# 용준/Claude(2026-07-27, RAG-007 연결) — candidate_planning/candidate_feasibility에 주입되는
-# external_evidence_lookup(RAG-007, ai/rag/orchestration/ideation_external_evidence_service.py가
-# backend에서 만드는 콜백) 배선을 그래프 레벨에서 검증한다. ai/meeting/graph는 ai.rag를 몰라야
-#하므로 여기서는 (persona_id, query) -> dict 계약을 지키는 순수 fake만 쓴다(실제 ai.rag
-# 조회 로직 자체는 ai/rag/tests/test_ideation_external_evidence_service.py가 검증한다).
-_EXTERNAL_EVIDENCE_ITEM = {
-    "source_id": "SRC-1",
-    "document_id": "DOC-EXT-1",
-    "chunk_id": "CHUNK-EXT-1",
-    "title": "스마트시티 시장 통계",
-    "publisher": "통계청",
-    "source_url": "https://example.org/stat",
-    "reference_date": "2025-01-01",
-    "quote": "시장 규모는 5조원입니다.",
-}
+# ---------------------------------------------------------------------------
+# pge/Claude(2026-07-27, 주제 브레인스토밍 재설계): RAG-007(external_evidence_lookup)은
+# discovery 흐름 어디에도 더 이상 쓰지 않는다(공모전 적합성 근거는 RAG-006만으로 충분,
+# 근거는 키워드 rationale에 이미 실려 있음) — 이 결정이 유지되는지 회귀 테스트로 확인한다.
+# ---------------------------------------------------------------------------
 
 
-def _fake_external_evidence_lookup(calls_log):
-    def lookup(persona_id: str, query: str) -> dict:
-        calls_log.append((persona_id, query))
-        return {
-            "external_evidence": [dict(_EXTERNAL_EVIDENCE_ITEM)],
-            "used_dataset_search": True,
-            "used_public_api_search": False,
-            "warnings": [],
-        }
-
-    return lookup
-
-
-def test_external_evidence_lookup_is_called_for_planning_and_dev_roles():
-    """요청 4/5번 — candidate_planning은 persona_id="planning_expert", candidate_feasibility는
-    persona_id="dev_expert"로 external_evidence_lookup을 호출해야 한다(role 매핑 자체는
-    ai.rag 쪽 resolve_external_reviewer_role이 담당 — 여기서는 그래프가 올바른 persona_id로
-    콜백을 호출하는지만 검증한다)."""
+def test_external_evidence_lookup_is_never_called_in_discovery_flow():
     calls: list[tuple[str, str]] = []
-    llm = DiscoveryScriptedLLM()
-    state = start_ideation_conversation(
-        session_id="EXT-EVID-TEST-1",
-        notice_and_criteria=NOTICE_AND_CRITERIA,
-        user_idea={"description": ""},
-        llm_call=llm,
-        external_evidence_lookup=_fake_external_evidence_lookup(calls),
-    )
-    persona_ids = [c[0] for c in calls]
-    assert "planning_expert" in persona_ids
-    assert "dev_expert" in persona_ids
-    assert state["phase"] == "awaiting_candidate_selection"
 
-
-def test_external_evidence_appears_in_prompt_with_url_and_is_exposed_in_state():
-    """요청: 후보 생성 프롬프트에 외부 근거 및 URL 포함 확인 + 응답 state에 external_evidence/
-    retrieval 관련 정보 노출 확인(요청 11번)."""
-    calls: list[tuple[str, str]] = []
-    llm = DiscoveryScriptedLLM()
-    state = start_ideation_conversation(
-        session_id="EXT-EVID-TEST-2",
-        notice_and_criteria=NOTICE_AND_CRITERIA,
-        user_idea={"description": ""},
-        llm_call=llm,
-        external_evidence_lookup=_fake_external_evidence_lookup(calls),
-    )
-    planning_prompts = [p for p in llm.captured_prompts if "[후보 생성 규칙]" in p]
-    assert planning_prompts
-    assert "통계청" in planning_prompts[0]
-    assert "https://example.org/stat" in planning_prompts[0]
-
-    assert state.get("external_evidence")
-    assert state["external_evidence"][0]["source_url"] == "https://example.org/stat"
-    assert state["external_evidence"][0]["publisher"] == "통계청"
-    assert state["external_evidence"][0]["reference_date"] == "2025-01-01"
-    meta = state.get("external_evidence_meta") or {}
-    assert meta.get("used_dataset_search") is True
-    assert meta.get("used_public_api_search") is False
-
-
-def test_no_external_evidence_lookup_proceeds_like_before():
-    """요청 10번 — external_evidence_lookup=None(use_rag=False 등)이면 검색 결과 없이도
-    회의는 기존 흐름 그대로 진행되고, 프롬프트에는 빈 배열만 들어간다(문자열 그대로
-    "[]")."""
-    llm = DiscoveryScriptedLLM()
-    state = start_ideation_conversation(
-        session_id="EXT-EVID-TEST-3",
-        notice_and_criteria=NOTICE_AND_CRITERIA,
-        user_idea={"description": ""},
-        llm_call=llm,
-        external_evidence_lookup=None,
-    )
-    assert state["phase"] == "awaiting_candidate_selection"
-    assert state.get("external_evidence") == []
-    assert state.get("external_evidence_meta") == {
-        "used_dataset_search": False,
-        "used_public_api_search": False,
-        "warnings": [],
-    }
-
-
-def test_external_evidence_lookup_failure_does_not_break_candidate_generation():
-    """요청 10번 — external_evidence_lookup이 예외를 던져도 후보 생성 자체는 실패하지
-    않는다(ai/meeting/graph/ideation_conv_discovery.py::_call_external_evidence_lookup의
-    fail-closed 정책)."""
-
-    def broken_lookup(persona_id: str, query: str) -> dict:
-        raise RuntimeError("external research backend unavailable")
+    def spy_lookup(persona_id: str, query: str) -> dict:
+        calls.append((persona_id, query))
+        return {"external_evidence": [], "used_dataset_search": False, "used_public_api_search": False, "warnings": []}
 
     llm = DiscoveryScriptedLLM()
     state = start_ideation_conversation(
-        session_id="EXT-EVID-TEST-4",
+        session_id="EXT-EVID-UNUSED-TEST",
         notice_and_criteria=NOTICE_AND_CRITERIA,
         user_idea={"description": ""},
         llm_call=llm,
-        external_evidence_lookup=broken_lookup,
+        external_evidence_lookup=spy_lookup,
     )
-    assert state["phase"] == "awaiting_candidate_selection"
+    assert state["phase"] == "awaiting_keyword_selection"
+    assert calls == []
     assert state.get("external_evidence") == []
 
 

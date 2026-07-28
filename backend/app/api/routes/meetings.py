@@ -267,6 +267,23 @@ _external_evidence_repo = ExternalEvidenceRepository(
 _external_dataset_provider = DatasetProvider(_external_evidence_repo, _kure_embedder, config=_external_research_config)
 _external_research_service = ExternalResearchService(_external_dataset_provider, config=_external_research_config)
 
+# pge/Claude(2026-07-27, 주제 브레인스토밍 — 네이버 트렌드 검색 연동): RAG-007과 완전히 별도인
+# 실시간 이슈 검색 서비스(앱 시작 시 1회 초기화, 상태 없음). ai/rag/trend_search 자체는
+# os.environ을 직접 읽는 ai/rag 스타일(TrendSearchConfig)이지만, 인증키·활성화 플래그는
+# backend/.env가 pydantic-settings(settings)로만 읽히고 os.environ에는 반영되지 않으므로
+# (config.py 149행 주석 참고) 여기서는 os.environ이 아니라 settings에서 읽어 명시적으로
+# 주입한다 — trend_search 패키지 자체는 실제 키 값을 알지 못한다(하드코딩 금지 원칙).
+from ai.rag.trend_search import NaverSearchProvider, TrendSearchConfig, TrendSearchService  # noqa: E402
+
+_trend_search_config = TrendSearchConfig(enabled=settings.RAG_TREND_ENABLE_NAVER_SEARCH)
+_naver_search_provider = NaverSearchProvider(
+    client_id=settings.NAVER_CLIENT_ID or None,
+    client_secret=settings.NAVER_CLIENT_SECRET or None,
+    enabled=_trend_search_config.enabled,
+    timeout_seconds=_trend_search_config.timeout_seconds,
+)
+_trend_search_service = TrendSearchService(_naver_search_provider, config=_trend_search_config)
+
 _CHAIR_MARKER = "위원장(review_chair)입니다"
 
 # 가은/Claude(2026-07-17): "진짜 진행률로 바꿔줘" — run_meeting()이 이미 on_progress

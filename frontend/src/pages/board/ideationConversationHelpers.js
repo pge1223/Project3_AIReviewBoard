@@ -113,12 +113,15 @@ export function resolveUseRag(projectId, criteriaDocuments) {
 // 필요), 주민등록번호·생년월일(개인 식별정보), 개인정보(수집 항목 등 포괄 표현),
 // 소속(기관), 책임자(총괄책임자/실무책임자), 참여기관/주관기관/기관명(신청기관과
 // 다른 표기의 기관 식별 필드).
+// pge/Claude(2026-07-28, 실측 요청: "과제명, 과제번호 빼주기") — 과제명/과제번호는 개인정보는
+// 아니지만 위원과 "상의해서 내용을 정할" 항목이 아니라 신청서 양식이 이미 고정해 둔 행정
+// 식별자라 같은 필터에 포함한다.
 const ADMINISTRATIVE_FIELD_KEYWORDS = [
   '담당자', '성명', '전화', '핸드폰', '휴대폰', '휴대전화', '이메일', '메일', 'e-mail', '팩스', '홈페이지',
   '사업자등록번호', '법인등록번호', '부서', '직위', '대표자', '책임자',
   '신청 기관', '신청기관', '참여기관', '주관기관', '기관명', '소속', '도시명', '주소', '기업(법인)명',
   '설립연도', '매출액', '매출', '경영실적', '자본금', '종업원', '고용 인원',
-  '주민등록번호', '생년월일', '개인정보',
+  '주민등록번호', '생년월일', '개인정보', '과제명', '과제번호', '과제 번호', '주제구분', '주제 구분',
 ]
 
 export function isAdministrativeFormField(fieldName) {
@@ -180,9 +183,12 @@ export const FEASIBILITY_LABEL = { high: '높음', medium: '보통', low: '낮�
 // 이 변경 이전에 시작된 세션(인메모리 세션, TTL 30분)이 여전히 이 phase로 남아 있을 수
 // 있어 라벨은 그대로 둔다(하위 호환).
 const PHASE_LABEL_KO = {
-  candidate_generation: '아이디어 후보 생성 중',
-  awaiting_candidate_selection: '후보 선택 대기',
-  candidate_selection: '후보 선택 대기',
+  keyword_generation: '키워드 추천 생성 중',
+  awaiting_keyword_selection: '키워드 선택 대기',
+  keyword_selection: '키워드 선택 대기',
+  topic_generation: '주제 후보 생성 중',
+  awaiting_candidate_selection: '주제 선택 대기',
+  candidate_selection: '주제 선택 대기',
   expert_discussion: '전문가 회의 진행 중',
   awaiting_planning_answer: '기획 의원 답변 대기',
   awaiting_developer_answer: '개발 의원 답변 대기',
@@ -235,10 +241,23 @@ export function candidateSelectMessage(index) {
   return `${index + 1}번`
 }
 
+// 사용자가 체크한 키워드 목록을 reply API로 보낼 메시지. 백엔드
+// ai/meeting/graph/ideation_conv_discovery.py::_parse_selected_keyword_ids가 정확히 이
+// 접두어("선택한 키워드:")로 시작하는 메시지에서 keyword_options의 keyword 텍스트와
+// 정확히 일치하는 항목만 골라 결정적으로(LLM 호출 없이) 파싱하므로, 접두어와 구분자를
+// 임의로 바꾸면 안 된다.
+export function keywordSelectMessage(keywords) {
+  return `선택한 키워드: ${keywords.join(', ')}`
+}
+
 // 자유 입력 없이 바로 보낼 수 있는 후보 단계 빠른 요청 문구 — 자유 입력으로도 동일하게
 // 지원되지만(요청 사항), 버튼으로도 같은 reply API를 타도록 제공한다.
 export const REGENERATE_MESSAGE = '다시 추천'
 export const EXPERT_RECOMMEND_MESSAGE = '전문가 추천'
+// pge/Claude(2026-07-27, 실측 요청: "주제 후보 카드에서 키워드 다시 선택 가능하게") — 백엔드
+// ai/meeting/graph/ideation_conv_discovery.py::KEYWORD_RESELECT_MESSAGE와 정확히 같은 문구여야
+// 한다(고정 문구 정확 일치만 인식 — REGENERATE_MESSAGE와 구분되는 별도 의도).
+export const KEYWORD_RESELECT_MESSAGE = '키워드 다시 선택'
 
 // 응답 캡션은 structured의 speaker_id만 신뢰하지 않고 실제 message_id가 가리키는 메시지와
 // 교차 검증한다. 불일치/누락/자기 참조면 잘못된 관계를 화면에 표시하지 않는다.

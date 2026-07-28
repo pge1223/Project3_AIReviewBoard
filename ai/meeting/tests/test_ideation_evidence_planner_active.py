@@ -379,16 +379,25 @@ def test_active_mode_injects_only_selected_evidence_and_excludes_the_rest():
 def test_evidence_planner_not_a_parameter_of_question_or_other_nodes():
     import inspect
 
+    # pge/Claude(2026-07-27, 주제 브레인스토밍 재설계): make_candidate_planning_node는
+    # make_keyword_recommendation_node/make_topic_generation_node로 대체됐다.
+    # make_candidate_feasibility_node는 더 이상 그래프에 배선되지 않지만(참고용으로 남김),
+    # 이 테스트가 확인하려는 "evidence_planner 파라미터가 없어야 한다"는 여전히 유효하므로
+    # 함께 확인한다.
     from graph.ideation_conv_discovery import (
         make_candidate_feasibility_node,
-        make_candidate_planning_node,
         make_candidate_selection_node,
+        make_keyword_recommendation_node,
+        make_keyword_selection_node,
+        make_topic_generation_node,
     )
     from graph.ideation_conv_nodes import make_conv_synthesis_node, make_discussion_facilitator_node
 
     for factory in (
         make_conv_question_node,
-        make_candidate_planning_node,
+        make_keyword_recommendation_node,
+        make_keyword_selection_node,
+        make_topic_generation_node,
         make_candidate_feasibility_node,
         make_candidate_selection_node,
         make_discussion_facilitator_node,

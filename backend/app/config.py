@@ -118,6 +118,14 @@ class Settings(BaseSettings):
     LANGSMITH_API_KEY: str = ""
     LANGSMITH_PROJECT: str = "ai-review-board"
 
+    # pge/Claude(2026-07-27, 주제 브레인스토밍 — 네이버 트렌드 검색 연동): ai/rag/trend_search는
+    # os.environ을 직접 읽는 ai/rag 스타일이지만, 인증키만은 backend/.env에서 pydantic-settings로
+    # 읽어야 한다 — 이 파일 149행 주석대로 backend/.env는 os.environ에 반영되지 않으므로,
+    # backend/app/api/routes/meetings.py가 os.environ.get()으로 직접 읽으면 항상 빈 값이 된다.
+    NAVER_CLIENT_ID: str = ""
+    NAVER_CLIENT_SECRET: str = ""
+    RAG_TREND_ENABLE_NAVER_SEARCH: bool = False
+
     class Config:
         env_file = str(_ENV_FILE)
         env_file_encoding = "utf-8"

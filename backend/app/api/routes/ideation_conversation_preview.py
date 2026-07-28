@@ -27,7 +27,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
@@ -81,6 +81,7 @@ from app.api.routes.meetings import (  # noqa: E402
     GUEST_USER_EMAIL,
     _external_research_service,
     _role_retrieval_service,
+    _trend_search_service,
     get_current_user,
 )
 # 용준/Claude(2026-07-21, 요청: 실시간 스트리밍) — 스트리밍 llm_call 생성 로직은 별도
@@ -118,6 +119,7 @@ class _SessionRecord:
         "use_rag",
         "project_id",
         "user_email",
+        "use_trend_search",
     )
 
     def __init__(
@@ -127,6 +129,7 @@ class _SessionRecord:
         use_rag: bool = False,
         project_id: Optional[str] = None,
         user_email: str = GUEST_USER_EMAIL,
+        use_trend_search: bool = False,
     ):
         self.state = state
         # 용준/Claude(2026-07-22, RAG 근거 유실 수정 2탄): /start 시점의 use_rag/project_id를
@@ -139,6 +142,12 @@ class _SessionRecord:
         self.use_rag = use_rag
         self.project_id = project_id
         self.user_email = user_email
+        # pge/Claude(2026-07-27, 주제 브레인스토밍 — 네이버 트렌드 검색 연동): use_rag와 동일한
+        # 이유로 세션에 별도 보관한다 — "다시 추천" 재요청이 /reply를 통해 candidate_planning을
+        # 다시 실행할 때도 trend_search_lookup을 다시 만들 수 있어야 한다. use_rag와 값을
+        # 공유하지 않는다(트렌드 검색은 RAG-007과 다른 계층이라 독립적으로 켜고 끌 수 있어야
+        # 한다 — 예: criteria 문서가 아직 없어 use_rag=False인 세션도 트렌드 검색은 켤 수 있음).
+        self.use_trend_search = use_trend_search
         now = time.time()
         self.created_at = now
         self.last_active_at = now
@@ -186,6 +195,7 @@ class _SessionStore:
         use_rag: bool = False,
         project_id: Optional[str] = None,
         user_email: str = GUEST_USER_EMAIL,
+        use_trend_search: bool = False,
     ) -> None:
         with self._lock:
             self._sweep_expired_locked()
@@ -195,6 +205,7 @@ class _SessionStore:
                 use_rag=use_rag,
                 project_id=project_id,
                 user_email=user_email,
+                use_trend_search=use_trend_search,
             )
 
     def get(self, session_id: str) -> IdeationConvState:
@@ -279,6 +290,7 @@ async def _persist_session_record(record: _SessionRecord) -> bool:
             use_rag=record.use_rag,
             project_id=record.project_id,
             user_email=record.user_email,
+            use_trend_search=record.use_trend_search,
         )
         logger.info(
             "[IDEATION_SESSION_PERSISTED] session=%s project_id=%s phase=%s messages=%d",
@@ -318,6 +330,7 @@ async def _restore_session_record(session_id: str, user_email: str) -> _SessionR
         use_rag=bool(stored.get("use_rag")),
         project_id=stored.get("project_id"),
         user_email=stored.get("user_email") or GUEST_USER_EMAIL,
+        use_trend_search=bool(stored.get("use_trend_search")),
     )
     logger.info(
         "[IDEATION_SESSION_RESTORED] session=%s project_id=%s phase=%s messages=%d",
@@ -645,6 +658,23 @@ def _external_evidence_lookup_for(use_rag: bool):
     return make_ideation_external_evidence_lookup(_external_research_service, top_k=3)
 
 
+def _trend_search_lookup_for(use_trend_search: bool, input_type: str = "issue"):
+    """실시간 이슈 검색(네이버 검색 API) 콜백. RAG-007 external_evidence_lookup과 완전히
+    별도로 관리한다 — use_rag와 다른 독립 토글(use_trend_search)로 켜고 끈다(criteria 문서가
+    없어 use_rag=False인 세션도 트렌드 검색은 켤 수 있어야 하기 때문).
+
+    use_trend_search=False면 콜백 자체를 주입하지 않는다 — candidate_planning 노드는
+    trend_search_lookup=None이면 기존과 완전히 동일하게(트렌드 근거 없이) 진행한다. 전역
+    스위치(RAG_TREND_ENABLE_NAVER_SEARCH)나 인증키 미설정과 무관하게 요청 단위로도 끌 수
+    있다 — TrendSearchService.search()가 그 경우 자체적으로 빈 결과를 반환하므로 이중
+    안전장치다."""
+    if not use_trend_search:
+        return None
+    from ai.rag.orchestration.ideation_trend_search_service import make_ideation_trend_search_lookup
+
+    return make_ideation_trend_search_lookup(_trend_search_service, input_type=input_type, top_k=5)
+
+
 def _index_target_evidence_for(use_rag: bool, project_id: Optional[str]):
     """용준/Claude(2026-07-22, 요청: 선택된 아이디어/사용자 답변을 target evidence로 색인) —
     evidence_lookup/ground_claims와 동일한 정책: use_rag=False거나 project_id가 없으면(요청
@@ -837,6 +867,10 @@ def _serialize_state(state: IdeationConvState) -> dict:
         "user_selection_message": state.get("user_selection_message"),
         "source_candidates": state.get("source_candidates", []),
         "merge_analysis": state.get("merge_analysis"),
+        # pge/Claude(2026-07-28, 실측 요청: "브레인스토밍 이전 내역이 라운드테이블에 남아있음")
+        # — 프론트가 messages를 이 인덱스부터만 라운드테이블 채팅으로 보여준다(discovery
+        # 단계 키워드/주제 문답을 걸러내기 위함). 구버전 세션은 0(전부 보여줌)이 기본값.
+        "refinement_message_offset": state.get("refinement_message_offset", 0),
         # 용준/Claude(2026-07-21, 요청: 위원 간 실제 회의로 개편) — 순수 추가 필드. 기존
         # 클라이언트는 무시하면 그대로 동작한다. 구버전 세션(discussion_rounds 키가 없는
         # state)에는 빈 배열을 기본값으로 준다.
@@ -857,6 +891,17 @@ def _serialize_state(state: IdeationConvState) -> dict:
         # 가은/Claude(2026-07-27, 요청: "보완이 필요한 정보 섹션") — generate_application_form_draft가
         # 본문에 넣지 못한 항목을 남긴 목록. 구버전 세션/미생성 상태는 빈 배열.
         "application_form_supplement_notes": state.get("application_form_supplement_notes", []),
+        # pge/Claude(2026-07-27, 주제 브레인스토밍 재설계): keyword_recommendation 노드가
+        # 만든 키워드 목록/사용자가 고른 키워드 id — awaiting_keyword_selection 화면이
+        # 이 필드로 체크박스를 그린다. 이전까지 _serialize_state에 빠져 있어 프론트가
+        # phase만 받고 키워드가 하나도 안 보이는 버그가 있었다(실측 확인) — 순수 추가 필드.
+        "keyword_options": state.get("keyword_options", []),
+        "selected_keyword_ids": state.get("selected_keyword_ids", []),
+        # 같은 이유로 빠져 있던 트렌드 검색 결과 필드도 함께 노출한다.
+        "trend_query": state.get("trend_query"),
+        "trend_evidence": state.get("trend_evidence", []),
+        "trend_search_status": state.get("trend_search_status"),
+        "trend_searched_at": state.get("trend_searched_at"),
         "error": (
             {"code": "IDEATION_CONV_NODE_FAILED", "message": f"{state.get('failed_node')} 노드에서 실패했습니다."}
             if state["phase"] == "failed"
@@ -884,6 +929,14 @@ class StartRequest(BaseModel):
     # ideation_conv_discussion.txt 참고). 비워도(기본값 빈 리스트) 기존 클라이언트와
     # 완전히 동일하게 동작한다.
     application_form_items: list[dict] = Field(default_factory=list)
+    # pge/Claude(2026-07-27, 주제 브레인스토밍 — 네이버 트렌드 검색 연동): 순수 추가 필드.
+    # use_rag와 별개 토글이다 — criteria 문서가 없어 use_rag=False인 세션도 트렌드 검색은
+    # 켤 수 있다. initial_issue는 discovery 모드(user_idea가 비어 있을 때) 화면에서만 의미가
+    # 있고, user_idea 기반 discovery/refinement 모드 분기에는 전혀 영향을 주지 않는다 —
+    # 트렌드 검색 질의문·candidate_planning 프롬프트의 참고 컨텍스트로만 쓰인다.
+    use_trend_search: bool = False
+    initial_issue: Optional[str] = None
+    input_type: Literal["issue", "interest", "technology", "rough_idea"] = "issue"
 
 
 class ReplyRequest(BaseModel):
@@ -949,6 +1002,7 @@ async def start_conversation(
     index_target_evidence = _index_target_evidence_for(request.use_rag, request.project_id)
     evidence_planner = _evidence_planner_for(request.use_rag)
     external_evidence_lookup = _external_evidence_lookup_for(request.use_rag)
+    trend_search_lookup = _trend_search_lookup_for(request.use_trend_search, request.input_type)
 
     logger.info("[ideation-conversation] 시작 session_id=%s max_rounds=%d", session_id, effective_max_rounds)
     try:
@@ -964,7 +1018,10 @@ async def start_conversation(
             index_target_evidence=index_target_evidence,
             evidence_planner=evidence_planner,
             external_evidence_lookup=external_evidence_lookup,
+            trend_search_lookup=trend_search_lookup,
             application_form_items=request.application_form_items,
+            initial_issue=_clamp_optional_text(request.initial_issue or "", "initial_issue") or None,
+            input_type=request.input_type,
         )
     except Exception:
         logger.exception("[ideation-conversation] 시작 실패 session_id=%s", session_id)
@@ -977,6 +1034,7 @@ async def start_conversation(
         use_rag=request.use_rag,
         project_id=request.project_id,
         user_email=user_email,
+        use_trend_search=request.use_trend_search,
     )
     await _persist_session_record(_store.get_record(session_id))
     return _serialize_state(state)
@@ -1035,6 +1093,9 @@ async def reply_conversation(
         index_target_evidence = _index_target_evidence_for(record.use_rag, record.project_id)
         evidence_planner = _evidence_planner_for(record.use_rag)
         external_evidence_lookup = _external_evidence_lookup_for(record.use_rag)
+        trend_search_lookup = _trend_search_lookup_for(
+            record.use_trend_search, previous_state.get("input_type") or "issue"
+        )
 
         try:
             state = await run_in_threadpool(
@@ -1047,6 +1108,7 @@ async def reply_conversation(
                 index_target_evidence=index_target_evidence,
                 evidence_planner=evidence_planner,
                 external_evidence_lookup=external_evidence_lookup,
+                trend_search_lookup=trend_search_lookup,
                 stop_after_expert_turn=request.single_turn,
             )
         except ValueError as exc:
@@ -1135,6 +1197,9 @@ async def reply_conversation_stream(
     index_target_evidence = _index_target_evidence_for(record.use_rag, record.project_id)
     evidence_planner = _evidence_planner_for(record.use_rag)
     external_evidence_lookup = _external_evidence_lookup_for(record.use_rag)
+    trend_search_lookup = _trend_search_lookup_for(
+        record.use_trend_search, previous_state.get("input_type") or "issue"
+    )
 
     def worker() -> None:
         trace_tokens = bind_trace_context(session_id, request_id)
@@ -1175,6 +1240,7 @@ async def reply_conversation_stream(
                 index_target_evidence=index_target_evidence,
                 evidence_planner=evidence_planner,
                 external_evidence_lookup=external_evidence_lookup,
+                trend_search_lookup=trend_search_lookup,
                 stop_after_expert_turn=request.single_turn,
             )
             _store.update(session_id, state)
@@ -1447,6 +1513,8 @@ async def start_conversation_stream(
     index_target_evidence = _index_target_evidence_for(request.use_rag, request.project_id)
     evidence_planner = _evidence_planner_for(request.use_rag)
     external_evidence_lookup = _external_evidence_lookup_for(request.use_rag)
+    trend_search_lookup = _trend_search_lookup_for(request.use_trend_search, request.input_type)
+    initial_issue = _clamp_optional_text(request.initial_issue or "", "initial_issue") or None
 
     logger.info("[ideation-conversation] 스트리밍 시작 session_id=%s max_rounds=%d", session_id, effective_max_rounds)
 
@@ -1477,7 +1545,10 @@ async def start_conversation_stream(
                 index_target_evidence=index_target_evidence,
                 evidence_planner=evidence_planner,
                 external_evidence_lookup=external_evidence_lookup,
+                trend_search_lookup=trend_search_lookup,
                 application_form_items=request.application_form_items,
+                initial_issue=initial_issue,
+                input_type=request.input_type,
             )
             # 용준/Claude(2026-07-22, RAG 근거 유실 수정 2탄) 패턴과 동일 — 이후
             # /reply·/reply/stream이 evidence_lookup을 다시 만들 수 있도록 이번 세션의
@@ -1487,6 +1558,7 @@ async def start_conversation_stream(
                 use_rag=request.use_rag,
                 project_id=request.project_id,
                 user_email=user_email,
+                use_trend_search=request.use_trend_search,
             )
             _persist_from_worker(_store.get_record(session_id), persistence_loop)
             sink({"type": "state", "state": _serialize_state(state)})

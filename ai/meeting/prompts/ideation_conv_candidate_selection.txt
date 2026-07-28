@@ -20,7 +20,9 @@
 [입력]
 - persona: 진행자 페르소나 카드
 - notice_and_criteria: 공모전 공고 목적과 평가 기준 요약
-- candidates: 제시된 전체 후보 목록(기획+개발 검토 결과 병합 완료, feasibility 포함)
+- candidates: 제시된 전체 주제 목록(candidate_id/title/problem/target_user/core_value/
+  contest_fit/keyword_ids 정도의 가벼운 정보만 있음 — 실현 가능성 검토는 아직 안 됨,
+  선택 확정 이후에만 별도로 수행됨)
 - user_message: 사용자의 답변 원문
 
 [해석 규칙]

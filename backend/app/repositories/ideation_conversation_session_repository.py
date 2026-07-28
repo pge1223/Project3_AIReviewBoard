@@ -26,6 +26,7 @@ class IdeationConversationSessionRepository:
         use_rag: bool,
         project_id: str | None,
         user_email: str,
+        use_trend_search: bool = False,
     ) -> None:
         collection = self.get_collection()
         now = datetime.now(timezone.utc)
@@ -39,6 +40,7 @@ class IdeationConversationSessionRepository:
                     "use_rag": use_rag,
                     "project_id": project_id,
                     "user_email": user_email,
+                    "use_trend_search": use_trend_search,
                     "updated_at": now,
                     "schema_version": "1.0",
                 },

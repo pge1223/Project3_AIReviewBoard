@@ -4987,9 +4987,19 @@ def make_discussion_facilitator_node(llm_call: LLMCall) -> Callable[[IdeationCon
         # structured["choices"]는 항상 raw.get("choices")(진행자 LLM 자신이 즉석에서 만든
         # 것, 게이트가 발동한 턴에는 보통 비어있거나 무관함)만 썼기 때문이다. 게이트가
         # 발동한 턴에는 이 옵션을 {id,label} 형태로 변환해 choices로 내려준다.
+        # pge/Claude(2026-07-28, 실측 요청: "선택 버블 내용이 짤림, 사용자 버블로 입력됐을
+        # 때도") — label은 버튼에 표시할 22자 축약본(_short_label_from_alternative_text)일
+        # 뿐인데, 프론트가 버튼 클릭 시 이 축약된 label을 그대로 사용자 발언으로 보내고
+        # 있었다(IdeationConversationScreen.jsx의 handleSend(choice.label)) — 그 결과가
+        # 그대로 저장돼 사용자 말풍선에도, 이후 답변 텍스트에도 잘린 문장이 영구히 남았다.
+        # detail(축약 전 전체 문장)도 함께 내려서 프론트가 실제 전송에는 detail을 쓰게 한다.
         gated_decision_options = (
             [
-                {"id": f"gated_option_{i}", "label": str(opt.get("label") or "").strip()}
+                {
+                    "id": f"gated_option_{i}",
+                    "label": str(opt.get("label") or "").strip(),
+                    "detail": str(opt.get("detail") or "").strip(),
+                }
                 for i, opt in enumerate(last_structured.get("decision_options") or [])
                 if isinstance(opt, dict) and str(opt.get("label") or "").strip()
             ]

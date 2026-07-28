@@ -27,9 +27,10 @@ from typing import Any
 from langgraph.graph import END, START, StateGraph
 
 from .ideation_conv_discovery import (
-    make_candidate_feasibility_node,
-    make_candidate_planning_node,
     make_candidate_selection_node,
+    make_keyword_recommendation_node,
+    make_keyword_selection_node,
+    make_topic_generation_node,
 )
 from .ideation_conv_nodes import (
     _route_next_expert_turn,
@@ -43,9 +44,11 @@ from .ideation_conv_state import IdeationConvState
 from .llm import LLMCall
 
 _ENTRY_NODES = {
-    # 용준/Claude(2026-07-21): discovery(아이디어 발굴) 모드 진입점 2개 — refinement 전용
-    # 진입점(아래 4개)은 값 하나도 바꾸지 않는다.
-    "candidate_generation": "candidate_planning",
+    # pge/Claude(2026-07-27, 주제 브레인스토밍 재설계): discovery(아이디어 발굴) 모드 진입점
+    # 3개 — refinement 전용 진입점(아래 4개)은 값 하나도 바꾸지 않는다.
+    "keyword_generation": "keyword_recommendation",
+    "keyword_selection": "keyword_selection",
+    "topic_generation": "topic_generation",
     "candidate_selection": "candidate_selection",
     "planning_question": "planning_question",
     "developer_question": "developer_question",
@@ -114,19 +117,30 @@ def _route_after_facilitator(state: IdeationConvState) -> str:
     return "await_user_decision"
 
 
-def _route_after_candidate_planning(state: IdeationConvState) -> str:
-    return "failed" if state.get("phase") == "failed" else "ok"
+def _route_after_keyword_selection(state: IdeationConvState) -> str:
+    """pge/Claude(2026-07-27, 주제 브레인스토밍 재설계): keyword_selection 노드가 결정한
+    phase에 따라 다음 노드를 고른다 — 재추천 요청이면 키워드 추천으로 되돌아가고("regenerate"),
+    선택이 파싱됐으면 주제 생성으로 이어지며("continue"), 선택 0개/재추천 상한 도달이면
+    안내 메시지만 남기고 멈춘다("await_selection")."""
+    phase = state.get("phase")
+    if phase == "keyword_generation":
+        return "regenerate"
+    if phase == "topic_generation":
+        return "continue"
+    return "await_selection"
 
 
 def _route_after_candidate_selection(state: IdeationConvState) -> str:
-    """후보 선택 결과에 따라 다음 노드를 고른다.
+    """후보(주제) 선택 결과에 따라 다음 노드를 고른다.
 
     2026-07-26 라운드테이블 재설계: 신청 양식 유무와 무관하게 후보 선택 직후에는 항상
     진행자가 먼저 선택 후보를 요약하고 문제정의를 확인하는 고정 1턴을 연다(목표 루프의
     "고정 1턴" 요건) — "to_form_coach"/"to_refinement" 두 키 모두 discussion_facilitator로
     간다(아래 엣지 매핑 참고). 신청 양식 유무는 이후 discussion_facilitator 내부에서
-    (필드 채우기로 전환할지) 판단할 뿐, 진입 노드 자체를 가르지 않는다. 재추천 요청은
-    후보 생성으로 돌아가며 나머지는 입력을 기다린다.
+    (필드 채우기로 전환할지) 판단할 뿐, 진입 노드 자체를 가르지 않는다. "다시 추천"은
+    주제 생성으로 돌아가며(선택된 키워드는 그대로 유지) "키워드 다시 선택"(고정 문구
+    버튼)은 키워드 추천부터 다시 시작한다(pge/Claude(2026-07-27) 실측 요청) — 나머지는
+    입력을 기다린다.
     """
     phase = state.get("phase")
     if phase == "failed":
@@ -135,7 +149,9 @@ def _route_after_candidate_selection(state: IdeationConvState) -> str:
         return "to_form_coach"
     if state.get("next_route") == "to_refinement":
         return "to_refinement"
-    if phase == "candidate_generation":
+    if phase == "keyword_generation":
+        return "reselect_keywords"
+    if phase == "topic_generation":
         return "regenerate"
     return "await_selection"
 
@@ -148,6 +164,7 @@ def assemble_ideation_conversation_graph(
     index_target_evidence=None,
     evidence_planner=None,
     external_evidence_lookup=None,
+    trend_search_lookup=None,
 ):
     """대화형 아이디어 발전 회의 그래프를 조립한다.
 
@@ -200,12 +217,17 @@ def assemble_ideation_conversation_graph(
     canvas_update_node = make_canvas_update_node(llm_call)
     synthesis_node = make_conv_synthesis_node(llm_call)
 
-    # 용준/Claude(2026-07-21): discovery(아이디어 발굴) 모드 노드 3종.
-    # 용준/Claude(2026-07-27, RAG-007 연결) — external_evidence_lookup은 candidate_planning/
-    # candidate_feasibility에만 주입한다(요청 4번). 다른 노드(질문/토론/synthesis)는 이
-    # 파라미터를 받지 않는다 — discovery 후보 생성에만 외부 통계·정책 참고자료가 필요하다.
-    candidate_planning_node = make_candidate_planning_node(llm_call, evidence_lookup, external_evidence_lookup)
-    candidate_feasibility_node = make_candidate_feasibility_node(llm_call, evidence_lookup, external_evidence_lookup)
+    # pge/Claude(2026-07-27, 주제 브레인스토밍 재설계): discovery(아이디어 발굴) 모드 노드 4종.
+    # keyword_recommendation에만 evidence_lookup(RAG-006)/trend_search_lookup(네이버 검색)을
+    # 준다 — "무엇을 다룰지" 정하는 이 시점에만 근거 검색이 필요하다. keyword_selection은
+    # LLM을 호출하지 않으므로 llm_call조차 필요 없다. topic_generation은 이미 키워드에 실린
+    # 근거(rationale)만 보고 만들므로 evidence_lookup/trend_search_lookup을 받지 않는다.
+    # external_evidence_lookup(RAG-007)은 discovery 흐름 어디에도 더 이상 쓰지 않는다(요청:
+    # 공모전 적합성 근거는 RAG-006만으로 충분) — candidate_selection에도 안 준다(실현
+    # 가능성 검토는 RAG-006만 사용, discovery.py::_apply_feasibility_review 참고).
+    keyword_recommendation_node = make_keyword_recommendation_node(llm_call, evidence_lookup, trend_search_lookup)
+    keyword_selection_node = make_keyword_selection_node()
+    topic_generation_node = make_topic_generation_node(llm_call)
     candidate_selection_node = make_candidate_selection_node(
         llm_call, evidence_lookup, index_target_evidence=index_target_evidence
     )
@@ -217,14 +239,17 @@ def assemble_ideation_conversation_graph(
     graph.add_node("discussion_facilitator", discussion_facilitator_node)
     graph.add_node("canvas_update", canvas_update_node)
     graph.add_node("synthesis", synthesis_node)
-    graph.add_node("candidate_planning", candidate_planning_node)
-    graph.add_node("candidate_feasibility", candidate_feasibility_node)
+    graph.add_node("keyword_recommendation", keyword_recommendation_node)
+    graph.add_node("keyword_selection", keyword_selection_node)
+    graph.add_node("topic_generation", topic_generation_node)
     graph.add_node("candidate_selection", candidate_selection_node)
 
     graph.set_conditional_entry_point(
         _route_entry,
         {
-            "candidate_planning": "candidate_planning",
+            "keyword_recommendation": "keyword_recommendation",
+            "keyword_selection": "keyword_selection",
+            "topic_generation": "topic_generation",
             "candidate_selection": "candidate_selection",
             "planning_question": "planning_question",
             "developer_question": "developer_question",
@@ -277,16 +302,26 @@ def assemble_ideation_conversation_graph(
     )
     graph.add_edge("synthesis", END)
 
-    # discovery: candidate_planning -> candidate_feasibility(성공 시, 정지 없이 이어짐) ->
-    # END(awaiting_candidate_selection으로 멈춤). candidate_selection은 선택 확정 시
-    # planning_question으로(같은 요청 안에서 refinement 첫 질문까지 생성), 재추천 요청 시
-    # candidate_planning으로 되돌아가고(같은 요청 안에서 새 후보 생성), 그 외에는 END.
+    # pge/Claude(2026-07-27, 주제 브레인스토밍 재설계): discovery 흐름 —
+    # keyword_recommendation -> END(awaiting_keyword_selection으로 멈춤, 성공/실패 모두
+    # 이 노드가 이미 최종 phase를 정했으므로 조건 분기가 필요 없다) -> (사용자 응답)
+    # keyword_selection -> [재추천이면 keyword_recommendation으로, 선택 파싱됐으면
+    # topic_generation으로(같은 요청 안에서 이어짐), 그 외(선택 0개/재추천 상한)엔 END] ->
+    # topic_generation -> END(awaiting_candidate_selection으로 멈춤, 역시 조건 분기 불필요).
+    # candidate_selection은 선택 확정 시 discussion_facilitator로(같은 요청 안에서
+    # refinement 첫 라운드까지 이어짐), 재추천 요청 시 topic_generation으로 되돌아가고
+    # (키워드는 그대로 유지, 주제만 다시 생성), 그 외에는 END.
+    graph.add_edge("keyword_recommendation", END)
     graph.add_conditional_edges(
-        "candidate_planning",
-        _route_after_candidate_planning,
-        {"ok": "candidate_feasibility", "failed": END},
+        "keyword_selection",
+        _route_after_keyword_selection,
+        {
+            "regenerate": "keyword_recommendation",
+            "continue": "topic_generation",
+            "await_selection": END,
+        },
     )
-    graph.add_edge("candidate_feasibility", END)
+    graph.add_edge("topic_generation", END)
     graph.add_conditional_edges(
         "candidate_selection",
         _route_after_candidate_selection,
@@ -295,7 +330,10 @@ def assemble_ideation_conversation_graph(
             # 요약하고 문제정의를 확인한다(목표 루프의 고정 1턴) — 두 키 모두 같은 목적지.
             "to_form_coach": "discussion_facilitator",
             "to_refinement": "discussion_facilitator",
-            "regenerate": "candidate_planning",
+            "regenerate": "topic_generation",
+            # pge/Claude(2026-07-27, 실측 요청: "주제 후보 카드에서 키워드 다시 선택") —
+            # 주제만 다시 만드는 "regenerate"와 달리 키워드 추천부터 다시 시작한다.
+            "reselect_keywords": "keyword_recommendation",
             "await_selection": END,
             "failed": END,
         },

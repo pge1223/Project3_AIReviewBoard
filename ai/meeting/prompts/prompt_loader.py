@@ -286,9 +286,15 @@ IDEATION_CONV_SUFFICIENCY_TEMPLATE = "ideation_conv_sufficiency.txt"
 # 판단에 위임했을 때(answer_type="expert_delegation") 담당 전문가가 제안을 만드는 템플릿.
 IDEATION_CONV_EXPERT_DELEGATION_TEMPLATE = "ideation_conv_expert_delegation.txt"
 
-# 용준/Claude(2026-07-21): discovery(아이디어 발굴) 모드 전용 템플릿 3종. refinement 전용
+# 용준/Claude(2026-07-21): discovery(아이디어 발굴) 모드 전용 템플릿. refinement 전용
 # 템플릿(위 IDEATION_CONV_QUESTION_TEMPLATE 등)은 하나도 건드리지 않는다.
-IDEATION_CONV_CANDIDATE_PLANNING_TEMPLATE = "ideation_conv_candidate_planning.txt"
+# pge/Claude(2026-07-27, 주제 브레인스토밍 재설계) — 옛 IDEATION_CONV_CANDIDATE_PLANNING_TEMPLATE
+# (완성된 후보 5개를 곧바로 만들던 프롬프트, ideation_conv_candidate_planning.txt)은 더 이상
+# 쓰지 않는다(파일은 참고용으로 남겨둠, prompt_loader에서는 참조하지 않음) — 키워드 추천 +
+# 주제 생성 2단계로 대체한다. candidate_feasibility 템플릿은 여전히 쓴다(discovery.py::
+# _apply_feasibility_review가 선택된 주제 1개에만 재사용).
+IDEATION_CONV_KEYWORD_RECOMMENDATION_TEMPLATE = "ideation_conv_keyword_recommendation.txt"
+IDEATION_CONV_TOPIC_GENERATION_TEMPLATE = "ideation_conv_topic_generation.txt"
 IDEATION_CONV_CANDIDATE_FEASIBILITY_TEMPLATE = "ideation_conv_candidate_feasibility.txt"
 
 _CANDIDATE_NOVELTY_PLANNING_RULES = """
@@ -743,45 +749,54 @@ def build_ideation_conv_form_draft_prompt(
 # ============================================================================
 
 
-def build_ideation_conv_candidate_planning_prompt(
+def build_ideation_conv_keyword_recommendation_prompt(
     notice_and_criteria: Any,
     retrieved_evidence: Any,
-    previous_candidates: Any | None = None,
+    *,
+    trend_evidence: Any | None = None,
+    initial_issue: str | None = None,
+    previous_keywords: Any | None = None,
     regeneration_reason: str | None = None,
-    external_research: Any | None = None,
 ) -> str:
-    """기획 전문가의 "후보 생성" 프롬프트를 조립한다(공모전 분석 + 서로 다른 후보 2~3개).
+    """기획 전문가의 "키워드 추천" 프롬프트를 조립한다(트렌드/공모전/사용자 이슈 세 출처).
 
-    용준/Claude(2026-07-27, RAG-007 연결) — external_research(RAG-007, 외부 통계·시장·정책
-    참고자료)는 retrieved_evidence(RAG-006, 프로젝트/공고문 근거)와 별도 토큰으로 주입한다 —
-    같은 목록에 섞으면 두 근거의 신뢰 수준(직접 근거 vs 참고 자료)이 프롬프트에서 구분되지
-    않는다. None/빈 리스트면(use_rag=False 등) 기존과 동일하게 빈 배열 텍스트가 들어간다."""
+    pge/Claude(2026-07-27, 주제 브레인스토밍 재설계) — 옛 build_ideation_conv_candidate_planning_prompt
+    (완성된 후보 5개를 곧바로 만들던 프롬프트)를 대체한다. trend_evidence/initial_issue가
+    비어 있으면(트렌드 검색 비활성/이슈 미입력) 그 출처의 키워드는 프롬프트 규칙상 만들어지지
+    않는다 — None/빈 값이면 빈 텍스트/배열로 치환된다."""
     card = get_persona_card("planning_expert")
-    template = _read_text(IDEATION_CONV_CANDIDATE_PLANNING_TEMPLATE)
-    if candidate_novelty_prompt_enabled():
-        template = template.replace(
-            "[출력 규칙]",
-            f"{_CANDIDATE_NOVELTY_PLANNING_RULES}\n[출력 규칙]",
-            1,
-        ).replace(
-            '      "differentiation": "string",',
-            (
-                '      "differentiation": "string",\n'
-                '      "innovation_axis": "string",\n'
-                '      "existing_approach": "string",\n'
-                '      "existing_limitation": "string",\n'
-                '      "novel_mechanism": "string",\n'
-                '      "novelty_reason": "string",'
-            ),
-            1,
-        )
+    template = _read_text(IDEATION_CONV_KEYWORD_RECOMMENDATION_TEMPLATE)
     replacements = {
         "<<PERSONA_BLOCK>>": render_persona_block(card),
         "<<NOTICE_AND_CRITERIA_JSON>>": _as_text(notice_and_criteria),
         "<<RETRIEVED_EVIDENCE_JSON>>": _as_text(retrieved_evidence),
-        "<<PREVIOUS_CANDIDATES_JSON>>": _as_text(previous_candidates if previous_candidates is not None else []),
+        "<<TREND_EVIDENCE_JSON>>": _as_text(trend_evidence if trend_evidence is not None else []),
+        "<<INITIAL_ISSUE>>": _as_text(initial_issue),
+        "<<PREVIOUS_KEYWORDS_JSON>>": _as_text(previous_keywords if previous_keywords is not None else []),
         "<<REGENERATION_REASON>>": _as_text(regeneration_reason),
-        "<<EXTERNAL_RESEARCH_JSON>>": _as_text(external_research if external_research is not None else []),
+    }
+    for token, value in replacements.items():
+        template = template.replace(token, value)
+    return template
+
+
+def build_ideation_conv_topic_generation_prompt(
+    notice_and_criteria: Any,
+    selected_keywords: Any,
+    previous_topics: Any | None = None,
+    regeneration_reason: str | None = None,
+) -> str:
+    """기획 전문가의 "주제 생성" 프롬프트를 조립한다 — 선택된 키워드 조합으로 가벼운 주제
+    목록(2~5개)을 만든다. 옛 build_ideation_conv_candidate_planning_prompt와 달리 트렌드/
+    외부자료를 다시 검색하지 않는다 — 근거는 이미 selected_keywords의 rationale에 있다."""
+    card = get_persona_card("planning_expert")
+    template = _read_text(IDEATION_CONV_TOPIC_GENERATION_TEMPLATE)
+    replacements = {
+        "<<PERSONA_BLOCK>>": render_persona_block(card),
+        "<<NOTICE_AND_CRITERIA_JSON>>": _as_text(notice_and_criteria),
+        "<<SELECTED_KEYWORDS_JSON>>": _as_text(selected_keywords),
+        "<<PREVIOUS_TOPICS_JSON>>": _as_text(previous_topics if previous_topics is not None else []),
+        "<<REGENERATION_REASON>>": _as_text(regeneration_reason),
     }
     for token, value in replacements.items():
         template = template.replace(token, value)

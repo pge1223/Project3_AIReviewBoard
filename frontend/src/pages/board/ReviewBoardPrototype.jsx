@@ -29,6 +29,9 @@ import WorkbenchScreen from "./WorkbenchScreen";
 // 방식으로 라벨/흐름/렌더 3곳만 최소화했다.
 import VersionTrackerTestPage from "../VersionTrackerTestPage";
 import { IdeationScreen, IdeationResultScreen, ApplicationFormDraftScreen } from "./IdeationConversationScreen";
+import TopicBrainstormingScreen from "./TopicBrainstormingScreen";
+import ApplicationFormFieldSelectModal from "./ApplicationFormFieldSelectModal";
+import { isAdministrativeFormField } from "./ideationConversationHelpers";
 
 /* 가은/Claude(2026-07-20): "작성 전(주제 발굴)/작성 후(문서 피드백)" 2-모드
  * 신규 플로우. docs/REVIEW_BOARD_서비스_방향성_정리_20260720.md의 방향을
@@ -44,6 +47,13 @@ import { IdeationScreen, IdeationResultScreen, ApplicationFormDraftScreen } from
 const STAGE_LABELS = {
   entry: "공모전 입력",
   analysis: "공모전 분석",
+  // pge/Claude(2026-07-27, 주제 브레인스토밍 재설계): "공모전 분석"과 "AI 아이디어 회의"
+  // 사이에 끼워 넣는 단계. TopicBrainstormingScreen(키워드 추천/선택 → 주제 생성/선택,
+  // 채팅·스트리밍 없음)을 렌더링하며, phase가 discovery 그룹을 벗어나는 순간(주제 선택
+  // 확정) 자동으로 "ideation"(IdeationScreen, 라운드테이블)으로 넘어간다(아래 useEffect
+  // 참고) — 이때 두 컴포넌트는 서로 다른 인스턴스이지만 ideationConv state는 부모가 들고
+  // 있어 그대로 이어진다.
+  brainstorming: "주제 브레인스토밍",
   // 가은/Claude(2026-07-24, 요청: 공모전 분석 결과 화면 개편) — 내부 stage 키("ideation")와
   // 라우팅/데이터는 그대로 두고, 화면에 노출되는 문구만 팀 UX 레퍼런스에 맞춰 "AI 아이디어
   // 회의"로 바꾼다. IdeationConversationScreen.jsx 쪽 배지 등 이 상수를 안 쓰는 곳은 영향 없음.
@@ -67,6 +77,7 @@ const STAGE_LABELS = {
 const STAGE_DESCRIPTIONS = {
   entry: "공모전 자료 등록이 완료되었습니다.",
   analysis: "공모전의 핵심 내용과 평가 기준을 분석합니다.",
+  brainstorming: "요즘 이슈를 참고해 아이디어 후보를 발굴합니다.",
   ideation: "AI 전문가들이 아이디어를 논의합니다.",
   ideation_result: "최종 아이디어를 선택하고 확정합니다.",
   form_draft: "선택한 신청서 항목의 초안을 확인합니다.",
@@ -78,13 +89,29 @@ const STAGE_DESCRIPTIONS = {
 const FLOW_BY_MODE = {
   // 가은/Claude(2026-07-27, 요청: "주제 확정하고 신청서 초안 버튼") — form_draft는
   // ideation_result의 "신청서 초안 만들기" 버튼으로만 진입한다(goNext).
-  pre: ["entry", "analysis", "ideation", "ideation_result", "form_draft"],
+  // pge/Claude(2026-07-27, 주제 브레인스토밍 재설계): "brainstorming"은 TopicBrainstormingScreen,
+  // "ideation"은 IdeationScreen — 서로 다른 컴포넌트이고, phase가 바뀌는 시점에 stage만
+  // 자동 전환된다(아래 render 부분 참고).
+  pre: ["entry", "analysis", "brainstorming", "ideation", "ideation_result", "form_draft"],
   // 가은/Claude(2026-07-21): 실측 요청 — "작성 후(문서 피드백)"로 들어오면 공모전 분석
   // 화면 없이 바로 기획서 업로드·분석으로 간다. 공모전 분석은 주제를 정하기 전(작성 전)
   // 에나 필요한 단계라서다. entry에서 등록한 공고문(criteria)은 화면만 안 거칠 뿐,
   // 색인은 그대로 되어 피드백 때 심사기준 근거로 쓰인다.
   post: ["entry", "upload", "workbench", "report"],
 };
+
+// pge/Claude(2026-07-27, 주제 브레인스토밍 재설계): 키워드 추천~주제 선택 중인 phase
+// 집합 — 이 안에 있는 동안은 좌측 네비 "주제 브레인스토밍" 단계(TopicBrainstormingScreen)로
+// 보여주고, 벗어나는 순간(주제 선택 확정으로 refinement 진입) "ideation"(IdeationScreen,
+// AI 아이디어 회의 = 설계 대화) 단계로 자동 전환한다.
+const DISCOVERY_PHASE_GROUP = new Set([
+  "keyword_generation",
+  "awaiting_keyword_selection",
+  "keyword_selection",
+  "topic_generation",
+  "awaiting_candidate_selection",
+  "candidate_selection",
+]);
 
 // 가은/Claude(2026-07-21): "작성 전" 흐름에서 확정한 아이디어 프로젝트를 표시하는 마커.
 // 아직 실제 주제 발굴 회의 API가 없어(더미) 확정 주제도 IdeationResultScreen과 동일한
@@ -1312,7 +1339,7 @@ function AnalysisStatusPanel({ mode, active, statRows, nextLabel, nextDesc, ctaL
  * 컴포넌트들만 새로 짰다. 레퍼런스 화면 속 문구·숫자·모델명은 목업이라 그대로 옮기지
  * 않고, 실제 API 응답에 있는 값만 채운다 — 값이 없으면 해당 UI를 숨긴다.
  */
-function AnalysisScreen({ mode, onNext, onBack, projectId }) {
+function AnalysisScreen({ mode, onNext, onFormItemsSelected, onBack, projectId }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [analysis, setAnalysis] = useState(null);
@@ -1339,6 +1366,12 @@ function AnalysisScreen({ mode, onNext, onBack, projectId }) {
   const [similarExpanded, setSimilarExpanded] = useState(false);
   const [evidenceExpanded, setEvidenceExpanded] = useState(false);
   const [advancing, setAdvancing] = useState(false);
+  // 가은/Claude(2026-07-28, 실측 요청: "신청서 항목 선택 패널은 공모전 분석이 끝나고
+  // 다음 페이지로 넘어가기 직전에 나올 것") — 이전에는 이 패널이 "주제 브레인스토밍"
+  // 페이지(TopicBrainstormingScreen)에 도착한 뒤에 떴다. 이제 "AI 위원과 주제 확정 시작"
+  // 버튼을 누른 시점에 여기서 먼저 뜨고, 항목을 고르고 저장해야만 다음 페이지로 넘어간다.
+  // null이면 안 보이고, 배열이면(신청서 항목 목록) 뜬다.
+  const [formSelectionPrompt, setFormSelectionPrompt] = useState(null);
 
   function openDetail(tab) {
     setDetailTab(tab);
@@ -1347,6 +1380,23 @@ function AnalysisScreen({ mode, onNext, onBack, projectId }) {
 
   function handleAdvance() {
     if (advancing) return;
+    const items = formAnalysis?.items || [];
+    // 신청서 항목 중 위원과 상의할 항목(행정/개인정보 필터를 통과한 것)이 하나라도 있을
+    // 때만 패널을 띄운다 — 전부 행정 항목이거나 항목 자체가 없으면 바로 다음 단계로.
+    const hasSelectableItems =
+      mode === "pre" && items.some((item) => !isAdministrativeFormField(item.field_name));
+    if (hasSelectableItems) {
+      setFormSelectionPrompt(items);
+      return;
+    }
+    onFormItemsSelected?.([]);
+    setAdvancing(true);
+    onNext();
+  }
+
+  function handleConfirmFormSelection(selectedItems) {
+    setFormSelectionPrompt(null);
+    onFormItemsSelected?.(selectedItems);
     setAdvancing(true);
     onNext();
   }
@@ -1500,6 +1550,9 @@ function AnalysisScreen({ mode, onNext, onBack, projectId }) {
 
   return (
     <>
+    {formSelectionPrompt && (
+      <ApplicationFormFieldSelectModal items={formSelectionPrompt} onConfirm={handleConfirmFormSelection} />
+    )}
     <div className="cas-wrap">
       <style>{`
         .cas-wrap{ max-width:1320px; }
@@ -2025,6 +2078,25 @@ export default function ReviewBoardPrototype() {
   // IdeationConversationScreen.jsx가 이 값이 이미 있으면 절대 start API를 다시 부르지
   // 않는다.
   const [ideationConv, setIdeationConv] = useState(null);
+  // 가은/Claude(2026-07-28, 실측 요청: "신청서 항목 선택 패널은 다음 페이지로 넘어가기
+  // 직전에") — AnalysisScreen에서 항목을 확정한 뒤 넘겨준 값을 여기(부모)에 잠깐 들고
+  // 있다가 TopicBrainstormingScreen이 회의를 시작할 때 그대로 쓴다. 매번 AnalysisScreen의
+  // "AI 위원과 주제 확정 시작"을 눌러야만 갱신되므로(handleAdvance/handleConfirmFormSelection
+  // 참고), 새 프로젝트로 다시 이 경로를 타면 항상 최신 값으로 덮어써진다 — 이전 프로젝트
+  // 값이 남을 걱정 없음.
+  const [preSelectedFormItems, setPreSelectedFormItems] = useState(null);
+
+  // pge/Claude(2026-07-27, 주제 브레인스토밍): "brainstorming" 단계에 있는 동안 phase가
+  // discovery 그룹을 벗어나면(사용자가 후보를 선택/결합/추천 확정) 자동으로 "ideation"
+  // 단계로 넘긴다 — 사용자가 직접 다음 단계 버튼을 누를 필요가 없다(선택 즉시 설계 회의
+  // 대화가 이어지는 한 화면 흐름이므로).
+  useEffect(() => {
+    if (stage !== "brainstorming") return;
+    const phase = ideationConv?.phase;
+    if (phase && !DISCOVERY_PHASE_GROUP.has(phase)) {
+      setStage("ideation");
+    }
+  }, [stage, ideationConv?.phase]);
 
   const goNext = () => {
     const seq = (mode && FLOW_BY_MODE[mode]) || ["entry"];
@@ -2205,7 +2277,23 @@ export default function ReviewBoardPrototype() {
         />
       )}
       {stage === "analysis" && (
-        <AnalysisScreen mode={mode} onNext={goNext} onBack={goPrev} projectId={projectId} />
+        <AnalysisScreen
+          mode={mode}
+          onNext={goNext}
+          onFormItemsSelected={setPreSelectedFormItems}
+          onBack={goPrev}
+          projectId={projectId}
+        />
+      )}
+      {stage === "brainstorming" && (
+        <TopicBrainstormingScreen
+          projectId={projectId}
+          criteriaDocuments={criteriaDocuments}
+          ideationConv={ideationConv}
+          setIdeationConv={setIdeationConv}
+          initialApplicationFormItems={preSelectedFormItems}
+          onBack={goPrev}
+        />
       )}
       {stage === "ideation" && (
         <IdeationScreen

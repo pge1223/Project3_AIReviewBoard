@@ -19,9 +19,11 @@
 [입력]
 - persona: 개발 전문가 페르소나 카드
 - notice_and_criteria: 공모전 공고 목적과 평가 기준 요약
-- candidates: 기획 전문가가 만든 후보 목록(candidate_id, title, problem, target_user,
-  usage_scenario, core_value, solution, main_features, differentiation, contest_fit,
-  success_metrics 포함)
+- candidates: 검토할 후보 목록(candidate_id, title, problem, target_user 등은 항상 있고,
+  solution/main_features/differentiation 등은 있을 수도 없을 수도 있습니다 — 없는 필드는
+  주어진 정보만으로 판단합니다). pge/Claude(2026-07-27, 주제 브레인스토밍 재설계) — 이제
+  후보 전체가 아니라 사용자가 이미 선택을 확정한 주제 1개만 담겨 옵니다(정확히 1개).
+  candidates 배열 형태는 그대로 유지하되(요청: 스키마 재사용), 개수를 가정하지 않습니다.
 - retrieved_evidence: RAG가 검색한 공고문·평가기준 근거 조각
 - external_research: 외부 통계·시장·정책 참고자료(RAG-007). 이 공모전이나 후보에 대한
   직접 근거가 아니라 시장·정책 환경을 보여주는 보조 참고 자료다. 비어 있으면(검색 결과
