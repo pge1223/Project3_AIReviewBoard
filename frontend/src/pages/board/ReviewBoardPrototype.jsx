@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   Link2, Upload, FileText, Sparkles,
   CheckCircle2, Circle, AlertCircle, AlertTriangle, Award, Target, ShieldCheck,
-  ArrowRight, TrendingUp, ChevronDown, ChevronUp, ChevronRight, Calendar, FolderOpen, X, Trash2,
+  ArrowRight, TrendingUp, ChevronDown, ChevronUp, ChevronRight, Calendar, X, Trash2,
   Menu, User, LogOut, ExternalLink, Gift, AlertOctagon, Quote, FileStack,
 } from "lucide-react";
 import { createProject, getProject, updateProject, getLatestMeeting } from "../../api/projectApi";
@@ -343,7 +343,6 @@ function ModeCard({ meta, selected, onSelect }) {
 }
 
 function EntryScreen({ onEnter, onModeSelect, loading, error, projectId, ensureProject, documents, setDocuments }) {
-  const navigate = useNavigate();
   const [mode, setMode] = useState(null);
   const [dismissedAlerts, setDismissedAlerts] = useState([]);
 
@@ -597,9 +596,6 @@ function EntryScreen({ onEnter, onModeSelect, loading, error, projectId, ensureP
           <h1 className="es-title">새 분석 시작</h1>
           <p className="es-subtitle">현재 준비 상태에 맞는 분석 방식을 선택하고 필요한 자료를 등록해 주세요.</p>
         </div>
-        <button type="button" className="btn-ghost rb-inline-projects" onClick={() => navigate('/projects')}>
-          <FolderOpen size={14} /> 내 프로젝트
-        </button>
       </div>
 
       <div className="es-layout">
