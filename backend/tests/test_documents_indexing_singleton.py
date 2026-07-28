@@ -127,11 +127,13 @@ class TestSingletonConcurrency:
         self, reset_indexing_singleton, fake_dependencies, monkeypatch
     ):
         fake_embedder_cls, _ = fake_dependencies
+        monkeypatch.setattr(documents_module.settings, "RAG_EMBEDDING_DEVICE", "cuda")
         monkeypatch.setattr(documents_module.settings, "RAG_EMBEDDING_BATCH_SIZE", 16)
         monkeypatch.setattr(documents_module.settings, "RAG_TORCH_NUM_THREADS", 4)
 
         documents_module._get_indexing_service()
 
+        assert fake_embedder_cls.last_config.device == "cuda"
         assert fake_embedder_cls.last_config.batch_size == 16
         assert fake_embedder_cls.last_config.cpu_threads == 4
 

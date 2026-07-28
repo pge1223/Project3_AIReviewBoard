@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from 'react'
-import { AlertCircle, ArrowRight, CheckCircle2, ChevronDown, ChevronUp, Circle, Download, Lightbulb, ListChecks, RefreshCw, Send, Sparkles, Users } from 'lucide-react'
+import { AlertCircle, ArrowRight, CheckCircle2, ChevronDown, ChevronUp, Circle, Download, ExternalLink, Lightbulb, ListChecks, Newspaper, RefreshCw, Send, Sparkles, Users } from 'lucide-react'
 import {
   cancelIdeationConversation,
   continueIdeationExpertTurnStream,
@@ -9,12 +9,15 @@ import {
   getLatestIdeationConversation,
   replyIdeationConversation,
   replyIdeationConversationStream,
+  retryFailedIdeationConversationNode,
   startIdeationConversation,
   startIdeationConversationStream,
 } from '../../api/ideationConversationApi'
 import { getAnnouncementAnalysis, getApplicationFormAnalysis } from '../../api/documentApi'
 import IdeaCanvasPanel from './IdeaCanvasPanel'
 import IdeationAvatarStage from './IdeationAvatarStage'
+import IdeationProgressPanel from './IdeationProgressPanel'
+import IdeaEvolutionTimeline from './IdeaEvolutionTimeline'
 import ApplicationFormFieldSelectModal from './ApplicationFormFieldSelectModal'
 import ApplicationFormPanel from './ApplicationFormPanel'
 import {
@@ -26,8 +29,10 @@ import {
   candidateSelectMessage,
   classifyIdeationConvError,
   competitionNameFrom,
+  discussionIdeaCountFor,
   humanizeExpertIdentifiers,
   nextActionGuideFor,
+  nextStepLabelFor,
   resolveUseRag,
   resolveRespondingToSpeakerId,
   speakerMetaFor,
@@ -70,6 +75,15 @@ const REPLYABLE_PHASES = new Set([
   'awaiting_developer_answer',
   'awaiting_user_decision',
   'discussion_complete',
+  // 용준/Claude(2026-07-27, 요청: discovery 모드 구조화 액션 버튼) — 이 세 phase는
+  // action_code 계약(select_problem_focus/combine_problem_focus, merge_directions/
+  // drop_direction/add_solution_direction/proceed_to_validation/return_to_problem_definition,
+  // confirm_concept/revise_candidate/return_to_problem_definition)이 유효한 지점이다.
+  // handleSend가 canReplyOrContinue를 통과해야 실제 reply를 보낼 수 있으므로, 새 버튼들도
+  // 자유 텍스트 입력창과 동일하게 이 목록에 포함해야 동작한다.
+  'awaiting_problem_focus_selection',
+  'awaiting_conflict_resolution',
+  'awaiting_concept_confirmation',
 ])
 
 // 재인/Claude(2026-07-23): 아바타 재생 대상 화자 - user는 당연히 제외, 그 외 3명
@@ -412,6 +426,7 @@ const EXPERT_LABELS = {
   planning_expert: '기획 의원',
   dev_expert: '개발 의원',
 }
+const EXPECTED_DIFFICULTY_LABEL = { high: '낮음', medium: '보통', low: '높음' }
 
 function InterruptionMarker({ speakerId }) {
   const speakerLabel = EXPERT_LABELS[speakerId]
@@ -540,6 +555,18 @@ function CandidateCard({ candidate, index, onSelect, disabled, selected = false 
               </ul>
             </div>
           )}
+          {candidate.source_direction_ids?.length > 0 && (
+            <div style={{ fontSize: 14, color: 'var(--text-1)', lineHeight: 1.6 }}>
+              <strong style={{ color: 'var(--text-2)', fontWeight: 600 }}>발전한 해결 방향 · </strong>
+              {candidate.source_direction_ids.join(', ')}
+            </div>
+          )}
+          {candidate.reflected_evolution_ids?.length > 0 && (
+            <div style={{ fontSize: 14, color: 'var(--text-1)', lineHeight: 1.6 }}>
+              <strong style={{ color: 'var(--text-2)', fontWeight: 600 }}>반영한 반론·수정 · </strong>
+              {candidate.reflected_evolution_ids.join(', ')}
+            </div>
+          )}
           {candidate.contest_fit && (
             <div style={{ fontSize: 14, color: 'var(--text-1)', lineHeight: 1.6 }}>
               <strong style={{ color: 'var(--text-2)', fontWeight: 600 }}>차별점 · </strong>
@@ -559,7 +586,12 @@ function CandidateCard({ candidate, index, onSelect, disabled, selected = false 
 
       {candidate.feasibility && (
         <div style={{ fontSize: 13, color: 'var(--text-2)' }}>
-          실현 가능성 {FEASIBILITY_LABEL[candidate.feasibility] || '미상'}
+          현재 예상 난이도 {EXPECTED_DIFFICULTY_LABEL[candidate.feasibility] || '검증 필요'}
+        </div>
+      )}
+      {!selected && !disabled && (
+        <div style={{ marginTop: 8, color: 'var(--purple)', fontSize: 13.5, fontWeight: 700 }}>
+          검증 후보로 선택
         </div>
       )}
     </div>
@@ -628,7 +660,7 @@ function MergeAnalysisPanel({ mergeAnalysis, sourceCandidates, userSelectionMess
   )
 }
 
-function ErrorBanner({ error, onRetry }) {
+function ErrorBanner({ error, onRetry, retrying }) {
   if (!error) return null
   return (
     <div
@@ -646,10 +678,531 @@ function ErrorBanner({ error, onRetry }) {
           </div>
         )}
         {onRetry && (
-          <button type="button" className="btn-ghost" style={{ marginTop: 10, padding: '6px 12px', fontSize: 13.5, display: 'flex', alignItems: 'center', gap: 6 }} onClick={onRetry}>
-            <RefreshCw size={12} /> 다시 시도
+          <button
+            type="button"
+            className="btn-ghost"
+            style={{ marginTop: 10, padding: '6px 12px', fontSize: 13.5, display: 'flex', alignItems: 'center', gap: 6 }}
+            onClick={onRetry}
+            disabled={retrying}
+          >
+            <RefreshCw size={12} /> {retrying ? '다시 시도 중...' : '다시 시도'}
           </button>
         )}
+      </div>
+    </div>
+  )
+}
+
+// 용준/Claude(2026-07-27, 요청: discovery 모드 구조화 액션 버튼) — 아래 세 블록은
+// awaiting_problem_focus_selection / awaiting_conflict_resolution /
+// awaiting_concept_confirmation phase에서만 각각 렌더링된다(IdeationScreen 본문 참고).
+// CandidateCard와 같은 시각 언어(card glass, 선택 카드, btn-primary/btn-ghost)를
+// 따르지만, 후보 선택과 달리 다중 선택·여러 액션이 필요해 별도 로컬 컴포넌트로 둔다.
+// 세 블록 모두 onSend(message, { actionCode, actionPayload })만 호출하고 API를 직접
+// 부르지 않는다 — 실제 전송은 IdeationScreen의 handleSend가 담당한다.
+
+function SelectableAreaCard({ area, selected, onToggle, disabled }) {
+  return (
+    <div
+      role="button"
+      tabIndex={disabled ? -1 : 0}
+      aria-pressed={selected}
+      aria-disabled={disabled}
+      onClick={() => !disabled && onToggle()}
+      onKeyDown={(e) => {
+        if (disabled || (e.key !== 'Enter' && e.key !== ' ')) return
+        e.preventDefault()
+        onToggle()
+      }}
+      className="card glass rb-ideation-candidate-card rb-ideation-candidate-card--interactive"
+      style={{
+        marginBottom: 10,
+        padding: 14,
+        cursor: disabled ? 'default' : 'pointer',
+        border: selected ? '2px solid var(--purple)' : '1px solid var(--glass-border)',
+        background: selected ? '#f5f1ff' : 'var(--bg-1)',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8, marginBottom: 4 }}>
+        <div style={{ fontSize: 16.5, fontWeight: 700, color: 'var(--text-0)' }}>{area.title}</div>
+        {selected ? (
+          <CheckCircle2 size={18} color="var(--purple)" style={{ flexShrink: 0 }} />
+        ) : (
+          <Circle size={16} color="var(--glass-border)" style={{ flexShrink: 0 }} />
+        )}
+      </div>
+      {area.summary && (
+        <div style={{ fontSize: 14.5, color: 'var(--text-1)', lineHeight: 1.6, marginBottom: 4 }}>
+          <strong style={{ color: '#514a61', fontWeight: 700 }}>문제 상황 · </strong>
+          {area.summary}
+        </div>
+      )}
+      {area.who_is_affected && (
+        <div style={{ fontSize: 13.5, color: 'var(--text-2)' }}>
+          <strong style={{ fontWeight: 600 }}>영향을 받는 대상 · </strong>{area.who_is_affected}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// 용준/Claude(2026-07-28, 요청: RAG 출처를 시각적으로 보여달라) — 문제 영역 생성에
+// 실제로 쓰인 external_evidence(RAG-006 프로젝트 문서 + RAG-007 네이버 뉴스/외부자료)를
+// 클릭 가능한 출처 카드로 보여준다. 백엔드가 이미 publisher/source_url이 확인된 자료만
+// 내려보내므로(ideation_external_evidence_service.py::_has_confirmed_source) 여기서는
+// 추가 필터 없이 있는 그대로 렌더링한다. reference_only=True(확정 근거 아님) 원칙을
+// 화면에도 그대로 드러내기 위해 안내 문구를 함께 둔다.
+function ExternalEvidenceStrip({ items }) {
+  if (!items || items.length === 0) return null
+  return (
+    <div style={{ marginTop: 10, marginBottom: 10 }}>
+      <div style={{ fontSize: 12.5, color: 'var(--text-2)', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 4 }}>
+        <Newspaper size={13} /> 참고한 외부 자료 (확정 근거 아님, 참고용)
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {items.map((item, idx) => (
+          <a
+            key={item.source_id || item.chunk_id || idx}
+            href={item.source_url || undefined}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{
+              display: 'flex',
+              alignItems: 'flex-start',
+              gap: 6,
+              padding: '8px 10px',
+              borderRadius: 10,
+              border: '1px solid var(--glass-border)',
+              background: 'var(--bg-1)',
+              textDecoration: 'none',
+              color: 'var(--text-1)',
+              fontSize: 13,
+              cursor: item.source_url ? 'pointer' : 'default',
+            }}
+          >
+            <ExternalLink size={13} style={{ flexShrink: 0, marginTop: 2, color: 'var(--text-2)' }} />
+            <span style={{ flex: 1, minWidth: 0 }}>
+              <span
+                style={{
+                  display: 'block',
+                  fontWeight: 600,
+                  color: 'var(--text-0)',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {item.title || '(제목 없음)'}
+              </span>
+              <span style={{ fontSize: 11.5, color: 'var(--text-2)' }}>
+                {item.publisher}
+                {item.reference_date || item.published_at ? ` · ${item.reference_date || item.published_at}` : ''}
+              </span>
+            </span>
+          </a>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// phase === 'awaiting_problem_focus_selection'일 때만 쓰인다. 문제 영역(problem_areas)은
+// 아직 최종 아이디어가 아니므로 그 취지를 안내 문구로 항상 함께 보여준다(요청 사항 그대로).
+function ProblemAreaSelectionBlock({ problemAreas, externalEvidence, onSend, disabled, pendingActionCode }) {
+  const [selectedIds, setSelectedIds] = useState([])
+
+  function toggle(areaId) {
+    setSelectedIds((prev) => {
+      if (prev.includes(areaId)) return prev.filter((id) => id !== areaId)
+      if (prev.length >= 2) return [prev[1], areaId] // 최대 2개까지만 유지(결합용).
+      return [...prev, areaId]
+    })
+  }
+
+  const selectedAreas = problemAreas.filter((a) => selectedIds.includes(a.area_id))
+  const selectedTitles = selectedAreas.map((a) => a.title).join(' · ')
+
+  function handleSelect() {
+    if (selectedIds.length !== 1) return
+    onSend(`"${selectedTitles}"를 문제 영역으로 선택합니다.`, {
+      actionCode: 'select_problem_focus',
+      actionPayload: { area_ids: selectedIds },
+    })
+  }
+
+  function handleCombine() {
+    if (selectedIds.length !== 2) return
+    onSend(`"${selectedTitles}" 두 문제 영역을 결합해서 진행합니다.`, {
+      actionCode: 'combine_problem_focus',
+      actionPayload: { area_ids: selectedIds },
+    })
+  }
+
+  return (
+    <div style={{ marginTop: 4 }}>
+      <div style={{ fontSize: 13.5, color: 'var(--text-2)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+        탐색할 문제 영역
+      </div>
+      <div className="rb-ideation-notice">
+        공모전 분석 결과를 바탕으로 해결할 가치가 있는 문제 영역을 찾았습니다. 먼저 탐색하고
+        싶은 문제를 선택해 주세요. 이 선택은 최종 아이디어 확정이 아닙니다.
+      </div>
+      <ExternalEvidenceStrip items={externalEvidence} />
+      <div style={{ marginTop: 10 }}>
+        {problemAreas.map((area) => (
+          <SelectableAreaCard
+            key={area.area_id}
+            area={area}
+            selected={selectedIds.includes(area.area_id)}
+            onToggle={() => toggle(area.area_id)}
+            disabled={disabled}
+          />
+        ))}
+      </div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <button
+          type="button"
+          className="btn-primary"
+          disabled={disabled || selectedIds.length !== 1}
+          onClick={handleSelect}
+        >
+          {pendingActionCode === 'select_problem_focus' ? '선택 중...' : '선택한 문제 영역으로 진행'}
+        </button>
+        <button
+          type="button"
+          className="btn-ghost"
+          disabled={disabled || selectedIds.length !== 2}
+          onClick={handleCombine}
+        >
+          {pendingActionCode === 'combine_problem_focus' ? '결합 중...' : '선택해서 결합'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function SolutionDirectionCard({ direction, selected, onToggle, disabled }) {
+  const isActive = direction.status === 'active'
+  return (
+    <div
+      role={isActive ? 'button' : undefined}
+      tabIndex={isActive && !disabled ? 0 : -1}
+      aria-pressed={isActive ? selected : undefined}
+      onClick={() => isActive && !disabled && onToggle()}
+      onKeyDown={(e) => {
+        if (!isActive || disabled || (e.key !== 'Enter' && e.key !== ' ')) return
+        e.preventDefault()
+        onToggle()
+      }}
+      className={`card glass${isActive ? ' rb-ideation-candidate-card rb-ideation-candidate-card--interactive' : ''}`}
+      style={{
+        marginBottom: 10,
+        padding: 12,
+        cursor: isActive && !disabled ? 'pointer' : 'default',
+        border: selected ? '2px solid var(--purple)' : '1px solid var(--glass-border)',
+        background: selected ? '#f5f1ff' : isActive ? 'var(--bg-1)' : '#faf9fc',
+        opacity: isActive ? 1 : 0.6,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
+        <div
+          style={{
+            fontSize: 15.5, fontWeight: 700, color: 'var(--text-0)',
+            textDecoration: isActive ? 'none' : 'line-through',
+          }}
+        >
+          {direction.title}
+        </div>
+        {isActive ? (
+          selected
+            ? <CheckCircle2 size={17} color="var(--purple)" style={{ flexShrink: 0 }} />
+            : <Circle size={15} color="var(--glass-border)" style={{ flexShrink: 0 }} />
+        ) : (
+          <span className="badge grey mono" style={{ fontSize: 11 }}>
+            {direction.status === 'dropped'
+              ? '폐기됨'
+              : direction.status === 'merged'
+                ? '결합됨'
+                : ['superseded', 'revised'].includes(direction.status)
+                  ? '수정됨'
+                  : direction.status}
+          </span>
+        )}
+      </div>
+      {direction.core_principle && (
+        <div style={{ fontSize: 13.5, color: 'var(--text-1)', lineHeight: 1.55, marginTop: 3 }}>
+          {direction.core_principle}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// phase === 'awaiting_conflict_resolution'일 때만 쓰인다.
+function ConflictResolutionBlock({ solutionDirections, onSend, disabled, pendingActionCode }) {
+  const [selectedIds, setSelectedIds] = useState([])
+  const activeDirections = solutionDirections.filter((d) => d.status === 'active')
+  const inactiveDirections = solutionDirections.filter((d) => d.status !== 'active')
+
+  function toggle(directionId) {
+    setSelectedIds((prev) => (prev.includes(directionId) ? prev.filter((id) => id !== directionId) : [...prev, directionId]))
+  }
+
+  const selectedTitles = solutionDirections
+    .filter((d) => selectedIds.includes(d.direction_id))
+    .map((d) => d.title)
+    .join(' · ')
+
+  function handleMerge() {
+    if (selectedIds.length < 2) return
+    onSend(`선택한 방향을 결합합니다: ${selectedTitles}`, {
+      actionCode: 'merge_directions',
+      actionPayload: { direction_ids: selectedIds },
+    })
+    setSelectedIds([])
+  }
+
+  function handleDrop() {
+    if (selectedIds.length < 1) return
+    onSend(`선택한 방향을 폐기합니다: ${selectedTitles}`, {
+      actionCode: 'drop_direction',
+      actionPayload: { direction_ids: selectedIds },
+    })
+    setSelectedIds([])
+  }
+
+  function handleAddDirection() {
+    onSend('새로운 해결 방향을 추가로 제안해 주세요.', { actionCode: 'add_solution_direction', actionPayload: {} })
+  }
+
+  function handleProceed() {
+    onSend('이 방향들로 검증을 진행합니다.', { actionCode: 'proceed_to_validation', actionPayload: {} })
+  }
+
+  function handleReturnToProblem() {
+    onSend('문제 정의로 돌아갑니다.', { actionCode: 'return_to_problem_definition', actionPayload: {} })
+  }
+
+  return (
+    <div style={{ marginTop: 4 }}>
+      <div style={{ fontSize: 13.5, color: 'var(--text-2)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+        해결 방향 조정
+      </div>
+      {activeDirections.map((d) => (
+        <SolutionDirectionCard
+          key={d.direction_id}
+          direction={d}
+          selected={selectedIds.includes(d.direction_id)}
+          onToggle={() => toggle(d.direction_id)}
+          disabled={disabled}
+        />
+      ))}
+      {inactiveDirections.map((d) => (
+        <SolutionDirectionCard key={d.direction_id} direction={d} selected={false} onToggle={() => {}} disabled />
+      ))}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 6 }}>
+        <button type="button" className="btn-ghost" disabled={disabled || selectedIds.length < 2} onClick={handleMerge}>
+          {pendingActionCode === 'merge_directions' ? '결합 중...' : '결합'}
+        </button>
+        <button type="button" className="btn-ghost" disabled={disabled || selectedIds.length < 1} onClick={handleDrop}>
+          {pendingActionCode === 'drop_direction' ? '폐기 중...' : '폐기'}
+        </button>
+        <button type="button" className="btn-ghost" disabled={disabled} onClick={handleAddDirection}>
+          {pendingActionCode === 'add_solution_direction' ? '요청 중...' : '새 방향 추가 요청'}
+        </button>
+        <button type="button" className="btn-primary" disabled={disabled} onClick={handleProceed}>
+          {pendingActionCode === 'proceed_to_validation' ? '검증 요청 중...' : '이대로 검증 진행'}
+        </button>
+        <button type="button" className="btn-ghost" disabled={disabled} onClick={handleReturnToProblem}>
+          {pendingActionCode === 'return_to_problem_definition' ? '이동 중...' : '문제 정의로 돌아가기'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// phase === 'awaiting_concept_confirmation'일 때만 쓰인다. "이 방향으로 최종 확정" 버튼은
+// 스펙 요청대로 이 phase에서만 렌더링되며(다른 어떤 phase에서도 노출하지 않음), 다른
+// 후보 확정 흐름(CandidateCard/finalize)과는 별개의 confirm_concept 액션이다.
+const VALIDATION_STATUS_LABEL = {
+  passed: '통과',
+  passed_with_caution: '주의 필요',
+  needs_revision: '수정 필요',
+}
+
+function ValidationReviewCard({ title, result, technical = false }) {
+  if (!result) {
+    return (
+      <div className="card glass" style={{ padding: 14 }}>
+        <strong>{title}</strong>
+        <div style={{ marginTop: 7, color: 'var(--text-2)' }}>{title}을 진행하고 있습니다.</div>
+      </div>
+    )
+  }
+  return (
+    <div className="card glass" style={{ padding: 14 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+        <strong>{title}</strong>
+        <span className={`badge ${result.status === 'needs_revision' ? 'amber' : 'green'} mono`}>
+          {VALIDATION_STATUS_LABEL[result.status] || result.status}
+        </span>
+      </div>
+      {result.passed_items?.length > 0 && (
+        <div style={{ marginTop: 9 }}>
+          <strong style={{ fontSize: 13, color: 'var(--text-2)' }}>통과 항목</strong>
+          <ul style={{ margin: '3px 0 0', paddingLeft: 17, lineHeight: 1.6 }}>
+            {result.passed_items.map((item, index) => <li key={index}>{item}</li>)}
+          </ul>
+        </div>
+      )}
+      {result.issues?.length > 0 && (
+        <div style={{ marginTop: 9 }}>
+          <strong style={{ fontSize: 13, color: 'var(--text-2)' }}>
+            {technical ? '기술 위험' : '수정 필요 항목'}
+          </strong>
+          <ul style={{ margin: '3px 0 0', paddingLeft: 17, lineHeight: 1.6 }}>
+            {result.issues.map((issue, index) => (
+              <li key={issue.code || index}>{issue.description}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {result.revision_suggestions?.length > 0 && (
+        <div style={{ marginTop: 9 }}>
+          <strong style={{ fontSize: 13, color: 'var(--text-2)' }}>수정 제안</strong>
+          <ul style={{ margin: '3px 0 0', paddingLeft: 17, lineHeight: 1.6 }}>
+            {result.revision_suggestions.map((item, index) => <li key={index}>{item}</li>)}
+          </ul>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ValidationPendingBlock() {
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 10, marginTop: 10 }}>
+      <ValidationReviewCard title="기획위원 검증" />
+      <ValidationReviewCard title="개발위원 검증" technical />
+    </div>
+  )
+}
+
+function ConceptConfirmationBlock({
+  provisionalIdea,
+  validationResult,
+  ideaEvolution,
+  onSend,
+  disabled,
+  pendingActionCode,
+}) {
+  function handleConfirm() {
+    onSend('이 방향으로 최종 확정합니다.', { actionCode: 'confirm_concept', actionPayload: {} })
+  }
+  function handleRevise() {
+    onSend('다시 검토하고 수정해 주세요.', { actionCode: 'revise_candidate', actionPayload: {} })
+  }
+  function handleReturnToProblem() {
+    onSend('문제 정의로 돌아갑니다.', { actionCode: 'return_to_problem_definition', actionPayload: {} })
+  }
+  function handleChooseAnother() {
+    onSend('다른 후보를 선택하겠습니다.', { actionCode: 'choose_another_candidate', actionPayload: {} })
+  }
+  const revisions = (ideaEvolution || [])
+    .filter((item) => item?.action_type === 'revision' || item?.stage === 'idea_validation')
+    .slice(-4)
+  const cautions = [
+    ...(validationResult?.planning?.status === 'passed_with_caution'
+      ? validationResult.planning.issues || []
+      : []),
+    ...(validationResult?.technical?.status === 'passed_with_caution'
+      ? validationResult.technical.issues || []
+      : []),
+  ]
+  const aiNecessity = provisionalIdea?.ai_necessity
+    || provisionalIdea?.ai_role
+    || validationResult?.technical?.passed_items?.find((item) => /AI|인공지능/.test(item))
+    || validationResult?.technical?.message
+
+  return (
+    <div style={{ marginTop: 4 }}>
+      <div className="rb-ideation-notice">
+        선택한 후보는 아직 최종 확정되지 않았으며, 기획·개발 관점의 검증 후 변경될 수 있습니다.
+      </div>
+      {provisionalIdea && (
+        <div className="card glass" style={{ marginTop: 10, marginBottom: 10, padding: 14 }}>
+          <div style={{ fontSize: 17, fontWeight: 700, color: 'var(--text-0)', marginBottom: 7 }}>
+            {provisionalIdea.title}
+          </div>
+          {provisionalIdea.problem && (
+            <div style={{ fontSize: 14.5, color: 'var(--text-0)', lineHeight: 1.6, marginBottom: 4 }}>
+              <strong style={{ color: '#514a61', fontWeight: 700 }}>해결할 문제 · </strong>{provisionalIdea.problem}
+            </div>
+          )}
+          {provisionalIdea.target_user && (
+            <div style={{ fontSize: 14.5, color: 'var(--text-0)', lineHeight: 1.6, marginBottom: 4 }}>
+              <strong style={{ color: '#514a61', fontWeight: 700 }}>목표 사용자 · </strong>{provisionalIdea.target_user}
+            </div>
+          )}
+          {provisionalIdea.solution && (
+            <div style={{ fontSize: 14.5, color: 'var(--text-0)', lineHeight: 1.6, marginBottom: 4 }}>
+              <strong style={{ color: '#514a61', fontWeight: 700 }}>해결 방안 · </strong>{provisionalIdea.solution}
+            </div>
+          )}
+          {provisionalIdea.differentiation && (
+            <div style={{ fontSize: 14.5, color: 'var(--text-0)', lineHeight: 1.6 }}>
+              <strong style={{ color: '#514a61', fontWeight: 700 }}>차별점 · </strong>{provisionalIdea.differentiation}
+            </div>
+          )}
+          {provisionalIdea.core_value && (
+            <div style={{ fontSize: 14.5, color: 'var(--text-0)', lineHeight: 1.6, marginBottom: 4 }}>
+              <strong style={{ color: '#514a61', fontWeight: 700 }}>핵심 가치 · </strong>{provisionalIdea.core_value}
+            </div>
+          )}
+          {Array.isArray(provisionalIdea.required_data) && provisionalIdea.required_data.length > 0 && (
+            <div style={{ fontSize: 14.5, color: 'var(--text-0)', lineHeight: 1.6, marginBottom: 4 }}>
+              <strong style={{ color: '#514a61', fontWeight: 700 }}>활용 데이터 · </strong>
+              {provisionalIdea.required_data.join(', ')}
+            </div>
+          )}
+          {aiNecessity && (
+            <div style={{ fontSize: 14.5, color: 'var(--text-0)', lineHeight: 1.6 }}>
+              <strong style={{ color: '#514a61', fontWeight: 700 }}>AI가 필요한 이유 · </strong>
+              {aiNecessity}
+            </div>
+          )}
+        </div>
+      )}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 10, marginBottom: 10 }}>
+        <ValidationReviewCard title="기획위원 검증" result={validationResult?.planning} />
+        <ValidationReviewCard title="개발위원 검증" result={validationResult?.technical} technical />
+      </div>
+      {revisions.length > 0 && (
+        <div className="card glass" style={{ padding: 14, marginBottom: 10 }}>
+          <strong>검증 과정에서 수정된 내용</strong>
+          <ul style={{ margin: '5px 0 0', paddingLeft: 17, lineHeight: 1.6 }}>
+            {revisions.map((item) => <li key={item.record_id}>{item.content || item.title}</li>)}
+          </ul>
+        </div>
+      )}
+      {cautions.length > 0 && (
+        <div className="rb-ideation-notice" style={{ marginBottom: 10 }}>
+          남아 있는 주의사항 · {cautions.map((item) => item.description).filter(Boolean).join(' · ')}
+        </div>
+      )}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <button type="button" className="btn-primary" disabled={disabled} onClick={handleConfirm}>
+          {pendingActionCode === 'confirm_concept' ? '확정 중...' : '이 아이디어로 최종 확정'}
+        </button>
+        <button type="button" className="btn-ghost" disabled={disabled} onClick={handleRevise}>
+          {pendingActionCode === 'revise_candidate' ? '요청 중...' : '검증 결과를 반영해 다시 수정'}
+        </button>
+        <button type="button" className="btn-ghost" disabled={disabled} onClick={handleChooseAnother}>
+          {pendingActionCode === 'choose_another_candidate' ? '이동 중...' : '다른 후보 선택'}
+        </button>
+        <button type="button" className="btn-ghost" disabled={disabled} onClick={handleReturnToProblem}>
+          {pendingActionCode === 'return_to_problem_definition' ? '이동 중...' : '문제 정의로 돌아가기'}
+        </button>
       </div>
     </div>
   )
@@ -667,7 +1220,17 @@ export function IdeationScreen({
 }) {
   const [starting, setStarting] = useState(!ideationConv)
   const [sending, setSending] = useState(false)
+  // 용준/Claude(2026-07-27, 요청: "처리 중인 액션에 상태 표시") — 구조화 액션 버튼 클릭
+  // 시점의 action_code를 기억해뒀다가, 그 요청이 처리되는 동안(sending=true) 같은 버튼에
+  // "선택 중"/"결합 중" 같은 라벨을 보여준다. sending이 false로 돌아가면(성공/실패/취소
+  // 어느 경로든) 아래 useEffect가 자동으로 비운다 — setSending(false) 호출부가 여러 곳
+  // (스트리밍/비스트리밍/폴백)이라 매 지점마다 따로 리셋하지 않아도 항상 정확하다.
+  const [pendingActionCode, setPendingActionCode] = useState(null)
   const [finalizing, setFinalizing] = useState(false)
+  // 용준/Claude(2026-07-28, 요청: "다시 시도"가 전체 회의를 처음부터 다시 실행하지 않게)
+  // — phase="failed"일 때 ErrorBanner의 "다시 시도" 버튼이 이 상태를 쓴다(handleRestart와
+  // 별개 — 전체 재시작이 아니라 failed_node만 재실행).
+  const [retryingFailedNode, setRetryingFailedNode] = useState(false)
   const [error, setError] = useState(null)
   const [draft, setDraft] = useState('')
   // 용준/Claude(2026-07-21, 요청: 실시간 스트리밍) — 지금 스트리밍 중인(아직 canonical이
@@ -970,9 +1533,12 @@ export function IdeationScreen({
           if (!data) return runStart()
           setIdeationConv(data)
           if (key) sessionStorage.setItem(key, data.session_id)
+          setStarting(false)
         })
-        .catch((err) => setError(classifyIdeationConvError(err)))
-        .finally(() => setStarting(false))
+        .catch((err) => {
+          setError(classifyIdeationConvError(err))
+          setStarting(false)
+        })
       return
     }
     setStarting(true)
@@ -980,16 +1546,19 @@ export function IdeationScreen({
       getAnnouncementAnalysis(projectId).then(setAnnouncementAnalysis).catch(() => {})
     }
     getIdeationConversation(savedSessionId)
-      .then((data) => setIdeationConv(data))
+      .then((data) => {
+        setIdeationConv(data)
+        setStarting(false)
+      })
       .catch((err) => {
         if (err?.status !== 404) {
           setError(classifyIdeationConvError(err))
+          setStarting(false)
           return
         }
         if (key) sessionStorage.removeItem(key)
         return runStart()
       })
-      .finally(() => setStarting(false))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -1165,6 +1734,26 @@ export function IdeationScreen({
   // 우선하고 streamState 쪽의 같은 id는 제거한다. interruptionMarkers는 메시지가 아니라
   // 렌더링용 마커라 여기(교차 참조용 allMessages)에는 안 넣는다.
   const visibleMessages = dedupeMessagesById([...canonicalMessages, ...streamState.messages])
+  const hasVisibleConversation = [
+    ...canonicalMessages,
+    ...(optimisticUserMessage ? [optimisticUserMessage] : []),
+    ...streamState.messages,
+  ].some((message) => (message?.displayedContent ?? message?.content ?? '').trim())
+  // 첫 API 응답을 기다리는 동안뿐 아니라, canonical 메시지는 도착했지만 아바타 재생
+  // 순서 때문에 아직 첫 발언이 공개되지 않은 순간에도 빈 흰 박스를 보여주지 않는다.
+  const showMeetingPreparing = !hasVisibleConversation
+    && !phaseFailure
+    && !error
+    && (
+      starting
+      || sending
+      || !ideationConv
+      || rawMessages.length > canonicalMessages.length
+      || (!!ideationConv && phase !== 'finalized' && phase !== 'failed')
+    )
+  const meetingPreparingDetail = startPhaseLabel
+    || streamState.phaseLabel
+    || '공모전 자료와 최신 근거를 검토하고 있어요'
   const latestVisibleMessageId = [
     ...canonicalMessages,
     ...(optimisticUserMessage ? [optimisticUserMessage] : []),
@@ -1172,6 +1761,11 @@ export function IdeationScreen({
   ]
     .filter((message) => (message?.displayedContent ?? message?.content ?? '').trim())
     .at(-1)?.message_id
+  // sending이 false로 돌아가는 모든 경로(성공/실패/취소/폴백)를 한곳에서 감지해
+  // pendingActionCode를 비운다 — setSending(false) 호출부마다 따로 리셋할 필요가 없다.
+  useEffect(() => {
+    if (!sending) setPendingActionCode(null)
+  }, [sending])
   const busy = starting || sending || finalizing || saving
   // awaiting_user_decision도 입력을 막지 않는다("더 이야기하기") — 백엔드
   // apply_user_answer가 이 경우도 받아 두 전문가 보완 의견으로 이어간다.
@@ -1210,9 +1804,12 @@ export function IdeationScreen({
   // 중이면(interrupting) 다시 누를 수 없다.
   const canInterject = sending && !interrupting && streamState.messages.length > 0
 
-  async function sendNonStreaming(text) {
+  // 용준/Claude(2026-07-27, 요청: discovery 모드 구조화 액션 버튼) — actionCode/actionPayload는
+  // 순수 추가 파라미터다. 생략하면(기존 모든 호출부) undefined로 넘어가 지금까지와 동일하게
+  // 자유 텍스트 message만으로 reply가 해석된다.
+  async function sendNonStreaming(text, actionCode, actionPayload) {
     try {
-      const data = await replyIdeationConversation(ideationConv.session_id, text)
+      const data = await replyIdeationConversation(ideationConv.session_id, text, undefined, actionCode, actionPayload)
       setIdeationConv(data)
       setDraft('')
       setOptimisticUserMessage(null)
@@ -1228,18 +1825,23 @@ export function IdeationScreen({
   // 네트워크가 끝나도 곧바로 canonical로 교체하지 않는다 — 최종 state/error를
   // pendingFinalRef에 넘겨두기만 하고, 실제 교체·setSending(false)는 화면 타이핑이 다
   // 따라잡은 뒤 rAF 루프의 finalizeStream이 수행한다.
-  async function handleSend(overrideText) {
+  // 용준/Claude(2026-07-27, 요청: discovery 모드 구조화 액션 버튼) — 세 번째 인자는 순수
+  // 추가 파라미터(action_code/action_payload)다. 기존 호출부(candidate 선택, 일반 채팅
+  // 전송, 진행자 선택지 버튼, interject 등)는 이 인자를 전혀 넘기지 않으므로
+  // actionCode/actionPayload가 항상 undefined로 남아 지금까지와 동작이 완전히 동일하다.
+  async function handleSend(overrideText, { actionCode, actionPayload } = {}) {
     const text = (overrideText ?? draft).trim()
     if (!text || !ideationConv) return
     if (!canReplyOrContinue) return
     setSending(true)
+    if (actionCode) setPendingActionCode(actionCode)
     setError(null)
     // 보내는 즉시 화면에 반영 — 서버 왕복(위원 응답 생성)이 끝나기를 기다리지 않는다.
     setOptimisticUserMessage({ message_id: 'LOCAL-OPTIMISTIC-USER', speaker_id: 'user', message_type: 'answer', content: text })
     setDraft('')
 
     if (!streamingSupportedRef.current) {
-      await sendNonStreaming(text)
+      await sendNonStreaming(text, actionCode, actionPayload)
       setSending(false)
       return
     }
@@ -1259,6 +1861,8 @@ export function IdeationScreen({
         // 텍스트는 이제 아바타 재생과 무관하게 미리 다 뽑히지만, 채팅/아바타 노출은
         // avatarRevealedCount로 여전히 하나씩 순서대로 공개된다).
         singleTurn: true,
+        actionCode,
+        actionPayload,
         onEvent: (event) => {
           if (event.type === 'state') {
             finalState = event.state
@@ -1291,7 +1895,7 @@ export function IdeationScreen({
             '백엔드 backend/.env의 ENABLE_IDEATION_STREAMING 값을 확인하세요.',
           err,
         )
-        await sendNonStreaming(text)
+        await sendNonStreaming(text, actionCode, actionPayload)
         setSending(false)
         return
       }
@@ -1445,6 +2049,28 @@ export function IdeationScreen({
     runStart()
   }
 
+  // 용준/Claude(2026-07-28, 요청: "다시 시도"가 전체 회의를 처음부터 다시 실행하지 않게)
+  // — session_id가 있는 phase="failed" 세션은 failed_node만 재실행한다(messages/
+  // problem_definition/idea_evolution 등 기존 회의 내용을 그대로 유지). session_id가
+  // 없으면(세션 시작 자체가 실패한 경우) 재실행할 노드가 없으므로 기존 전체 재시작으로
+  // 폴백한다.
+  async function handleRetryFailedNode() {
+    if (!ideationConv?.session_id) {
+      handleRestart()
+      return
+    }
+    setRetryingFailedNode(true)
+    setError(null)
+    try {
+      const data = await retryFailedIdeationConversationNode(ideationConv.session_id)
+      setIdeationConv(data)
+    } catch (err) {
+      setError(classifyIdeationConvError(err))
+    } finally {
+      setRetryingFailedNode(false)
+    }
+  }
+
   // 이미 확정까지 끝난 세션으로 이 화면에 돌아온 경우(사이드바 재진입) — 다시 채팅하지
   // 않고 바로 결과로 넘어갈 수 있게만 안내한다.
   if (ideationConv?.phase === 'finalized') {
@@ -1469,7 +2095,7 @@ export function IdeationScreen({
   // 용준/Claude(2026-07-25, 요청: 상단 상태 요약 바) — "회의 진행 시간"은 서버가 주는
   // 값이 없어(세션에 시작 타임스탬프 필드 자체가 없음) 하드코딩하지 않고 뺐다. 대신 실제로
   // 있는 값(라운드, 참여 위원 수, 논의 중인 아이디어 수, 다음 단계 라벨)만 보여준다.
-  const nextStepLabel = phase === 'finalized' ? '완료' : '주제 확정'
+  const nextStepLabel = nextStepLabelFor(ideationConv)
   const metaItems = ideationConv
     ? [
         // 용준/Claude(2026-07-26, 요청: "/3은 필요없고 실시간 라운드 숫자만, 4라운드
@@ -1479,7 +2105,7 @@ export function IdeationScreen({
         // 최신 숫자가 표시된다.
         { icon: ListChecks, label: '진행 라운드', value: `${ideationConv.round ?? 0}` },
         { icon: Users, label: '참여 위원', value: '3명' },
-        { icon: Lightbulb, label: '논의 아이디어', value: `${ideationConv.idea_candidates?.length ?? 0}개` },
+        { icon: Lightbulb, label: '논의 아이디어', value: `${discussionIdeaCountFor(ideationConv)}개` },
         { icon: ArrowRight, label: '다음 단계', value: nextStepLabel },
       ]
     : []
@@ -1568,7 +2194,11 @@ export function IdeationScreen({
           </div>
         )}
 
-        <ErrorBanner error={phaseFailure || error} onRetry={handleRestart} />
+        <ErrorBanner
+          error={phaseFailure || error}
+          onRetry={phaseFailure ? handleRetryFailedNode : handleRestart}
+          retrying={retryingFailedNode}
+        />
 
         {/* 용준/Claude(2026-07-25, 요청: "회의 대화 영역 상단에 가로형 상태 요약 카드") —
             round/idea_candidates.length/phase는 전부 ideationConv에 이미 있는 실제 값이다. */}
@@ -1596,6 +2226,7 @@ export function IdeationScreen({
           ref={chatScrollRef}
           className="card glass"
           onScroll={handleChatScroll}
+          aria-busy={showMeetingPreparing}
           style={{
             height: 'min(520px, 55vh)',
             minHeight: 240,
@@ -1672,7 +2303,7 @@ export function IdeationScreen({
           {phase === 'awaiting_candidate_selection' && hasCandidates && (
             <div style={{ marginTop: 4 }}>
               <div style={{ fontSize: 13.5, color: 'var(--text-2)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                주제 후보
+                발전된 아이디어 후보
               </div>
               <div
                 style={{
@@ -1692,8 +2323,12 @@ export function IdeationScreen({
                   />
                 ))}
               </div>
+              <p style={{ margin: '8px 0 0', color: 'var(--text-2)', fontSize: 13.5 }}>
+                후보를 선택하면 전문가 검증을 자동으로 진행한 뒤 주제 확정 단계로 이동합니다.
+              </p>
             </div>
           )}
+          {sending && phase === 'awaiting_candidate_selection' && <ValidationPendingBlock />}
           {/* 2026-07-26 라운드테이블 재설계 — 진행자가 매 사이클 던지는 선택지를 후보
               카드와 같은 자리에 버튼으로 노출한다(요청: "사용자가 주어진 선택지로 참여").
               클릭하면 선택지 라벨을 그대로 자유텍스트로 보낸다 — 후보 카드와 동일한 패턴이라
@@ -1721,6 +2356,37 @@ export function IdeationScreen({
                 </button>
               ))}
             </div>
+          )}
+          {/* 용준/Claude(2026-07-27, 요청: discovery 모드 구조화 액션 버튼) — 위
+              latestFacilitatorChoices/후보 카드와 같은 자리(대화 흐름 맨 아래)에, 현재
+              phase에 맞는 블록 하나만 조건부로 렌더링한다. handleSend가 세 번째 인자로
+              actionCode/actionPayload를 받아 그대로 API에 실어 보낸다. */}
+          {phase === 'awaiting_problem_focus_selection' && (ideationConv?.problem_areas?.length || 0) > 0 && (
+            <ProblemAreaSelectionBlock
+              problemAreas={ideationConv.problem_areas}
+              externalEvidence={ideationConv.external_evidence}
+              onSend={(msg, opts) => handleSend(msg, opts)}
+              disabled={!canReplyOrContinue}
+              pendingActionCode={pendingActionCode}
+            />
+          )}
+          {phase === 'awaiting_conflict_resolution' && (ideationConv?.solution_directions?.length || 0) > 0 && (
+            <ConflictResolutionBlock
+              solutionDirections={ideationConv.solution_directions}
+              onSend={(msg, opts) => handleSend(msg, opts)}
+              disabled={!canReplyOrContinue}
+              pendingActionCode={pendingActionCode}
+            />
+          )}
+          {phase === 'awaiting_concept_confirmation' && (
+            <ConceptConfirmationBlock
+              provisionalIdea={ideationConv?.provisional_idea}
+              validationResult={ideationConv?.validation_result}
+              ideaEvolution={ideationConv?.idea_evolution}
+              onSend={(msg, opts) => handleSend(msg, opts)}
+              disabled={!canReplyOrContinue}
+              pendingActionCode={pendingActionCode}
+            />
           )}
         </div>
 
@@ -1886,6 +2552,17 @@ export function IdeationScreen({
             계속 재사용하므로 컴포넌트/import는 그대로 둔다. */}
         <IdeaCanvasPanel ideationConv={ideationConv} analysis={announcementAnalysis} />
 
+        {/* 용준/Claude(2026-07-27, 요청: 진행 상황 패널) — 참여 위원 카드 바로 아래, 기존
+            합의/미해결 쟁점 카드 위에 배치한다. IdeationProgressPanel은 discovery 모드가
+            아니어도(ideationConv만 있으면) phase/문제정의 등 공통 필드를 그대로 보여줄 수
+            있으므로 모드로 게이팅하지 않는다 — ideationConv 자체가 없으면 내부에서 null을
+            반환한다. */}
+        {ideationConv && (
+          <div style={{ marginTop: 12 }}>
+            <IdeationProgressPanel ideationConv={ideationConv} />
+          </div>
+        )}
+
         {ideationConv && (ideationConv.consensus?.length > 0 || ideationConv.unresolved_issues?.length > 0) && (
           <div className="card glass" style={{ marginBottom: 12, padding: 14 }}>
             {ideationConv.consensus?.length > 0 && (
@@ -1905,6 +2582,18 @@ export function IdeationScreen({
               </div>
             )}
           </div>
+        )}
+
+        {/* 용준/Claude(2026-07-27, 요청: 아이디어 변화 과정 타임라인) — idea_evolution은
+            discovery 모드 전용 필드라(리파인먼트 전용 세션엔 안 쌓임) 배열이 실제로 채워졌을
+            때만 렌더링한다(요청: "show IdeaEvolutionTimeline only when idea_evolution?.length
+            > 0"). */}
+        {(ideationConv?.idea_evolution?.length || 0) > 0 && (
+          <IdeaEvolutionTimeline
+            idea_evolution={ideationConv.idea_evolution}
+            solution_directions={ideationConv.solution_directions}
+            problem_areas={ideationConv.problem_areas}
+          />
         )}
 
       </div>
@@ -1960,12 +2649,100 @@ function proposalValueDisplay(value) {
   return humanizeExpertIdentifiers(String(value))
 }
 
-export function IdeationResultScreen({ ideationConv, setIdeationConv, onBack, onNext }) {
+// 용준/Claude(2026-07-28, 요청: "후보 선택부터 주제 확정까지 추가 입력 없이 한 번의
+// 흐름으로") — awaiting_concept_confirmation phase 전용 요약 화면. 기존
+// ConceptConfirmationBlock(대화 화면 안에 인라인으로 뜨던 카드, 그대로 둠)과 달리 여기는
+// "주제 확정" 단계(IdeationResultScreen) 전용으로, 요청 스펙 그대로 딱 6개 정보 +
+// 3개 버튼만 보여준다. onSend 시그니처는 handleSend와 동일(msg, {actionCode,
+// actionPayload})해서 IdeationResultScreen이 그대로 replyIdeationConversation에 넘길 수 있다.
+function ConceptConfirmationSummary({ provisionalIdea, validationResult, onSend, disabled, pendingActionCode }) {
+  function handleConfirm() {
+    onSend('이 방향으로 최종 확정합니다.', { actionCode: 'confirm_concept', actionPayload: {} })
+  }
+  function handleRevise() {
+    onSend('다시 검토하고 수정해 주세요.', { actionCode: 'revise_candidate', actionPayload: {} })
+  }
+  function handleChooseAnother() {
+    onSend('다른 후보를 선택하겠습니다.', { actionCode: 'choose_another_candidate', actionPayload: {} })
+  }
+  const cautions = [
+    ...(validationResult?.planning?.status === 'passed_with_caution' ? validationResult.planning.issues || [] : []),
+    ...(validationResult?.technical?.status === 'passed_with_caution' ? validationResult.technical.issues || [] : []),
+  ]
+
+  const rows = [
+    ['최종 문제', provisionalIdea?.problem],
+    ['대상 사용자', provisionalIdea?.target_user],
+    ['핵심 해결 방식', provisionalIdea?.solution],
+    ['기획 검증 요약', validationResult?.planning?.message],
+    ['개발 검증 요약', validationResult?.technical?.message],
+  ].filter(([, value]) => !!value)
+
+  return (
+    <div className="card glass" style={{ padding: 20 }}>
+      {rows.map(([label, value], i) => (
+        <div key={label} style={{ paddingTop: i > 0 ? 14 : 0, marginTop: i > 0 ? 14 : 0, borderTop: i > 0 ? '1px solid var(--glass-border)' : 'none' }}>
+          <div style={{ fontSize: 13, color: 'var(--text-2)', fontFamily: 'var(--mono)', marginBottom: 4 }}>{label}</div>
+          <div style={{ fontSize: 15, lineHeight: 1.65 }}>{value}</div>
+        </div>
+      ))}
+      {cautions.length > 0 && (
+        <div className="rb-ideation-notice" style={{ marginTop: 16 }}>
+          남은 주의사항 · {cautions.map((item) => item.description).filter(Boolean).join(' · ')}
+        </div>
+      )}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 18 }}>
+        <button type="button" className="btn-primary" disabled={disabled} onClick={handleConfirm}>
+          {pendingActionCode === 'confirm_concept' ? '확정 중...' : '이 아이디어로 확정'}
+        </button>
+        <button type="button" className="btn-ghost" disabled={disabled} onClick={handleRevise}>
+          {pendingActionCode === 'revise_candidate' ? '요청 중...' : '한 번 수정하기'}
+        </button>
+        <button type="button" className="btn-ghost" disabled={disabled} onClick={handleChooseAnother}>
+          {pendingActionCode === 'choose_another_candidate' ? '이동 중...' : '다른 후보 선택'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+export function IdeationResultScreen({ ideationConv, setIdeationConv, onBack, onNext, onReturnToConversation }) {
+  // 용준/Claude(2026-07-28) — 후보 선택 직후 자동으로 넘어온 "주제 확정 대기"
+  // (awaiting_concept_confirmation) 상태 전용 분기. 확정/수정/다른 후보 액션은 채팅
+  // 스트리밍이 필요 없는 단발 요청이라 handleSend의 스트리밍 로직 없이
+  // replyIdeationConversation을 직접 호출한다 — 응답이 오면 대화가 다시 진행되어야
+  // 하므로(확정→refinement 라운드, 수정→conflict_and_merge, 다른 후보→candidate_selection)
+  // onReturnToConversation으로 "주제 아이디어 회의" 화면으로 돌려보낸다.
+  const [confirmSending, setConfirmSending] = useState(false)
+  const [confirmError, setConfirmError] = useState(null)
+  const [pendingActionCode, setPendingActionCode] = useState(null)
   // 가은/Claude(2026-07-27, 요청: "주제 확정하고 아래에 신청서 초안 버튼 하나 만들어서
   // 페이지로 하나 띄워주자") — 신청서 항목을 선택한 세션에서만 버튼을 보여준다(선택 안 한
   // 세션엔 채울 필드 자체가 없다).
   const [generatingFormDraft, setGeneratingFormDraft] = useState(false)
   const [formDraftError, setFormDraftError] = useState(null)
+  // 용준/Claude(2026-07-28) — 이 화면이 awaiting_concept_confirmation과 finalized 두
+  // phase를 조건부로 분기해서 그리다 보니, 아래 모든 useState는 Hooks 규칙(매 렌더 동일한
+  // 순서/개수로 호출)을 지키기 위해 두 분기의 조건문보다 항상 먼저(무조건) 선언한다 —
+  // 그중 하나라도 조건부 return 아래에 있으면, phase가 바뀌어 분기가 달라지는 순간
+  // "Rendered fewer/more hooks than expected" 에러로 화면이 통째로 날아간다.
+
+  async function handleConfirmAction(message, { actionCode, actionPayload } = {}) {
+    if (!ideationConv?.session_id || confirmSending) return
+    setConfirmSending(true)
+    setConfirmError(null)
+    setPendingActionCode(actionCode || null)
+    try {
+      const data = await replyIdeationConversation(ideationConv.session_id, message, undefined, actionCode, actionPayload)
+      setIdeationConv(data)
+      onReturnToConversation?.()
+    } catch (err) {
+      setConfirmError(classifyIdeationConvError(err))
+    } finally {
+      setConfirmSending(false)
+      setPendingActionCode(null)
+    }
+  }
 
   async function handleGenerateFormDraft() {
     if (generatingFormDraft) return
@@ -1980,6 +2757,27 @@ export function IdeationResultScreen({ ideationConv, setIdeationConv, onBack, on
     } finally {
       setGeneratingFormDraft(false)
     }
+  }
+
+  if (ideationConv?.phase === 'awaiting_concept_confirmation') {
+    return (
+      <div style={{ maxWidth: 780 }}>
+        <div className="badge purple mono" style={{ marginBottom: 12 }}>주제 확정 대기 · 전문가 검증 완료</div>
+        {onBack && (
+          <button type="button" className="btn-ghost" style={{ marginBottom: 12, padding: '5px 10px', fontSize: 13.5 }} onClick={onBack}>
+            ← 이전
+          </button>
+        )}
+        {confirmError && <p style={{ color: 'var(--coral)', fontSize: 14.5, marginBottom: 12 }}>{confirmError.message}</p>}
+        <ConceptConfirmationSummary
+          provisionalIdea={ideationConv?.provisional_idea}
+          validationResult={ideationConv?.validation_result}
+          onSend={handleConfirmAction}
+          disabled={confirmSending}
+          pendingActionCode={pendingActionCode}
+        />
+      </div>
+    )
   }
 
   if (!ideationConv || ideationConv.phase !== 'finalized' || !ideationConv.idea_proposal) {

@@ -63,11 +63,14 @@ from graph import (  # noqa: E402
     finalize_ideation_conversation,
     generate_application_form_draft,
     is_late_request_event,
+    is_legacy_pre_problem_stage_discovery_session,
     reset_trace_context,
     reply_ideation_conversation,
+    retry_failed_ideation_conversation_node,
     sanitize_preview,
     start_ideation_conversation,
     trace_event,
+    validate_ideation_action_code,
 )
 
 configure_ideation_trace(
@@ -857,6 +860,19 @@ def _serialize_state(state: IdeationConvState) -> dict:
         # 가은/Claude(2026-07-27, 요청: "보완이 필요한 정보 섹션") — generate_application_form_draft가
         # 본문에 넣지 못한 항목을 남긴 목록. 구버전 세션/미생성 상태는 빈 배열.
         "application_form_supplement_notes": state.get("application_form_supplement_notes", []),
+        # 용준/Claude(2026-07-27, 요청: "발산 전에 완성, 선택 즉시 확정" 구조 개편) — 순수
+        # 추가 필드. discovery 모드가 candidate_generation 이전에 거치는 문제 발견/정의/
+        # 발산 단계 데이터와, "잠정 선택"·"최종 확정"을 구분하는 상태값을 노출한다. 구버전
+        # 세션(이 키들이 없는 저장 state)은 각각 기본값(빈 배열/None/False)으로 직렬화한다.
+        "problem_areas": state.get("problem_areas", []),
+        "problem_focus": state.get("problem_focus", []),
+        "problem_definition": state.get("problem_definition"),
+        "solution_directions": state.get("solution_directions", []),
+        "idea_evolution": state.get("idea_evolution", []),
+        "provisional_idea": state.get("provisional_idea"),
+        "validation_result": state.get("validation_result"),
+        "user_confirmed": state.get("user_confirmed", False),
+        "idea_locked": state.get("idea_locked", False),
         "error": (
             {"code": "IDEATION_CONV_NODE_FAILED", "message": f"{state.get('failed_node')} 노드에서 실패했습니다."}
             if state["phase"] == "failed"
@@ -896,6 +912,21 @@ class ReplyRequest(BaseModel):
     # stop_after_expert_turn 그대로. 기본값 False로 기존 클라이언트(아바타 없는 테스트 등)는
     # 전혀 영향받지 않는다 — 아바타가 있는 화면만 매번 true로 보낸다.
     single_turn: bool = False
+    # 용준/Claude(2026-07-27, 후속 요청 4번: "2차 프론트에서는 action code를 함께 보낼
+    # 예정 — 백엔드는 action code를 우선 사용하고 자연어 키워드 판정은 하위 호환용
+    # 폴백으로 유지") — 순수 추가 필드(기본값 None). 넘기지 않으면 기존과 완전히 동일하게
+    # message 자연어 파싱만으로 동작한다. 지원하는 action_code:
+    # select_problem_focus(payload: {"indices": [1] 또는 {"area_ids": [...]})/
+    # combine_problem_focus(payload: {"indices": [1,2]})/
+    # add_solution_direction(payload 불필요)/
+    # merge_directions(payload: {"direction_ids": [id1, id2]})/
+    # drop_direction(payload: {"direction_ids": [id, ...]})/
+    # proceed_to_validation(payload 불필요)/revise_candidate(payload 불필요)/
+    # confirm_concept(payload 불필요)/return_to_problem_definition(payload 불필요).
+    # message 필드는 action_code를 보낼 때도 계속 필수다 — 회의록에 남는 사용자 발화이자
+    # (해당 노드가 action_code 처리에 실패했을 때의) 자연어 폴백 대상이기 때문이다.
+    action_code: Optional[str] = None
+    action_payload: Optional[dict] = None
 
 
 class ContinueTurnRequest(BaseModel):
@@ -906,6 +937,13 @@ class ContinueTurnRequest(BaseModel):
 
 
 class FinalizeRequest(BaseModel):
+    model: str = Field(default="")
+
+
+# 용준/Claude(2026-07-28, 요청: "다시 시도"가 전체 회의를 처음부터 다시 실행하지 않게)
+# — ContinueTurnRequest와 동일한 이유로 message 필드가 없다: 사용자 발언이 아니라
+# failed_node를 그대로 재실행하는 요청이기 때문이다.
+class RetryFailedNodeRequest(BaseModel):
     model: str = Field(default="")
 
 
@@ -1048,6 +1086,8 @@ async def reply_conversation(
                 evidence_planner=evidence_planner,
                 external_evidence_lookup=external_evidence_lookup,
                 stop_after_expert_turn=request.single_turn,
+                action_code=request.action_code,
+                action_payload=request.action_payload,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
@@ -1061,6 +1101,76 @@ async def reply_conversation(
     finally:
         _store.release(session_id)
         trace_event("IDEATION_SESSION_UNLOCKED", mode="sync")
+        reset_trace_context(trace_tokens)
+
+
+# 용준/Claude(2026-07-28, 요청: "다시 시도"가 전체 회의를 처음부터 다시 실행하지 않게) —
+# phase="failed"인 세션 전용 엔드포인트. /reply(위)는 phase가 REPLYABLE_PHASES에 있어야만
+# 받아준다("failed"는 그 목록에 없다) — 그래서 지금까지 프론트의 유일한 선택지는 세션을
+# 통째로 새로 시작하는 것뿐이었다(handleRestart). 이 엔드포인트는 failed_node를 그
+# 노드의 진입 phase로 되돌려 그래프를 다시 실행할 뿐, messages/problem_definition/
+# idea_evolution 등 기존 state는 전혀 지우지 않는다(retry_failed_ideation_conversation_node
+# 참고). 지금은 candidate_planning만 이 경로를 실제로 타지만(요청 범위), _ENTRY_NODES에
+# 있는 다른 노드도 같은 방식으로 동작한다.
+@router.post("/{session_id}/retry-failed-node")
+async def retry_failed_node(
+    session_id: str,
+    request: RetryFailedNodeRequest,
+    authorization: Optional[str] = Header(None, alias="authorization"),
+):
+    _require_preview_enabled()
+    user_email = get_current_user(authorization)
+    await _restore_session_record(session_id, user_email)
+    try:
+        record = _acquire_session_record_or_404(session_id)
+    except _SessionBusyError:
+        raise HTTPException(status_code=409, detail="이 세션은 이미 다른 요청을 처리하고 있습니다.")
+    previous_state = record.state
+
+    trace_tokens = bind_trace_context(session_id)
+    try:
+        if previous_state.get("phase") != "failed":
+            raise HTTPException(status_code=409, detail="실패한 세션만 재시도할 수 있습니다.")
+        trace_event(
+            "IDEATION_REQUEST_STARTED",
+            mode="retry_failed_node",
+            failed_node=previous_state.get("failed_node"),
+        )
+        llm_call = _build_llm_call(session_id, _effective_model(request.model))
+        evidence_lookup = _evidence_lookup_for(
+            record.use_rag,
+            record.project_id,
+            session_id=session_id,
+            selected_candidate_document_id=previous_state.get("selected_idea_document_id"),
+        )
+        ground_claims = _ground_claims_for(record.use_rag)
+        index_target_evidence = _index_target_evidence_for(record.use_rag, record.project_id)
+        evidence_planner = _evidence_planner_for(record.use_rag)
+        external_evidence_lookup = _external_evidence_lookup_for(record.use_rag)
+
+        try:
+            state = await run_in_threadpool(
+                retry_failed_ideation_conversation_node,
+                previous_state=previous_state,
+                llm_call=llm_call,
+                evidence_lookup=evidence_lookup,
+                ground_claims=ground_claims,
+                index_target_evidence=index_target_evidence,
+                evidence_planner=evidence_planner,
+                external_evidence_lookup=external_evidence_lookup,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except Exception:
+            logger.exception("[ideation-conversation] 실패 노드 재시도 실패 session_id=%s", session_id)
+            raise HTTPException(status_code=502, detail="재시도 처리 중 오류가 발생했습니다. 서버 로그를 확인하세요.")
+
+        _store.update(session_id, state)
+        await _persist_session_record(record)
+        return _serialize_state(state)
+    finally:
+        _store.release(session_id)
+        trace_event("IDEATION_SESSION_UNLOCKED", mode="retry_failed_node")
         reset_trace_context(trace_tokens)
 
 
@@ -1105,6 +1215,20 @@ async def reply_conversation_stream(
     except _SessionBusyError:
         raise HTTPException(status_code=409, detail="이 세션은 이미 다른 요청을 처리하고 있습니다.")
     previous_state = record.state
+
+    # 용준/Claude(2026-07-27, 요청: "action_code 검증이 스트리밍 시작 전에 실행되는지 확인") —
+    # /reply(동기)는 reply_ideation_conversation 내부에서 action_code를 검증하고 ValueError를
+    # HTTPException(400)으로 변환한다(위 reply_conversation 참고). 스트리밍은 그 검증을
+    # StreamingResponse가 시작된 뒤 워커 스레드 안에서 수행하면 이미 HTTP 200으로 응답이
+    # 시작된 뒤라 잘못된 action_code도 200 + NDJSON error 이벤트로만 알려지게 된다 — 클라이언트
+    # 입장에서 "일반 오류"와 구분되지 않는다. action_code가 있으면 워커/스트림을 시작하기 전에
+    # 미리 검증해 여기서 바로 400을 반환한다(세션 락은 해제해야 다음 요청이 409에 걸리지 않는다).
+    if request.action_code:
+        try:
+            validate_ideation_action_code(previous_state, request.action_code, request.action_payload or {})
+        except ValueError as exc:
+            _store.release(session_id)
+            raise HTTPException(status_code=400, detail=str(exc))
 
     model = _effective_model(request.model)
     event_queue: "queue.Queue[object]" = queue.Queue()
@@ -1176,6 +1300,8 @@ async def reply_conversation_stream(
                 evidence_planner=evidence_planner,
                 external_evidence_lookup=external_evidence_lookup,
                 stop_after_expert_turn=request.single_turn,
+                action_code=request.action_code,
+                action_payload=request.action_payload,
             )
             _store.update(session_id, state)
             _persist_from_worker(record, persistence_loop)
@@ -1223,6 +1349,10 @@ async def reply_conversation_stream(
                 }
             )
         finally:
+            # HTTP 200 응답 본문이 중간에 잘려도 클라이언트가 정상 완료로 오인하지 않도록,
+            # state/error/cancelled 뒤에 반드시 명시적인 공개 종료 이벤트를 보낸다. 아래
+            # sentinel은 서버 내부 generator 제어용이라 네트워크로 전송되지 않는다.
+            sink({"type": "done", "phase": record.state.get("phase")})
             record.active_request_id = None
             record.cancel_event = None
             _store.release(session_id)
@@ -1369,6 +1499,7 @@ async def continue_expert_turn_stream(
                 }
             )
         finally:
+            sink({"type": "done", "phase": record.state.get("phase")})
             record.active_request_id = None
             record.cancel_event = None
             _store.release(session_id)
@@ -1457,6 +1588,7 @@ async def start_conversation_stream(
         event_queue.put(event)
 
     def worker() -> None:
+        final_phase: str | None = None
         try:
             stream_chat_completion, call_chat_completion = _build_streaming_backends(session_id, model)
             llm_call = make_streaming_llm_call(
@@ -1490,6 +1622,7 @@ async def start_conversation_stream(
             )
             _persist_from_worker(_store.get_record(session_id), persistence_loop)
             sink({"type": "state", "state": _serialize_state(state)})
+            final_phase = state.get("phase")
         except ValueError as exc:
             sink({"type": "error", "code": "invalid_request", "message": str(exc)})
         except Exception:
@@ -1502,6 +1635,7 @@ async def start_conversation_stream(
                 }
             )
         finally:
+            sink({"type": "done", "phase": final_phase})
             event_queue.put(_STREAM_DONE_SENTINEL)
 
     threading.Thread(target=worker, daemon=True).start()
@@ -1720,6 +1854,14 @@ async def get_latest_project_conversation(
     record = await _restore_session_record(stored["session_id"], user_email)
     if record is None:
         raise HTTPException(status_code=404, detail="저장된 아이디어 회의를 복원할 수 없습니다.")
+    # 용준/Claude(2026-07-27, 요청: "구버전 후보 화면이 계속 재개된다 — 자동 폐기") — 문제
+    # 발견 단계 개편 이전에 candidate_generation으로 곧바로 시작한 구버전 세션은 "최근 회의"
+    # 자동 재개 대상에서 제외한다. 404를 반환하면 프론트(getLatestIdeationConversation)가
+    # 이미 null로 해석해 새 discovery 세션을 시작하므로(ideationConversationApi.js 참고)
+    # 별도 프론트 변경 없이 폐기가 적용된다 — 세션 자체를 MongoDB에서 지우지는 않는다(요청:
+    # "저장된 회의 데이터는 지우지 않는다" 원칙과 동일하게, 조회 결과에서만 숨긴다).
+    if is_legacy_pre_problem_stage_discovery_session(record.state):
+        raise HTTPException(status_code=404, detail="저장된 아이디어 회의가 없습니다.")
     return _serialize_state(record.state)
 
 
@@ -1734,5 +1876,11 @@ async def get_conversation(
     try:
         state = _store.get(session_id)
     except KeyError:
+        raise HTTPException(status_code=404, detail="세션을 찾을 수 없거나 만료되었습니다.")
+    # 용준/Claude(2026-07-27, 요청: "구버전 후보 화면이 계속 재개된다 — 자동 폐기") — 브라우저
+    # sessionStorage에 남아있던 구버전 session_id로 재개를 시도해도 마찬가지로 거부한다.
+    # 프론트(IdeationConversationScreen.jsx)는 이 API가 404를 반환하면 sessionStorage 키를
+    # 지우고 새 세션을 시작하도록 이미 구현돼 있다 — 여기서 404로 응답하는 것만으로 충분하다.
+    if is_legacy_pre_problem_stage_discovery_session(state):
         raise HTTPException(status_code=404, detail="세션을 찾을 수 없거나 만료되었습니다.")
     return _serialize_state(state)

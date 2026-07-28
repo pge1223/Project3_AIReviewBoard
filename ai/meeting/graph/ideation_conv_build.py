@@ -39,7 +39,21 @@ from .ideation_conv_nodes import (
     make_conv_synthesis_node,
     make_discussion_facilitator_node,
 )
+from .ideation_conv_problem import (
+    _route_after_conflict_merge,
+    _route_after_idea_validation,
+    make_concept_confirmation_node,
+    make_conflict_resolution_node,
+    make_idea_conflict_and_merge_node,
+    make_idea_divergence_node,
+    make_idea_validation_node,
+    make_problem_definition_node,
+    make_problem_discovery_node,
+    make_problem_focus_selection_node,
+    make_provisional_selection_node,
+)
 from .ideation_conv_state import IdeationConvState
+from .ideation_trace import trace_event
 from .llm import LLMCall
 
 _ENTRY_NODES = {
@@ -51,6 +65,16 @@ _ENTRY_NODES = {
     "developer_question": "developer_question",
     "expert_discussion": "planning_expert_discussion",
     "finalizing": "synthesis",
+    # 용준/Claude(2026-07-27, 요청: "발산 전에 완성, 선택 즉시 확정" 구조 개편) — discovery
+    # 모드가 candidate_generation보다 먼저 거치는 문제 발견/정의/발산/반론·결합 단계의
+    # API 재진입점. "candidate_selection"(기존, 즉시 확정)은 위에 그대로 남겨두되(직접
+    # 노드를 호출하는 기존 단위 테스트 보존용) apply_user_answer는 더 이상 그 값으로
+    # 전이시키지 않는다 — 대신 "provisional_selection"로 전이한다.
+    "problem_discovery": "problem_discovery",
+    "problem_focus_selection": "problem_focus_selection",
+    "conflict_resolution": "conflict_resolution",
+    "provisional_selection": "provisional_selection",
+    "concept_confirmation": "concept_confirmation",
 }
 
 _FORCED_SPEAKER_TO_NODE = {
@@ -115,7 +139,22 @@ def _route_after_facilitator(state: IdeationConvState) -> str:
 
 
 def _route_after_candidate_planning(state: IdeationConvState) -> str:
-    return "failed" if state.get("phase") == "failed" else "ok"
+    """용준/Claude(2026-07-28, 요청: candidate_planning 실패 시 안전 폴백) — 정상 성공
+    경로는 candidate_planning이 phase를 건드리지 않으므로(이전 phase 그대로 유지) 기본값
+    "ok"로 candidate_feasibility(개발위원 실현가능성 검토)로 이어진다. 노드가 안전 폴백을
+    쓴 경우(phase="awaiting_candidate_selection", make_candidate_planning_node 참고)는
+    candidate_feasibility를 거치지 않고 바로 멈춘다 — 폴백 경로에 또 다른 LLM 실패
+    지점을 두지 않기 위함이다. active direction 부족으로 폴백도 못 만든 경우
+    (phase="awaiting_conflict_resolution")는 기존 라운드 상한 도달 시와 동일한 사용자
+    조정 화면으로 보낸다."""
+    phase = state.get("phase")
+    if phase == "failed":
+        return "failed"
+    if phase == "awaiting_candidate_selection":
+        return "fallback"
+    if phase == "awaiting_conflict_resolution":
+        return "insufficient"
+    return "ok"
 
 
 def _route_after_candidate_selection(state: IdeationConvState) -> str:
@@ -138,6 +177,93 @@ def _route_after_candidate_selection(state: IdeationConvState) -> str:
     if phase == "candidate_generation":
         return "regenerate"
     return "await_selection"
+
+
+def _route_after_problem_focus_selection(state: IdeationConvState) -> str:
+    """용준/Claude(2026-07-27) — problem_focus_selection 노드 실행 직후 분기.
+    "다른 문제 제안" 요청이면 phase를 "problem_discovery"로 되돌려 놨으므로(노드 자체가
+    설정) 같은 요청 안에서 재생성으로 돌아간다. 재요청 상한에 걸리면 phase가
+    "awaiting_problem_focus_selection"으로 그대로 남아 있다(노드가 안내 메시지만 붙이고
+    멈춘 경우). 그 외(문제 초점이 정해진 성공 경로)는 phase가 그대로 "problem_focus_selection"
+    이므로(노드가 phase를 건드리지 않음) problem_definition으로 이어간다."""
+    phase = state.get("phase")
+    if phase == "failed":
+        return "failed"
+    if phase == "problem_discovery":
+        return "regenerate"
+    if phase == "awaiting_problem_focus_selection":
+        return "capped"
+    return "ok"
+
+
+def _route_after_problem_definition(state: IdeationConvState) -> str:
+    route = "failed" if state.get("phase") == "failed" else "ok"
+    trace_event(
+        "IDEATION_GRAPH_ROUTE",
+        source="problem_definition",
+        target="end" if route == "failed" else "idea_divergence",
+        phase=state.get("phase"),
+    )
+    return route
+
+
+def _route_after_idea_divergence(state: IdeationConvState) -> str:
+    route = "failed" if state.get("phase") == "failed" else "ok"
+    trace_event(
+        "IDEATION_GRAPH_ROUTE",
+        source="idea_divergence",
+        target="end" if route == "failed" else "idea_conflict_and_merge",
+        phase=state.get("phase"),
+        solution_direction_count=len(state.get("solution_directions") or []),
+    )
+    return route
+
+
+def _route_after_conflict_resolution(state: IdeationConvState) -> str:
+    """conflict_resolution 노드 실행 직후 분기. 노드가 해석할 수 없어 다시 물어야 하면
+    phase="awaiting_conflict_resolution"으로 스스로 멈춘다(reask). 그 외에는 next_route로
+    "이대로 검증 진행"(proceed) / "문제 정의로 복귀"(return_to_problem_definition, 요청
+    4번 액션) / "결합/추가/폐기 반영해 라운드 재실행"(continue)인지 구분한다."""
+    if state.get("phase") == "awaiting_conflict_resolution":
+        return "reask"
+    if state.get("next_route") == "proceed":
+        return "proceed"
+    if state.get("next_route") == "return_to_problem_definition":
+        return "return_to_problem_definition"
+    return "continue"
+
+
+def _route_after_provisional_selection(state: IdeationConvState) -> str:
+    """용준/Claude(2026-07-27) — make_provisional_selection_node는 기존
+    make_candidate_selection_node를 그대로 감싸므로, 그 결과 phase 값 그대로 분기한다.
+    "idea_validation"(선택/결합 확정 -> 검증 단계로) / "candidate_generation"(재추천) /
+    그 외(재질문·결합 적합도 낮음 등, awaiting_candidate_selection 유지) / "failed"."""
+    phase = state.get("phase")
+    if phase == "failed":
+        return "failed"
+    if phase == "idea_validation":
+        return "validate"
+    if phase == "candidate_generation":
+        return "regenerate"
+    return "await_selection"
+
+
+def _route_after_concept_confirmation(state: IdeationConvState) -> str:
+    if state.get("next_route") == "to_refinement":
+        return "to_refinement"
+    if state.get("next_route") == "return_to_problem_definition":
+        return "return_to_problem_definition"
+    if state.get("next_route") == "choose_another_candidate":
+        return "choose_another_candidate"
+    return "continue"
+
+
+def _await_conflict_resolution_node(_state: IdeationConvState) -> dict:
+    """idea_conflict_and_merge가 라운드 상한에 도달했는데도 최소 조건을 못 채웠을 때만
+    거치는 얇은 정지 노드 — 라우팅 함수(_route_after_conflict_merge, ideation_conv_problem.py)
+    자체는 state를 변경할 수 없으므로, "사용자에게 물어야 한다"는 라우팅 결정을 실제
+    phase 전이로 옮기는 역할만 한다."""
+    return {"phase": "awaiting_conflict_resolution"}
 
 
 def assemble_ideation_conversation_graph(
@@ -210,6 +336,29 @@ def assemble_ideation_conversation_graph(
         llm_call, evidence_lookup, index_target_evidence=index_target_evidence
     )
 
+    # 용준/Claude(2026-07-27, 요청: "발산 전에 완성, 선택 즉시 확정" 구조 개편) — discovery
+    # 모드가 candidate_planning보다 먼저 거치는 문제 발견/정의/발산/반론·결합/검증 단계
+    # 노드 8종(ideation_conv_problem.py). candidate_planning/candidate_feasibility/
+    # candidate_selection(위) 자체는 전혀 수정하지 않았다 — provisional_selection_node가
+    # candidate_selection_node를 감싸 재사용할 뿐이다.
+    problem_discovery_node = make_problem_discovery_node(
+        llm_call,
+        evidence_lookup,
+        external_evidence_lookup,
+    )
+    problem_focus_selection_node = make_problem_focus_selection_node(llm_call, evidence_lookup)
+    problem_definition_node = make_problem_definition_node(llm_call, evidence_lookup)
+    idea_divergence_node = make_idea_divergence_node(llm_call, evidence_lookup)
+    idea_conflict_and_merge_node = make_idea_conflict_and_merge_node(llm_call, evidence_lookup)
+    conflict_resolution_node = make_conflict_resolution_node(llm_call)
+    provisional_selection_node = make_provisional_selection_node(
+        llm_call, evidence_lookup, index_target_evidence=index_target_evidence
+    )
+    idea_validation_node = make_idea_validation_node(
+        llm_call, evidence_lookup, external_evidence_lookup
+    )
+    concept_confirmation_node = make_concept_confirmation_node(llm_call)
+
     graph.add_node("planning_question", planning_question_node)
     graph.add_node("developer_question", developer_question_node)
     graph.add_node("planning_expert_discussion", planning_discussion_node)
@@ -220,6 +369,16 @@ def assemble_ideation_conversation_graph(
     graph.add_node("candidate_planning", candidate_planning_node)
     graph.add_node("candidate_feasibility", candidate_feasibility_node)
     graph.add_node("candidate_selection", candidate_selection_node)
+    graph.add_node("problem_discovery", problem_discovery_node)
+    graph.add_node("problem_focus_selection", problem_focus_selection_node)
+    graph.add_node("problem_definition", problem_definition_node)
+    graph.add_node("idea_divergence", idea_divergence_node)
+    graph.add_node("idea_conflict_and_merge", idea_conflict_and_merge_node)
+    graph.add_node("await_conflict_resolution", _await_conflict_resolution_node)
+    graph.add_node("conflict_resolution", conflict_resolution_node)
+    graph.add_node("provisional_selection", provisional_selection_node)
+    graph.add_node("idea_validation", idea_validation_node)
+    graph.add_node("concept_confirmation", concept_confirmation_node)
 
     graph.set_conditional_entry_point(
         _route_entry,
@@ -236,6 +395,11 @@ def assemble_ideation_conversation_graph(
             # KeyError). _route_entry 자체의 판단 로직은 그대로다.
             "discussion_facilitator": "discussion_facilitator",
             "synthesis": "synthesis",
+            "problem_discovery": "problem_discovery",
+            "problem_focus_selection": "problem_focus_selection",
+            "conflict_resolution": "conflict_resolution",
+            "provisional_selection": "provisional_selection",
+            "concept_confirmation": "concept_confirmation",
         },
     )
 
@@ -284,7 +448,15 @@ def assemble_ideation_conversation_graph(
     graph.add_conditional_edges(
         "candidate_planning",
         _route_after_candidate_planning,
-        {"ok": "candidate_feasibility", "failed": END},
+        {
+            "ok": "candidate_feasibility",
+            # 용준/Claude(2026-07-28): 안전 폴백/방향 부족 두 경우 모두 이미 정지 phase를
+            # 스스로 설정했으므로(awaiting_candidate_selection/awaiting_conflict_resolution)
+            # 그래프는 더 실행할 노드 없이 END로 멈춘다.
+            "fallback": END,
+            "insufficient": END,
+            "failed": END,
+        },
     )
     graph.add_edge("candidate_feasibility", END)
     graph.add_conditional_edges(
@@ -298,6 +470,91 @@ def assemble_ideation_conversation_graph(
             "regenerate": "candidate_planning",
             "await_selection": END,
             "failed": END,
+        },
+    )
+
+    # 용준/Claude(2026-07-27, 요청: "발산 전에 완성, 선택 즉시 확정" 구조 개편) — discovery
+    # 전용 신규 경로. problem_discovery(문제 영역 생성, 정지) -> problem_focus_selection
+    # (사용자 선택 해석, 정지 없이 이어짐) -> problem_definition(정지 없이 이어짐) ->
+    # idea_divergence(정지 없이 이어짐) -> idea_conflict_and_merge(라운드 상한/최소 조건까지
+    # 자기 자신으로 루프) -> 조건 충족 시 candidate_planning(기존 노드, 압축 후보 생성)으로
+    # 합류, 미충족+상한 도달 시 await_conflict_resolution(정지) -> 사용자 응답 ->
+    # conflict_resolution(정지 없이 이어짐, 사용자가 "검증 진행"을 명시하면 candidate_planning
+    # 으로, 아니면 idea_conflict_and_merge로 재진입) -> candidate_planning/candidate_feasibility
+    # (기존, 정지 없이 이어짐, awaiting_candidate_selection으로 멈춤) -> 사용자 선택 ->
+    # provisional_selection(기존 candidate_selection_node를 감싼 재사용) -> idea_validation
+    # (정지 없이 이어짐, awaiting_concept_confirmation으로 멈춤) -> 사용자 응답 ->
+    # concept_confirmation(정지 없이 이어짐 — 확정이면 discussion_facilitator로 합류해
+    # 기존 refinement 고정 1턴을 그대로 타고, 재검토면 idea_conflict_and_merge로 되돌아간다).
+    graph.add_edge("problem_discovery", END)
+    graph.add_conditional_edges(
+        "problem_focus_selection",
+        _route_after_problem_focus_selection,
+        {
+            "regenerate": "problem_discovery",
+            "capped": END,
+            "ok": "problem_definition",
+            "failed": END,
+        },
+    )
+    graph.add_conditional_edges(
+        "problem_definition",
+        _route_after_problem_definition,
+        {"ok": "idea_divergence", "failed": END},
+    )
+    graph.add_conditional_edges(
+        "idea_divergence",
+        _route_after_idea_divergence,
+        {"ok": "idea_conflict_and_merge", "failed": END},
+    )
+    graph.add_conditional_edges(
+        "idea_conflict_and_merge",
+        _route_after_conflict_merge,
+        {
+            "continue": "idea_conflict_and_merge",
+            "proceed": "candidate_planning",
+            "ask_user": "await_conflict_resolution",
+            "failed": END,
+        },
+    )
+    graph.add_edge("await_conflict_resolution", END)
+    graph.add_conditional_edges(
+        "conflict_resolution",
+        _route_after_conflict_resolution,
+        {
+            "reask": END,
+            "proceed": "candidate_planning",
+            "continue": "idea_conflict_and_merge",
+            "return_to_problem_definition": "problem_definition",
+        },
+    )
+    graph.add_conditional_edges(
+        "provisional_selection",
+        _route_after_provisional_selection,
+        {
+            "validate": "idea_validation",
+            "regenerate": "candidate_planning",
+            "await_selection": END,
+            "failed": END,
+        },
+    )
+    graph.add_conditional_edges(
+        "idea_validation",
+        _route_after_idea_validation,
+        {
+            "revise": "idea_conflict_and_merge",
+            "confirm": END,
+            "failed": END,
+        },
+    )
+    graph.add_conditional_edges(
+        "concept_confirmation",
+        _route_after_concept_confirmation,
+        {
+            "to_refinement": "discussion_facilitator",
+            "continue": "idea_conflict_and_merge",
+            "choose_another_candidate": END,
+            "return_to_problem_definition": "problem_definition",
         },
     )
 

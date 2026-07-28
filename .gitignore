@@ -63,6 +63,7 @@ tmp/
 
 # Vector DB
 chroma_db/
+chroma_db_broken_*/
 vector_store/
 
 # MongoDB 데이터
