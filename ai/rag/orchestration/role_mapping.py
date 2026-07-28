@@ -46,6 +46,8 @@ _DOMAIN_PERSONA_ROLE_MAPPING: dict[str, dict[str, str]] = {
         "technical_feasibility": "technology",
         "business_strategy": "finance",
         "presentation_completeness": "planning",
+        "planning_expert": "planning",
+        "dev_expert": "technology",
     },
     "government_support": {
         "policy_fit": "policy",
