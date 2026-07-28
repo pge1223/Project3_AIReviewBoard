@@ -184,6 +184,81 @@ class _FakeStreamState:
             # 않아 스트리밍 대상이 아니고, 항상 이 동기식 경로로 온다.
             if "[캔버스 갱신 규칙]" in prompt:
                 return json.dumps(_canvas_payload(), ensure_ascii=False)
+            # 용준/Claude(2026-07-27, 요청: "발산 전에 완성, 선택 즉시 확정" 구조 개편) —
+            # discovery 모드는 이제 candidate_generation 이전에 problem_discovery부터
+            # 시작한다. 이 단계도 화면 메시지 없는 phase-only 호출이다.
+            if "[문제 영역 생성 규칙]" in prompt:
+                return json.dumps(
+                    {
+                        "problem_areas": [
+                            {"area_id": "area_1", "title": "문제 영역 1", "summary": "요약1", "who_is_affected": "대상1"},
+                            {"area_id": "area_2", "title": "문제 영역 2", "summary": "요약2", "who_is_affected": "대상2"},
+                        ]
+                    },
+                    ensure_ascii=False,
+                )
+            if "[문제 정의 규칙]" in prompt:
+                return json.dumps(
+                    {
+                        "problem_definition": {
+                            "problem": "행정 서비스 접근이 어렵다",
+                            "target_user": "노인과 장애인",
+                            "user_context": "필요한 서비스를 찾는 상황",
+                            "root_cause": "복잡한 정보 구조",
+                            "existing_solution": "키워드 검색",
+                            "existing_limitations": "사용자 맥락을 반영하지 못함",
+                        }
+                    },
+                    ensure_ascii=False,
+                )
+            if "[발산 규칙]" in prompt:
+                return json.dumps(
+                    {
+                        "solution_directions": [
+                            {
+                                "direction_id": f"direction_{i}",
+                                "title": f"방향 {i}",
+                                "core_principle": f"원리 {i}",
+                                "mechanism": f"작동 방식 {i}",
+                                "target_user_fit": f"적합성 {i}",
+                            }
+                            for i in range(1, 5)
+                        ]
+                    },
+                    ensure_ascii=False,
+                )
+            if "[반론·결합 규칙]" in prompt:
+                return json.dumps(
+                    {
+                        "round_events": [
+                            {
+                                "issued_by": "dev_expert",
+                                "action_type": "critique",
+                                "target_direction_ids": ["direction_1", "direction_3"],
+                                "spoken_text": "방향 1과 3은 그대로 구현하기 어렵습니다.",
+                                "detail": "개발 반론",
+                            },
+                            {
+                                "issued_by": "planning_expert",
+                                "action_type": "merge",
+                                "target_direction_ids": ["direction_1", "direction_3"],
+                                "spoken_text": "방향 1과 3을 결합하겠습니다.",
+                                "detail": "기획 수정",
+                            },
+                        ],
+                        "resulting_direction": {
+                            "direction_id": "direction_merged_1",
+                            "title": "결합 방향",
+                            "core_principle": "결합 원리",
+                            "mechanism": "결합 방식",
+                            "target_user_fit": "결합 적합성",
+                            "parent_direction_ids": ["direction_1", "direction_3"],
+                            "strengths": ["결합 장점"],
+                            "open_assumptions": ["검증 가정"],
+                        },
+                    },
+                    ensure_ascii=False,
+                )
             # 가은/Claude(2026-07-22, 회의 시작 대기 체감 개선 1단계) — /start/stream의
             # discovery 경로(후보 생성/검토)도 화면 메시지가 없는 phase-only 호출이라 이
             # 동기식 경로로 온다(test_ideation_conversation_discovery.py의 stub과 같은 payload).
@@ -200,12 +275,14 @@ class _FakeStreamState:
                                 "target_user": "사용자1", "usage_scenario": "상황1", "core_value": "가치1",
                                 "solution": "해결1", "main_features": ["기능1"], "differentiation": "차별1",
                                 "contest_fit": "적합1", "success_metrics": ["지표1"],
+                                "source_direction_ids": ["direction_2"], "reflected_evolution_ids": [],
                             },
                             {
                                 "candidate_id": "candidate_2", "title": "후보2", "problem": "문제2",
                                 "target_user": "사용자2", "usage_scenario": "상황2", "core_value": "가치2",
                                 "solution": "해결2", "main_features": ["기능2"], "differentiation": "차별2",
                                 "contest_fit": "적합2", "success_metrics": ["지표2"],
+                                "source_direction_ids": ["direction_merged_1"], "reflected_evolution_ids": [],
                             },
                         ],
                     },
@@ -309,18 +386,64 @@ def test_start_stream_discovery_emits_phase_events_then_final_state(client: Test
         events = _read_ndjson_events(resp)
 
     types = [e["type"] for e in events]
-    assert types[-1] == "state"
+    assert types[-2:] == ["state", "done"]
     phase_labels = [e.get("label", "") for e in events if e["type"] == "phase"]
-    assert any("아이디어 후보를 만들고" in label for label in phase_labels)
-    assert any("실현 가능성" in label for label in phase_labels)
+    # 용준/Claude(2026-07-27, 요청: "발산 전에 완성, 선택 즉시 확정" 구조 개편) — discovery
+    # 모드는 이제 candidate_generation 이전에 problem_discovery부터 시작하므로, /start
+    # 한 번으로는 문제 영역 생성까지만 진행되고 후보 생성/실현 가능성 검토는 아직 호출되지
+    # 않는다(사용자가 문제 영역을 고른 뒤에야 그 단계로 이어진다).
+    assert any("문제 영역을 찾고" in label for label in phase_labels)
     assert "message_delta" not in types  # discovery 시작은 화면 메시지를 만들지 않는다.
 
-    final_state = events[-1]["state"]
-    assert final_state["phase"] == "awaiting_candidate_selection"
-    assert len(final_state["idea_candidates"]) == 2
+    final_state = events[-2]["state"]
+    assert final_state["phase"] == "awaiting_problem_focus_selection"
+    assert len(final_state["problem_areas"]) >= 2
     # 세션이 스토어에 저장돼 재접속(GET)으로 이어받을 수 있다.
     get_resp = client.get(f"/ideation-conversation/{final_state['session_id']}")
     assert get_resp.status_code == 200
+
+
+def test_discovery_reply_single_turn_reaches_developer_critique_and_done(client: TestClient, monkeypatch):
+    """브라우저의 실제 요청(single_turn=true + 구조화 문제 선택)을 그대로 재현한다.
+    반론·결합은 phase-only LLM 호출이라 각 발화 delta 대신 최종 state의 canonical
+    messages로 전달되며, 개발 반론과 기획 수정이 모두 들어간 뒤 done으로 닫혀야 한다."""
+    fake = _FakeStreamState(chunk_size=4)
+    monkeypatch.setattr(conv_route, "_build_streaming_backends", lambda session_id, model: fake.build())
+
+    with client.stream(
+        "POST",
+        "/ideation-conversation/start/stream",
+        json={"competition_name": "데모 공모전", "user_idea": ""},
+    ) as start_response:
+        start_events = _read_ndjson_events(start_response)
+    start_state = next(event["state"] for event in start_events if event["type"] == "state")
+
+    with client.stream(
+        "POST",
+        f"/ideation-conversation/{start_state['session_id']}/reply/stream",
+        json={
+            "message": "1번 문제 영역을 선택합니다",
+            "single_turn": True,
+            "action_code": "select_problem_focus",
+            "action_payload": {"indices": [1]},
+        },
+    ) as response:
+        assert response.status_code == 200
+        events = _read_ndjson_events(response)
+
+    assert [event["type"] for event in events][-2:] == ["state", "done"]
+    final_state = next(event["state"] for event in events if event["type"] == "state")
+    speakers = [message["speaker_id"] for message in final_state["messages"]]
+    dev_index = speakers.index("dev_expert")
+    assert "planning_expert" in speakers[:dev_index]
+    assert speakers[dev_index + 1 : dev_index + 3] == ["planning_expert", "ideation_facilitator"]
+    assert final_state["messages"][dev_index + 1]["message_type"] == "opinion"
+    assert final_state["messages"][dev_index + 2]["message_type"] == "summary"
+    assert speakers[-1] == "ideation_facilitator"  # 잠정 후보 선택 안내
+    assert final_state["phase"] == "awaiting_candidate_selection"
+    assert any(item["action_type"] == "critique" for item in final_state["idea_evolution"])
+    assert any(item["action_type"] in {"merge", "revision"} for item in final_state["idea_evolution"])
+    assert events[-1]["phase"] == final_state["phase"]
 
 
 def test_start_stream_refinement_streams_roundtable_messages(client: TestClient, monkeypatch):
@@ -340,8 +463,8 @@ def test_start_stream_refinement_streams_roundtable_messages(client: TestClient,
     types = [e["type"] for e in events]
     assert "message_start" in types
     assert "message_delta" in types
-    assert types[-1] == "state"
-    assert events[-1]["state"]["phase"] == "discussion_complete"
+    assert types[-2:] == ["state", "done"]
+    assert events[-2]["state"]["phase"] == "discussion_complete"
 
 
 def test_stream_event_order_message_start_delta_end_state(client: TestClient, monkeypatch):
@@ -359,7 +482,7 @@ def test_stream_event_order_message_start_delta_end_state(client: TestClient, mo
     types = [e["type"] for e in events]
     assert "message_start" in types
     assert "message_end" in types
-    assert types[-1] == "state"
+    assert types[-2:] == ["state", "done"]
     delta_indices = [i for i, t in enumerate(types) if t == "message_delta"]
     assert delta_indices, "message_delta 이벤트가 하나도 없습니다"
 
@@ -541,6 +664,7 @@ def test_llm_failure_emits_error_event(client: TestClient, monkeypatch):
 
     types = [e["type"] for e in events]
     assert "error" in types
+    assert types[-1] == "done"
     error_event = next(e for e in events if e["type"] == "error")
     assert error_event["code"] == "llm_failure"
     assert "네트워크 오류 시뮬레이션" not in error_event["message"]  # 원본 예외 메시지를 그대로 노출하지 않는다.
@@ -639,6 +763,7 @@ def test_cancel_stops_active_stream_and_releases_lock_without_failing_phase(clie
     thread.join(timeout=15)
     events = results.get("events", [])
     assert any(e.get("type") == "cancelled" for e in events)
+    assert events[-1]["type"] == "done"
     # 취소는 일반 오류가 아니므로 error 이벤트가 나가면 안 된다.
     assert not any(e.get("type") == "error" for e in events)
 
@@ -740,10 +865,10 @@ def test_cancel_during_facilitator_round_transition_normalizes_phase(client: Tes
     이어지지 않는다), 세션 락도 정상 해제되어 후속 요청이 409 없이 처리돼야 한다."""
     session_id = _start_session(client)
     reached_target_event = threading.Event()
-    # 라운드 1: 기획/개발이 같은 쟁점(mvp_scope)으로 6회 주고받아야 발언 캡에 도달해
-    # facilitator가 continue_round를 결정한다(호출 1~6) + facilitator 정리(호출 7). 그 다음
-    # (라운드 2의 첫 기획 위원 발언, 호출 8)이 시작되는 순간을 취소 타이밍으로 삼는다.
-    fake = _RoundTransitionCancelStreamState(cancel_at_call=8, reached_target_event=reached_target_event)
+    # 현재 라운드테이블 규칙은 한 주제에서 기획/개발 전문가가 1회씩 발언한 뒤
+    # 진행자가 사용자 확인으로 전환하므로, facilitator 정리(호출 3)가 시작되는
+    # 순간을 취소 타이밍으로 삼는다.
+    fake = _RoundTransitionCancelStreamState(cancel_at_call=3, reached_target_event=reached_target_event)
     monkeypatch.setattr(conv_route, "_build_streaming_backends", lambda sid, m: fake.build())
 
     results = {}
@@ -757,7 +882,7 @@ def test_cancel_during_facilitator_round_transition_normalizes_phase(client: Tes
 
     thread = threading.Thread(target=stream_call)
     thread.start()
-    assert reached_target_event.wait(timeout=10), "라운드 2 진입(8번째 호출)까지 도달하지 못했습니다"
+    assert reached_target_event.wait(timeout=10), "진행자 전환(3번째 호출)까지 도달하지 못했습니다"
 
     cancel_resp = client.post(f"/ideation-conversation/{session_id}/cancel", json={})
     assert cancel_resp.status_code == 200

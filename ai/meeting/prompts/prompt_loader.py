@@ -291,6 +291,15 @@ IDEATION_CONV_EXPERT_DELEGATION_TEMPLATE = "ideation_conv_expert_delegation.txt"
 IDEATION_CONV_CANDIDATE_PLANNING_TEMPLATE = "ideation_conv_candidate_planning.txt"
 IDEATION_CONV_CANDIDATE_FEASIBILITY_TEMPLATE = "ideation_conv_candidate_feasibility.txt"
 
+# 용준/Claude(2026-07-27, 요청: "발산 전에 완성, 선택 즉시 확정" 구조 개편) — discovery
+# 모드가 candidate_planning(이제 "압축된 provisional 후보 생성"으로 재정의)보다 먼저 거치는
+# 문제 발견/정의/발산/반론·결합/검증 단계 전용 템플릿 5종.
+IDEATION_CONV_PROBLEM_DISCOVERY_TEMPLATE = "ideation_conv_problem_discovery.txt"
+IDEATION_CONV_PROBLEM_DEFINITION_TEMPLATE = "ideation_conv_problem_definition.txt"
+IDEATION_CONV_IDEA_DIVERGENCE_TEMPLATE = "ideation_conv_idea_divergence.txt"
+IDEATION_CONV_CONFLICT_MERGE_TEMPLATE = "ideation_conv_conflict_merge.txt"
+IDEATION_CONV_IDEA_VALIDATION_TEMPLATE = "ideation_conv_idea_validation.txt"
+
 _CANDIDATE_NOVELTY_PLANNING_RULES = """
 
 [참신성 강화 규칙 — IDEATION_NOVELTY_PROMPT_ENABLED]
@@ -749,6 +758,10 @@ def build_ideation_conv_candidate_planning_prompt(
     previous_candidates: Any | None = None,
     regeneration_reason: str | None = None,
     external_research: Any | None = None,
+    solution_directions: Any | None = None,
+    excluded_solution_directions: Any | None = None,
+    problem_definition: Any | None = None,
+    idea_evolution: Any | None = None,
 ) -> str:
     """기획 전문가의 "후보 생성" 프롬프트를 조립한다(공모전 분석 + 서로 다른 후보 2~3개).
 
@@ -782,6 +795,12 @@ def build_ideation_conv_candidate_planning_prompt(
         "<<PREVIOUS_CANDIDATES_JSON>>": _as_text(previous_candidates if previous_candidates is not None else []),
         "<<REGENERATION_REASON>>": _as_text(regeneration_reason),
         "<<EXTERNAL_RESEARCH_JSON>>": _as_text(external_research if external_research is not None else []),
+        "<<SOLUTION_DIRECTIONS_JSON>>": _as_text(solution_directions if solution_directions is not None else []),
+        "<<EXCLUDED_SOLUTION_DIRECTIONS_JSON>>": _as_text(
+            excluded_solution_directions if excluded_solution_directions is not None else []
+        ),
+        "<<PROBLEM_DEFINITION_JSON>>": _as_text(problem_definition),
+        "<<IDEA_EVOLUTION_JSON>>": _as_text(idea_evolution if idea_evolution is not None else []),
     }
     for token, value in replacements.items():
         template = template.replace(token, value)
@@ -839,6 +858,136 @@ def build_ideation_conv_candidate_selection_prompt(
         "<<NOTICE_AND_CRITERIA_JSON>>": _as_text(notice_and_criteria),
         "<<CANDIDATES_JSON>>": _as_text(candidates),
         "<<USER_MESSAGE>>": _as_text(user_message),
+    }
+    for token, value in replacements.items():
+        template = template.replace(token, value)
+    return template
+
+
+def build_ideation_conv_problem_discovery_prompt(
+    notice_and_criteria: Any,
+    retrieved_evidence: Any,
+    previous_problem_areas: Any | None = None,
+    regeneration_reason: str | None = None,
+    external_research: Any | None = None,
+) -> str:
+    """기획 전문가의 "문제 영역 발견" 프롬프트를 조립한다(요청: candidate_planning보다
+    앞서, 완성된 아이디어가 아니라 문제 영역 2~4개를 먼저 만든다)."""
+    card = get_persona_card("planning_expert")
+    template = _read_text(IDEATION_CONV_PROBLEM_DISCOVERY_TEMPLATE)
+    replacements = {
+        "<<PERSONA_BLOCK>>": render_persona_block(card),
+        "<<NOTICE_AND_CRITERIA_JSON>>": _as_text(notice_and_criteria),
+        "<<RETRIEVED_EVIDENCE_JSON>>": _as_text(retrieved_evidence),
+        "<<EXTERNAL_RESEARCH_JSON>>": _as_text(external_research if external_research is not None else []),
+        "<<PREVIOUS_PROBLEM_AREAS_JSON>>": _as_text(previous_problem_areas if previous_problem_areas is not None else []),
+        "<<REGENERATION_REASON>>": _as_text(regeneration_reason),
+    }
+    for token, value in replacements.items():
+        template = template.replace(token, value)
+    return template
+
+
+def build_ideation_conv_problem_definition_prompt(
+    notice_and_criteria: Any,
+    retrieved_evidence: Any,
+    problem_focus: Any,
+    user_custom_problem: str | None = None,
+) -> str:
+    """사용자가 선택(또는 직접 입력)한 문제 영역을 problem_definition 구조로 구체화하는
+    프롬프트를 조립한다."""
+    card = get_persona_card("planning_expert")
+    template = _read_text(IDEATION_CONV_PROBLEM_DEFINITION_TEMPLATE)
+    replacements = {
+        "<<PERSONA_BLOCK>>": render_persona_block(card),
+        "<<NOTICE_AND_CRITERIA_JSON>>": _as_text(notice_and_criteria),
+        "<<RETRIEVED_EVIDENCE_JSON>>": _as_text(retrieved_evidence),
+        "<<PROBLEM_FOCUS_JSON>>": _as_text(problem_focus),
+        "<<USER_CUSTOM_PROBLEM>>": _as_text(user_custom_problem),
+    }
+    for token, value in replacements.items():
+        template = template.replace(token, value)
+    return template
+
+
+def build_ideation_conv_idea_divergence_prompt(
+    notice_and_criteria: Any,
+    retrieved_evidence: Any,
+    problem_definition: Any,
+) -> str:
+    """정의된 문제 하나에 대해 해결 원리가 서로 다른 방향 3개 이상을 만드는 프롬프트를
+    조립한다."""
+    card = get_persona_card("planning_expert")
+    template = _read_text(IDEATION_CONV_IDEA_DIVERGENCE_TEMPLATE)
+    replacements = {
+        "<<PERSONA_BLOCK>>": render_persona_block(card),
+        "<<NOTICE_AND_CRITERIA_JSON>>": _as_text(notice_and_criteria),
+        "<<RETRIEVED_EVIDENCE_JSON>>": _as_text(retrieved_evidence),
+        "<<PROBLEM_DEFINITION_JSON>>": _as_text(problem_definition),
+    }
+    for token, value in replacements.items():
+        template = template.replace(token, value)
+    return template
+
+
+def build_ideation_conv_conflict_merge_prompt(
+    notice_and_criteria: Any,
+    retrieved_evidence: Any,
+    problem_definition: Any,
+    solution_directions: Any,
+    idea_evolution_so_far: Any,
+    round_number: int,
+    max_conflict_rounds: int,
+    provisional_idea: Any = None,
+    validation_result: Any = None,
+    required_changes: Any = None,
+) -> str:
+    """기획/개발 두 위원의 반론·결합 라운드 하나를 만드는 프롬프트를 조립한다. 한 번의
+    구조화 응답 안에서 두 위원의 발언을 issued_by로 구분해 만들기 때문에, 두 페르소나
+    블록을 모두 주입한다(build_ideation_conv_discussion_facilitator_prompt가 여러 입력을
+    한 번에 받는 것과 같은 원칙)."""
+    planning_card = get_persona_card("planning_expert")
+    dev_card = get_persona_card("dev_expert")
+    template = _read_text(IDEATION_CONV_CONFLICT_MERGE_TEMPLATE)
+    replacements = {
+        "<<PLANNING_PERSONA_BLOCK>>": render_persona_block(planning_card),
+        "<<DEVELOPMENT_PERSONA_BLOCK>>": render_persona_block(dev_card),
+        "<<NOTICE_AND_CRITERIA_JSON>>": _as_text(notice_and_criteria),
+        "<<RETRIEVED_EVIDENCE_JSON>>": _as_text(retrieved_evidence),
+        "<<PROBLEM_DEFINITION_JSON>>": _as_text(problem_definition),
+        "<<SOLUTION_DIRECTIONS_JSON>>": _as_text(solution_directions),
+        "<<IDEA_EVOLUTION_SO_FAR_JSON>>": _as_text(idea_evolution_so_far),
+        "<<PROVISIONAL_IDEA_JSON>>": _as_text(provisional_idea),
+        "<<VALIDATION_RESULT_JSON>>": _as_text(validation_result),
+        "<<REQUIRED_CHANGES_JSON>>": _as_text(required_changes),
+        "<<ROUND_NUMBER>>": str(round_number),
+        "<<MAX_CONFLICT_ROUNDS>>": str(max_conflict_rounds),
+    }
+    for token, value in replacements.items():
+        template = template.replace(token, value)
+    return template
+
+
+def build_ideation_conv_idea_validation_prompt(
+    notice_and_criteria: Any,
+    retrieved_evidence: Any,
+    provisional_idea: Any,
+    *,
+    planning_external_evidence: Any = None,
+    technical_external_evidence: Any = None,
+) -> str:
+    """잠정 후보(provisional_idea)를 기획/개발 관점에서 검증하는 프롬프트를 조립한다."""
+    planning_card = get_persona_card("planning_expert")
+    dev_card = get_persona_card("dev_expert")
+    template = _read_text(IDEATION_CONV_IDEA_VALIDATION_TEMPLATE)
+    replacements = {
+        "<<PLANNING_PERSONA_BLOCK>>": render_persona_block(planning_card),
+        "<<DEVELOPMENT_PERSONA_BLOCK>>": render_persona_block(dev_card),
+        "<<NOTICE_AND_CRITERIA_JSON>>": _as_text(notice_and_criteria),
+        "<<RETRIEVED_EVIDENCE_JSON>>": _as_text(retrieved_evidence),
+        "<<PLANNING_EXTERNAL_EVIDENCE_JSON>>": _as_text(planning_external_evidence or []),
+        "<<TECHNICAL_EXTERNAL_EVIDENCE_JSON>>": _as_text(technical_external_evidence or []),
+        "<<PROVISIONAL_IDEA_JSON>>": _as_text(provisional_idea),
     }
     for token, value in replacements.items():
         template = template.replace(token, value)

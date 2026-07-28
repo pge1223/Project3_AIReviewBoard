@@ -8,7 +8,8 @@
     "based_on": "contracts/mocks/notice_criteria_competition.json",
     "committee_source": "ai/meeting/personas/persona_cards.json",
     "created_at": "2026-07-15",
-    "_comment": "PER-001 산출물: notice_criteria_competition.json(한국태양에너지학회 '2026 제4회 에너지최적화 디자인 공모전' 실제 모집요강 원문 기반 mock)을 competition.json의 4인 위원(creativity_originality·technical_feasibility·business_strategy·presentation_completeness)에게 배정했다. rubric[]에는 공고 기준(source: notice)만 담고, 공고에 대응 항목이 없는 위원의 나머지 평가관점은 default_supplementary_perspectives로만 유지한다(rubric_mapping_government_support.json과 동일 컨벤션). 원문에 '채점표 등의 심사관련 자료는 공개하지 않음'이라 명시되어 있어 4개 항목 모두 weight: null이다 — 전체 100점을 4개 항목에 동일 배분(25점씩)했다(weight_origin: equal_distribution_remaining).",
+    "updated_at": "2026-07-28",
+    "_comment": "PER-001 산출물이 원본이며, 2026-07-28 종합 리포트 채점 위원회를 구 4인(creativity_originality·technical_feasibility·business_strategy·presentation_completeness)에서 아이디어 회의와 동일한 기획·개발 전문가 2인(planning_expert·dev_expert)으로 교체했다(경이 확정, 선행 조건은 PR #188 — 두 카드 domain_tags에 competition 추가 + role_mapping 매핑). 구 4인 카드는 persona_cards.json에 legacy로 남아 있고 저장된 과거 회의 결과도 그대로 유효하다. rubric[]에는 공고 기준(source: notice)만 담고, 공고에 대응 항목이 없는 위원의 나머지 평가관점은 default_supplementary_perspectives로만 유지한다(rubric_mapping_government_support.json과 동일 컨벤션). 원문에 '채점표 등의 심사관련 자료는 공개하지 않음'이라 명시되어 있어 4개 항목 모두 weight: null이다 — 전체 100점을 4개 항목에 동일 배분(25점씩)했다(weight_origin: equal_distribution_remaining).",
     "assignment_rules": [
       "공고문에 명시된 평가항목을 최우선으로 사용한다.",
       "공고문에 가중치가 있으면 그대로 유지한다.",
@@ -23,7 +24,7 @@
     "reusable_as_default_template": true,
     "default_template_note": "criterion_id 4종(creativity_appropriateness/feasibility/contribution/content_overall)과 persona 매핑은 이 파일이 예시로 삼은 특정 공모전(2026 에너지최적화 디자인 공모전)에 종속된 값이 아니라, competition 도메인 공고문 전반에 재사용 가능한 기본 골격이다. weight_origin: equal_distribution_remaining(배점 미공개 시 균등 분배)도 이 도메인에서 흔히 재사용되는 기본값으로 삼는다 — 공고문이 배점을 공개하면 그 값을 그대로 쓰고, 이 4범주와 다른 고유 평가축이 있을 때만 assignment_rules에 따라 항목을 추가한다."
   },
-  "committee": ["creativity_originality", "technical_feasibility", "business_strategy", "presentation_completeness"],
+  "committee": ["planning_expert", "dev_expert"],
   "total_max_score": 100,
   "rubric": [
     {
@@ -34,8 +35,8 @@
       "source": "notice",
       "weight_origin": "equal_distribution_remaining",
       "weight_origin_note": "공고문(모집요강)이 배점을 공개하지 않아(weight: null) 전체 100점을 rubric 4개 항목에 동일 배분함.",
-      "primary_persona_id": "creativity_originality",
-      "primary_perspective_id": "idea_novelty",
+      "primary_persona_id": "planning_expert",
+      "primary_perspective_id": "differentiation",
       "secondary_persona_id": null
     },
     {
@@ -46,9 +47,9 @@
       "source": "notice",
       "weight_origin": "equal_distribution_remaining",
       "weight_origin_note": "공고문(모집요강)이 배점을 공개하지 않아(weight: null) 전체 100점을 rubric 4개 항목에 동일 배분함.",
-      "primary_persona_id": "technical_feasibility",
-      "primary_perspective_id": "implementation_feasibility",
-      "secondary_persona_id": null
+      "primary_persona_id": "dev_expert",
+      "primary_perspective_id": "technical_feasibility",
+      "secondary_persona_id": "planning_expert"
     },
     {
       "criterion_id": "contribution",
@@ -58,8 +59,8 @@
       "source": "notice",
       "weight_origin": "equal_distribution_remaining",
       "weight_origin_note": "공고문(모집요강)이 배점을 공개하지 않아(weight: null) 전체 100점을 rubric 4개 항목에 동일 배분함.",
-      "primary_persona_id": "business_strategy",
-      "primary_perspective_id": "marketability",
+      "primary_persona_id": "planning_expert",
+      "primary_perspective_id": "impact_kpi",
       "secondary_persona_id": null
     },
     {
@@ -70,129 +71,69 @@
       "source": "notice",
       "weight_origin": "equal_distribution_remaining",
       "weight_origin_note": "공고문(모집요강)이 배점을 공개하지 않아(weight: null) 전체 100점을 rubric 4개 항목에 동일 배분함.",
-      "primary_persona_id": "presentation_completeness",
-      "primary_perspective_id": "deliverable_completeness",
-      "secondary_persona_id": null
+      "primary_persona_id": "planning_expert",
+      "primary_perspective_id": "criteria_persuasion",
+      "secondary_persona_id": "dev_expert"
     }
   ],
   "default_supplementary_perspectives": [
     {
-      "persona_id": "creativity_originality",
-      "perspective_id": "problem_framing_originality",
+      "persona_id": "planning_expert",
+      "perspective_id": "problem_cause",
       "source": "default",
       "note": "공고문에 대응하는 평가항목 없음. 공식 채점 항목으로 만들지 않고 위원 발언 중 보조 논의 관점으로만 사용."
     },
     {
-      "persona_id": "creativity_originality",
-      "perspective_id": "approach_uniqueness",
+      "persona_id": "planning_expert",
+      "perspective_id": "target_stakeholder",
       "source": "default",
       "note": "공고문에 대응하는 평가항목 없음. 공식 채점 항목으로 만들지 않고 위원 발언 중 보조 논의 관점으로만 사용."
     },
     {
-      "persona_id": "creativity_originality",
-      "perspective_id": "creative_risk",
+      "persona_id": "planning_expert",
+      "perspective_id": "user_value",
       "source": "default",
       "note": "공고문에 대응하는 평가항목 없음. 공식 채점 항목으로 만들지 않고 위원 발언 중 보조 논의 관점으로만 사용."
     },
     {
-      "persona_id": "creativity_originality",
-      "perspective_id": "inspiration_vs_imitation",
+      "persona_id": "planning_expert",
+      "perspective_id": "usage_scenario",
       "source": "default",
       "note": "공고문에 대응하는 평가항목 없음. 공식 채점 항목으로 만들지 않고 위원 발언 중 보조 논의 관점으로만 사용."
     },
     {
-      "persona_id": "creativity_originality",
-      "perspective_id": "originality_evidence",
+      "persona_id": "planning_expert",
+      "perspective_id": "business_operation_model",
       "source": "default",
       "note": "공고문에 대응하는 평가항목 없음. 공식 채점 항목으로 만들지 않고 위원 발언 중 보조 논의 관점으로만 사용."
     },
     {
-      "persona_id": "technical_feasibility",
-      "perspective_id": "technical_fit",
+      "persona_id": "dev_expert",
+      "perspective_id": "mvp_scope",
       "source": "default",
       "note": "공고문에 대응하는 평가항목 없음. 공식 채점 항목으로 만들지 않고 위원 발언 중 보조 논의 관점으로만 사용."
     },
     {
-      "persona_id": "technical_feasibility",
-      "perspective_id": "scope_feasibility",
+      "persona_id": "dev_expert",
+      "perspective_id": "system_flow",
       "source": "default",
       "note": "공고문에 대응하는 평가항목 없음. 공식 채점 항목으로 만들지 않고 위원 발언 중 보조 논의 관점으로만 사용."
     },
     {
-      "persona_id": "technical_feasibility",
-      "perspective_id": "data_readiness",
+      "persona_id": "dev_expert",
+      "perspective_id": "data_and_ai_need",
       "source": "default",
       "note": "공고문에 대응하는 평가항목 없음. 공식 채점 항목으로 만들지 않고 위원 발언 중 보조 논의 관점으로만 사용."
     },
     {
-      "persona_id": "technical_feasibility",
-      "perspective_id": "scalability_operation",
+      "persona_id": "dev_expert",
+      "perspective_id": "risk_review",
       "source": "default",
       "note": "공고문에 대응하는 평가항목 없음. 공식 채점 항목으로 만들지 않고 위원 발언 중 보조 논의 관점으로만 사용."
     },
     {
-      "persona_id": "technical_feasibility",
-      "perspective_id": "technical_risk",
-      "source": "default",
-      "note": "공고문에 대응하는 평가항목 없음. 공식 채점 항목으로 만들지 않고 위원 발언 중 보조 논의 관점으로만 사용."
-    },
-    {
-      "persona_id": "business_strategy",
-      "perspective_id": "problem_definition",
-      "source": "default",
-      "note": "공고문에 대응하는 평가항목 없음. 공식 채점 항목으로 만들지 않고 위원 발언 중 보조 논의 관점으로만 사용."
-    },
-    {
-      "persona_id": "business_strategy",
-      "perspective_id": "target_customer",
-      "source": "default",
-      "note": "공고문에 대응하는 평가항목 없음. 공식 채점 항목으로 만들지 않고 위원 발언 중 보조 논의 관점으로만 사용."
-    },
-    {
-      "persona_id": "business_strategy",
-      "perspective_id": "business_model",
-      "source": "default",
-      "note": "공고문에 대응하는 평가항목 없음. 공식 채점 항목으로 만들지 않고 위원 발언 중 보조 논의 관점으로만 사용."
-    },
-    {
-      "persona_id": "business_strategy",
-      "perspective_id": "differentiation",
-      "source": "default",
-      "note": "공고문에 대응하는 평가항목 없음. 공식 채점 항목으로 만들지 않고 위원 발언 중 보조 논의 관점으로만 사용."
-    },
-    {
-      "persona_id": "business_strategy",
-      "perspective_id": "business_consistency",
-      "source": "default",
-      "note": "공고문에 대응하는 평가항목 없음. 공식 채점 항목으로 만들지 않고 위원 발언 중 보조 논의 관점으로만 사용."
-    },
-    {
-      "persona_id": "presentation_completeness",
-      "perspective_id": "clarity_of_explanation",
-      "source": "default",
-      "note": "공고문에 대응하는 평가항목 없음. 공식 채점 항목으로 만들지 않고 위원 발언 중 보조 논의 관점으로만 사용."
-    },
-    {
-      "persona_id": "presentation_completeness",
-      "perspective_id": "structure_and_flow",
-      "source": "default",
-      "note": "공고문에 대응하는 평가항목 없음. 공식 채점 항목으로 만들지 않고 위원 발언 중 보조 논의 관점으로만 사용."
-    },
-    {
-      "persona_id": "presentation_completeness",
-      "perspective_id": "visual_or_demo_quality",
-      "source": "default",
-      "note": "공고문에 대응하는 평가항목 없음. 공식 채점 항목으로 만들지 않고 위원 발언 중 보조 논의 관점으로만 사용."
-    },
-    {
-      "persona_id": "presentation_completeness",
-      "perspective_id": "requirement_compliance",
-      "source": "default",
-      "note": "공고문에 대응하는 평가항목 없음. 공식 채점 항목으로 만들지 않고 위원 발언 중 보조 논의 관점으로만 사용."
-    },
-    {
-      "persona_id": "presentation_completeness",
-      "perspective_id": "audience_fit",
+      "persona_id": "dev_expert",
+      "perspective_id": "implementation_order",
       "source": "default",
       "note": "공고문에 대응하는 평가항목 없음. 공식 채점 항목으로 만들지 않고 위원 발언 중 보조 논의 관점으로만 사용."
     }

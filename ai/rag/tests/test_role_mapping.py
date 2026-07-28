@@ -23,6 +23,8 @@ class TestCompetitionMapping:
             ("technical_feasibility", "technology"),
             ("business_strategy", "finance"),
             ("presentation_completeness", "planning"),
+            ("planning_expert", "planning"),
+            ("dev_expert", "technology"),
         ],
     )
     def test_competition_persona_maps_to_expected_role(self, persona_id, expected_role_id):

@@ -1664,14 +1664,23 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
       const uploaded = await uploadDocument(projectId, file, 'pdf', 'target')
       setSubmitStage('문서 색인 중...')
       const docId = uploaded?.id || uploaded?.document_id
-      for (let i = 0; i < 40 && docId; i++) {
+      // 색인은 서버 실측으로 문서당 20~90초(큐가 밀리면 그 이상) 걸린다. 이전엔 60초만
+      // 기다리고 색인 미완이어도 조용히 분석으로 넘어가 서버 400("색인이 끝난 뒤 분석을
+      // 시작하세요")이 그대로 노출됐다 — 긴 문서(13k자 수행보고서)에서 실측 재현. 색인이
+      // 끝나기 전에는 분석을 절대 시작하지 않고, 한도(4분) 초과 시 명확한 에러로 멈춘다.
+      let indexedOk = false
+      for (let i = 0; i < 160 && docId; i++) {
         const st = await getDocumentStatus(projectId, docId).catch(() => null)
         const s = st?.status
-        if (s === 'indexed' || s === 'indexed_empty') break
+        if (s === 'indexed' || s === 'indexed_empty') { indexedOk = true; break }
         if (s === 'indexing_failed' || s === 'conversion_failed' || s === 'indexing_timeout') {
           throw new Error('업로드한 수정본을 색인하지 못했습니다.')
         }
+        if (i > 0 && i % 10 === 0) setSubmitStage(`문서 색인 중... (${Math.round((i * 1.5) / 60 * 10) / 10}분 경과)`)
         await new Promise((r) => setTimeout(r, 1500))
+      }
+      if (docId && !indexedOk) {
+        throw new Error('문서 색인이 4분 안에 끝나지 않았습니다. 잠시 후 같은 파일로 다시 제출해 주세요.')
       }
       setSubmitStage('AI 위원 재검토 중...')
       const token = window.crypto?.randomUUID?.() || String(Date.now())
@@ -1743,7 +1752,9 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
             {noticeAvailable && noticeOpen && (
               <div className="vt-fade" style={{ position: 'absolute', top: 'calc(100% + 8px)', left: '50%', transform: 'translateX(-50%)', zIndex: 60, width: 'min(560px, 86vw)', textAlign: 'left', background: '#fff', border: '1px solid rgba(184,131,11,0.35)', borderLeft: '4px solid #b8830b', borderRadius: 12, boxShadow: '0 14px 34px rgba(28,26,46,0.16)', padding: '12px 16px', display: 'flex', alignItems: 'flex-start', gap: 10 }}>
                 <Info size={16} style={{ color: '#b8830b', flexShrink: 0, marginTop: 2 }} />
-                <div style={{ fontSize: 12.5, lineHeight: 1.7, color: '#5b5770' }}>
+                {/* wordBreak keep-all — "채점하며,"가 줄 경계에서 "채점하/며,"로 쪼개지지 않게
+                    단어(어절) 단위로만 줄바꿈(경이 요청 2026-07-28). 글씨도 한 단계 확대. */}
+                <div style={{ fontSize: 13.5, lineHeight: 1.75, color: '#5b5770', wordBreak: 'keep-all' }}>
                   <b style={{ color: '#8a6508' }}>제시된 총점은 참고용입니다.</b>{' '}
                   공고문 평가 항목 중 <b>문서 내용으로 측정 가능한 항목만</b> 근거를 들어 채점하며,
                   정성 판단이 필요한 <b>주관적 항목</b>과 공모전마다 기준이 달라지는 <b>가점 요소</b>는
@@ -1802,16 +1813,16 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
             {/* 버전별 상세 리포트 — 클릭하면 v1.0 → v1.1 → … 목록이 펼쳐지고, 버전을 고르면 그 버전 상세 화면으로 이동 */}
             <div style={{ position: 'relative' }}>
               <button type="button" onClick={() => setVersionListOpen((v) => !v)}
-                style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 14px', borderRadius: 10, border: '1.5px solid rgba(28,26,46,0.18)', background: 'rgba(255,255,255,0.85)', fontSize: 12.5, fontWeight: 800, color: '#1c1a2e', cursor: 'pointer' }}>
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '10px 18px', borderRadius: 11, border: '1.5px solid rgba(28,26,46,0.18)', background: 'rgba(255,255,255,0.85)', fontSize: 14, fontWeight: 800, color: '#1c1a2e', cursor: 'pointer' }}>
                 버전별 상세 리포트
-                <ChevronDown size={14} style={{ color: '#918d9f', transition: 'transform 0.2s', transform: versionListOpen ? 'rotate(180deg)' : 'none' }} />
+                <ChevronDown size={16} style={{ color: '#918d9f', transition: 'transform 0.2s', transform: versionListOpen ? 'rotate(180deg)' : 'none' }} />
               </button>
               {versionListOpen && (
-                <div className="vt-fade" style={{ position: 'absolute', top: 'calc(100% + 6px)', right: 0, zIndex: 60, minWidth: 210, background: '#fff', border: '1px solid rgba(28,26,46,0.12)', borderRadius: 12, boxShadow: '0 14px 34px rgba(28,26,46,0.16)', padding: 6, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                <div className="vt-fade" style={{ position: 'absolute', top: 'calc(100% + 6px)', right: 0, zIndex: 60, minWidth: 230, background: '#fff', border: '1px solid rgba(28,26,46,0.12)', borderRadius: 12, boxShadow: '0 14px 34px rgba(28,26,46,0.16)', padding: 6, display: 'flex', flexDirection: 'column', gap: 2 }}>
                   {versions.map((v, i) => (
                     <button key={v.version} type="button" className="btn-ghost"
                       onClick={() => { setSelectedIndex(i); setDetailOpen(true); setStatusFilter('all'); setVersionListOpen(false) }}
-                      style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '8px 10px', borderRadius: 8, fontSize: 12.5, textAlign: 'left' }}>
+                      style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '9px 11px', borderRadius: 8, fontSize: 13.5, textAlign: 'left' }}>
                       <span className="mono" style={{ fontWeight: 800, color: '#7c5cea', flexShrink: 0 }}>{v.version}</span>
                       <span style={{ color: '#5b5770', flex: 1, whiteSpace: 'nowrap' }}>{v.label}</span>
                       <span className="mono" style={{ fontWeight: 700, color: '#918d9f', flexShrink: 0 }}>{v.total_score}점</span>

@@ -155,6 +155,7 @@ def _get_indexing_service() -> RAGIndexingService:
             if _indexing_service is None:
                 embedder = KUREEmbedder(
                     EmbeddingConfig(
+                        device=settings.RAG_EMBEDDING_DEVICE,
                         batch_size=settings.RAG_EMBEDDING_BATCH_SIZE,
                         cpu_threads=settings.RAG_TORCH_NUM_THREADS,
                     )
@@ -1042,8 +1043,14 @@ async def preview_document_pdf(
     if not document:
         raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다")
 
-    file_path = document.get("file_path")
-    if not file_path or not os.path.exists(file_path):
+    # 경이/Claude(2026-07-28, 윤한 진단·승인 하 수정): #186에서 이 엔드포인트만 문자열
+    # file_path에 .suffix를 그대로 호출하도록 바뀌어(자매 엔드포인트에 적용된 Path 변환
+    # 누락) AttributeError('str' has no 'suffix') → 비핸들 500 → CORS 헤더 없는 응답 →
+    # 프론트 "Failed to fetch"로 원문 미리보기가 전부 깨졌다. #186의 다른 엔드포인트와
+    # 동일하게 _resolve_stored_file_path로 Path 변환(구형 상대경로 레코드도 처리)한다.
+    stored_file_path = str(document.get("file_path") or "")
+    file_path = _resolve_stored_file_path(stored_file_path) if stored_file_path else None
+    if file_path is None or not file_path.is_file():
         raise HTTPException(status_code=404, detail="원본 파일을 찾을 수 없습니다 (다시 업로드해주세요)")
 
     if file_path.suffix.lower() == ".pdf":
@@ -1052,7 +1059,7 @@ async def preview_document_pdf(
     output_dir = HwpConversionConfig().resolve_temp_dir() / "preview_pdf"
     try:
         pdf_path = await run_in_threadpool(
-            convert_to_preview_pdf, Path(file_path), output_dir=output_dir
+            convert_to_preview_pdf, file_path, output_dir=output_dir
         )
     except DocumentConversionError:
         logger.exception("[PREVIEW_PDF_ERROR] document_id=%s 미리보기 PDF 변환 실패", document_id)

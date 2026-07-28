@@ -24,11 +24,18 @@ COMPETITION_MAPPING_PATH = MEETING_DIR / "personas" / "rubric_mapping_competitio
 RAG_SAMPLES_PATH = MEETING_DIR / "tests" / "fixtures" / "rag_adapter_samples.json"
 
 _PERSONA_NAMES = {
-    "creativity_originality": "창의성·독창성 전문가",
-    "technical_feasibility": "기술·실현가능성 전문가",
-    "business_strategy": "사업전략 전문가",
-    "presentation_completeness": "완성도·전달력 전문가",
+    "planning_expert": "기획 전문가",
+    "dev_expert": "개발 전문가",
 }
+
+
+def _owned_criteria(routing: dict) -> dict[str, list[str]]:
+    """persona_id -> 주담당 criterion_id 목록. 2인 위원회에서는 한 위원이 여러 항목의
+    주담당이므로(기획 3·개발 1) 1인 1항목 가정을 쓰지 않는다."""
+    owned: dict[str, list[str]] = {}
+    for cid, r in routing.items():
+        owned.setdefault(r["primary"], []).append(cid)
+    return owned
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +171,9 @@ def test_transform_gates_criterion_when_numeric_score_blocked():
 # ---------------------------------------------------------------------------
 
 
-def _make_raw_reviewer(persona_id: str, cid: str, cname: str, score: int) -> dict:
+def _make_raw_reviewer(persona_id: str, criteria: list[tuple[str, str]], score: int) -> dict:
+    """criteria: [(criterion_id, criterion_name), ...] — 위원이 자기 주담당 항목 전부를
+    같은 점수로 채점한 raw 응답."""
     return {
         "review_id": f"REV-{persona_id}",
         "persona_id": persona_id,
@@ -184,6 +193,7 @@ def _make_raw_reviewer(persona_id: str, cid: str, cname: str, score: int) -> dic
                 "evidence_refs": [],
                 "improvement_actions": [],
             }
+            for cid, cname in criteria
         ],
         "cross_reviews": [],
         "out_of_scope": [],
@@ -207,17 +217,17 @@ def test_run_meeting_with_evidence_context_gates_and_uses_linked_evidence():
     mapping = json.loads(COMPETITION_MAPPING_PATH.read_text(encoding="utf-8"))
     routing = build_routing(mapping)
     criteria_by_id = {c["criterion_id"]: c for c in mapping["rubric"]}
-    owned = {r["primary"]: cid for cid, r in routing.items()}  # 1인 1항목
+    owned = _owned_criteria(routing)  # 기획 3항목·개발 1항목
 
-    gated_persona = "presentation_completeness"
-    gated_criterion = owned[gated_persona]
+    gated_persona = "dev_expert"
+    gated_criterion = owned[gated_persona][0]  # feasibility — 개발 전문가의 유일한 주담당 항목
 
-    # 위원 stub: 전원 20점
+    # 위원 stub: 전원 주담당 항목을 20점으로 채점
     raw_by_marker = {
         f"{_PERSONA_NAMES[pid]}입니다": _make_raw_reviewer(
-            pid, cid, criteria_by_id[cid]["criterion_name"], 20
+            pid, [(cid, criteria_by_id[cid]["criterion_name"]) for cid in cids], 20
         )
-        for pid, cid in owned.items()
+        for pid, cids in owned.items()
     }
     raw_by_marker["위원장(review_chair)입니다"] = _RAW_CHAIR
 
@@ -237,7 +247,8 @@ def test_run_meeting_with_evidence_context_gates_and_uses_linked_evidence():
             ],
             "sufficiency": {"prompt_guard": f"[{cid}] 안내", "allow_numeric_score": True, "allow_definitive_judgment": True},
         }
-        for pid, cid in owned.items()
+        for pid, cids in owned.items()
+        for cid in cids
     ]
 
     # 콜백: gated_criterion만 최종 숫자 점수 차단, 나머지는 RAG-004 근거 1건 반환
@@ -289,12 +300,12 @@ def test_run_meeting_with_evidence_context_gates_and_uses_linked_evidence():
 def _simple_competition_stub(mapping: dict):
     routing = build_routing(mapping)
     criteria_by_id = {c["criterion_id"]: c for c in mapping["rubric"]}
-    owned = {r["primary"]: cid for cid, r in routing.items()}
+    owned = _owned_criteria(routing)
     raw_by_marker = {
         f"{_PERSONA_NAMES[pid]}입니다": _make_raw_reviewer(
-            pid, cid, criteria_by_id[cid]["criterion_name"], 20
+            pid, [(cid, criteria_by_id[cid]["criterion_name"]) for cid in cids], 20
         )
-        for pid, cid in owned.items()
+        for pid, cids in owned.items()
     }
     raw_by_marker["위원장(review_chair)입니다"] = _RAW_CHAIR
 
@@ -390,7 +401,7 @@ def test_real_linked_ref_sample_maps_to_v2_evidence():
 
 def test_real_retrieved_sample_flows_through_run_meeting():
     """용준 build_meeting_retrieved_evidence() 실제 shape로 evidence_context를 구성해
-    run_meeting을 돌리면, business_strategy 근거가 실제 샘플의 원문/출처로 조립된다."""
+    run_meeting을 돌리면, dev_expert 근거가 실제 샘플의 원문/출처로 조립된다."""
     samples = _rag_samples()
     retrieved_sample = samples["retrieved_evidence"]
     linked_sample = samples["linked_evidence_refs"]
@@ -398,14 +409,15 @@ def test_real_retrieved_sample_flows_through_run_meeting():
     mapping = json.loads(COMPETITION_MAPPING_PATH.read_text(encoding="utf-8"))
     routing = build_routing(mapping)
     criteria_by_id = {c["criterion_id"]: c for c in mapping["rubric"]}
-    owned = {r["primary"]: cid for cid, r in routing.items()}
-    bs_criterion = owned["business_strategy"]
+    owned = _owned_criteria(routing)
+    # 개발 전문가는 주담당 항목이 feasibility 하나뿐이라, 실제 샘플 근거를 붙일 위원으로 쓴다.
+    evidence_persona = "dev_expert"
 
     raw_by_marker = {
         f"{_PERSONA_NAMES[pid]}입니다": _make_raw_reviewer(
-            pid, cid, criteria_by_id[cid]["criterion_name"], 20
+            pid, [(cid, criteria_by_id[cid]["criterion_name"]) for cid in cids], 20
         )
-        for pid, cid in owned.items()
+        for pid, cids in owned.items()
     }
     raw_by_marker["위원장(review_chair)입니다"] = _RAW_CHAIR
 
@@ -415,20 +427,21 @@ def test_real_retrieved_sample_flows_through_run_meeting():
                 return json.dumps(raw, ensure_ascii=False)
         raise AssertionError("마커 못 찾음")
 
-    # evidence_context: business_strategy는 실제 샘플 근거, 나머지는 근거 없음
+    # evidence_context: dev_expert는 실제 샘플 근거, 나머지는 근거 없음
     evidence_context = []
-    for pid, cid in owned.items():
-        evidence_context.append(
-            {
-                "persona_id": pid,
-                "criterion_id": cid,
-                "retrieved_evidence": retrieved_sample if pid == "business_strategy" else [],
-                "sufficiency": {"prompt_guard": "근거 충분", "allow_numeric_score": True, "allow_definitive_judgment": True},
-            }
-        )
+    for pid, cids in owned.items():
+        for cid in cids:
+            evidence_context.append(
+                {
+                    "persona_id": pid,
+                    "criterion_id": cid,
+                    "retrieved_evidence": retrieved_sample if pid == evidence_persona else [],
+                    "sufficiency": {"prompt_guard": "근거 충분", "allow_numeric_score": True, "allow_definitive_judgment": True},
+                }
+            )
 
     def evidence_callback(persona_id, criterion_id, review_item):
-        refs = linked_sample if persona_id == "business_strategy" else []
+        refs = linked_sample if persona_id == evidence_persona else []
         return {"linked_evidence_refs": refs, "sufficiency": {"allow_numeric_score": True, "allow_definitive_judgment": True}}
 
     document = run_meeting(
@@ -446,12 +459,12 @@ def test_real_retrieved_sample_flows_through_run_meeting():
 
     jsonschema.Draft202012Validator(json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))).validate(document)
 
-    # 전원 채점(20 x 4 = 80)
+    # 전원 채점(4항목 x 20 = 80)
     assert document["score_result"]["total_score"] == 80
-    # business_strategy 근거가 실제 샘플에서 조립됨
-    bs = next(r for r in document["reviewer_results"] if r["persona_id"] == "business_strategy")
+    # dev_expert 근거가 실제 샘플에서 조립됨
+    bs = next(r for r in document["reviewer_results"] if r["persona_id"] == evidence_persona)
     ev_ids = bs["rubric_scores"][0]["evidence_ids"]
-    assert ev_ids == ["EV-business_strategy-001"]
+    assert ev_ids == ["EV-dev_expert-001"]
     ev = next(e for e in document["evidence"] if e["evidence_id"] == ev_ids[0])
     assert ev["chunk_id"] == "CHUNK-014"
     assert ev["text"] == retrieved_sample[0]["text"]

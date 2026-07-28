@@ -57,8 +57,8 @@ def test_build_rubric_from_competition_mapping_matches_v2_rubric_schema():
 def test_build_routing_maps_every_criterion_to_primary_persona():
     mapping = json.loads(COMPETITION_MAPPING_PATH.read_text(encoding="utf-8"))
     routing = build_routing(mapping)
-    assert routing["creativity_appropriateness"]["primary"] == "creativity_originality"
-    assert routing["feasibility"]["primary"] == "technical_feasibility"
+    assert routing["creativity_appropriateness"]["primary"] == "planning_expert"
+    assert routing["feasibility"]["primary"] == "dev_expert"
     assert set(routing) == {c["criterion_id"] for c in mapping["rubric"]}
 
 
@@ -304,10 +304,8 @@ def test_full_meeting_graph_produces_v2_compliant_result():
 # ---------------------------------------------------------------------------
 
 _COMPETITION_PERSONA_NAMES = {
-    "creativity_originality": "창의성·독창성 전문가",
-    "technical_feasibility": "기술·실현가능성 전문가",
-    "business_strategy": "사업전략 전문가",
-    "presentation_completeness": "완성도·전달력 전문가",
+    "planning_expert": "기획 전문가",
+    "dev_expert": "개발 전문가",
 }
 
 
@@ -364,7 +362,8 @@ _RAW_CHAIR_FOR_RUN = {
 
 
 def _competition_raw_by_marker(mapping: dict) -> dict:
-    """공모전 4인 매핑 기준으로 위원별/위원장 raw 응답을 프롬프트 마커별로 구성한다."""
+    """공모전 매핑(기획·개발 전문가 2인) 기준으로 각 위원이 자기 주담당 항목 전부를
+    채점한 raw 응답을 프롬프트 마커별로 구성한다."""
     routing = build_routing(mapping)
     criteria_by_id = {c["criterion_id"]: c for c in mapping["rubric"]}
 
@@ -403,8 +402,9 @@ def test_run_meeting_with_real_competition_mapping_produces_v2_document():
     jsonschema.Draft202012Validator(_load_schema()).validate(document)
     assert document["domain"] == "competition"
     assert len(document["reviewer_results"]) == len(mapping["committee"])
+    # 각 항목은 주담당 위원 1명이 max-5점으로 채점한다(위원 수가 아니라 항목 수 기준).
     assert document["score_result"]["total_score"] == document["score_result"]["max_score"] - 5 * len(
-        mapping["committee"]
+        mapping["rubric"]
     )
 
 
@@ -537,6 +537,8 @@ def test_document_uses_committee_key_even_if_llm_fabricates_persona_id():
     mapping = json.loads(COMPETITION_MAPPING_PATH.read_text(encoding="utf-8"))
     routing = build_routing(mapping)
     criteria_by_id = {c["criterion_id"]: c for c in mapping["rubric"]}
+    # 위원별 대표 항목 1개(주담당 항목 중 마지막) — 이 테스트는 persona_id 교정만 보므로
+    # 전 항목을 채점할 필요가 없다.
     owned = {r["primary"]: cid for cid, r in routing.items()}
 
     # 각 위원 raw 의 persona_id 를 실제 committee id 와 다른 값으로 지어낸다.
@@ -568,7 +570,7 @@ def test_document_uses_committee_key_even_if_llm_fabricates_persona_id():
     assert not any(r["persona_id"].startswith("LLM-FAKE") for r in document["reviewer_results"])
 
     # rerun_reviewer가 교정된 persona_id로 위원을 '교체'(추가 아님)하는지 — 위원 수 유지
-    target = "creativity_originality"
+    target = "planning_expert"
     tcid = owned[target]
     rerun_markers = {
         f"{_COMPETITION_PERSONA_NAMES[target]}입니다": _make_raw_reviewer(

@@ -13,7 +13,7 @@ from __future__ import annotations
 import operator
 import uuid
 from datetime import datetime, timezone
-from typing import Annotated, Literal, TypedDict
+from typing import Annotated, Any, Literal, NotRequired, TypedDict
 
 from .application_form_draft import initialize_application_form_draft
 
@@ -45,6 +45,27 @@ ConvPhase = Literal[
     # synthesis 노드로 가게 만들 뿐, synthesis 노드가 끝나면 항상 "finalized" 또는
     # "failed"로 바뀌므로 이 값이 API 응답에 그대로 나가는 일은 없다.
     "finalizing",
+    # 용준/Claude(2026-07-27, 요청: "발산 전에 완성, 선택 즉시 확정" 구조 개편) —
+    # discovery 모드 전용 "확정 이전" 단계 8개. candidate_generation(기존, 이제
+    # idea_conflict_and_merge 이후 "압축된 provisional 후보 생성"으로 재정의)보다
+    # 앞에 온다. refinement 모드(초기 아이디어를 이미 입력한 세션)는 이 phase들을
+    # 전혀 거치지 않는다(initial_conv_state가 mode별로 진입 phase 자체를 분기).
+    "problem_discovery",
+    "awaiting_problem_focus_selection",
+    "problem_focus_selection",
+    "idea_divergence",
+    "idea_conflict_and_merge",
+    "awaiting_conflict_resolution",
+    "conflict_resolution",
+    # 용준/Claude(2026-07-27): awaiting_candidate_selection 이후 사용자의 응답을 처리하는
+    # discovery 전용 진입점 — 기존 "candidate_selection"(즉시 확정) 대신 이 값을 쓴다.
+    # 기존 candidate_selection phase/노드 자체는 코드에서 지우지 않았다(직접 호출하는
+    # 기존 단위 테스트가 계속 통과해야 한다) — 다만 이 그래프의 정상 흐름에서는 더 이상
+    # apply_user_answer가 그 값으로 전이시키지 않는다.
+    "provisional_selection",
+    "idea_validation",
+    "awaiting_concept_confirmation",
+    "concept_confirmation",
 ]
 
 # 용준/Claude(2026-07-21, 요청: 전문가 라운드테이블 전환): "interjection"은 사용자가 진행자의
@@ -59,6 +80,16 @@ _TERMINAL_ENTRY_PHASES = {
     "planning_question",
     "developer_question",
     "expert_discussion",
+    # 용준/Claude(2026-07-27, 요청: "발산 전에 완성, 선택 즉시 확정" 구조 개편) — API가
+    # apply_user_answer를 거쳐 새로 진입시킬 수 있는 discovery 전용 엔트리 4개.
+    # idea_divergence/idea_validation은 각각 problem_focus_selection/candidate_selection
+    # 안에서 같은 그래프 호출 중에 자동으로 이어지는 노드일 뿐, API가 phase 값으로 직접
+    # 재진입시키는 지점이 아니므로 여기 포함하지 않는다(_ENTRY_NODES 주석 참고).
+    "problem_discovery",
+    "problem_focus_selection",
+    "conflict_resolution",
+    "provisional_selection",
+    "concept_confirmation",
 }
 
 IdeationMode = Literal["refinement", "discovery"]
@@ -140,9 +171,24 @@ ActiveStage = Literal["candidate_discovery", "candidate_selection", "refinement"
 # 다듬는 "refinement"(아이디어 발전 모드), finalized/finalizing은 "finalized"다. failed는
 # 별도로 처리한다(고정 4단계에 없음 — 아래 active_stage_for 참고).
 _PHASE_TO_ACTIVE_STAGE: dict[str, ActiveStage] = {
+    "problem_discovery": "candidate_discovery",
+    "awaiting_problem_focus_selection": "candidate_discovery",
+    "problem_focus_selection": "candidate_discovery",
+    "idea_divergence": "candidate_discovery",
+    "idea_conflict_and_merge": "candidate_discovery",
+    "awaiting_conflict_resolution": "candidate_discovery",
+    "conflict_resolution": "candidate_discovery",
     "candidate_generation": "candidate_discovery",
     "awaiting_candidate_selection": "candidate_discovery",
     "candidate_selection": "candidate_selection",
+    "provisional_selection": "candidate_selection",
+    # 용준/Claude(2026-07-27): 검증·확정 대기는 "이미 후보를 고른 뒤" 단계라 refinement에
+    # 더 가깝지만, 아직 idea_locked=False라 refinement(전문가 라운드테이블)로 넘기면
+    # 프론트 배지가 "확정된 아이디어를 다듬는 중"으로 오인시킨다 — candidate_selection과
+    # 같은 버킷(선택/확정 처리 중)으로 묶는다.
+    "idea_validation": "candidate_selection",
+    "awaiting_concept_confirmation": "candidate_selection",
+    "concept_confirmation": "candidate_selection",
     "planning_question": "refinement",
     "awaiting_planning_answer": "refinement",
     "developer_question": "refinement",
@@ -163,6 +209,33 @@ def active_stage_for(phase: str) -> ActiveStage | Literal["failed"]:
     if phase == "failed":
         return "failed"
     return _PHASE_TO_ACTIVE_STAGE.get(phase, "refinement")
+
+
+# 용준/Claude(2026-07-27, 요청: "저장된 구버전(2026-07-27 문제 발견 단계 도입 이전) discovery
+# 세션이 브라우저 세션 재개로 계속 다시 뜬다 — 자동으로 폐기해 달라") — 개편 이전 discovery
+# 세션은 problem_discovery/problem_focus_selection/problem_definition/idea_divergence/
+# idea_conflict_and_merge를 전혀 거치지 않고 candidate_generation부터 바로 시작했다. 반면
+# 개편 이후 세션은 candidate_generation(now candidate_planning)에 도달하기 전에 반드시
+# problem_definition 노드를 거치므로 problem_definition이 항상 채워져 있다 — 이 차이가
+# "이 세션이 신규 파이프라인을 거쳤는지"를 저장된 state만 보고 결정론적으로 구분할 수 있는
+# 유일한 신호다(phase나 round 값만으로는 재추천을 여러 번 거친 신규 세션과 구분할 수 없다).
+# provisional_selection이 만드는 phase 값(idea_validation 이후 단계들)은 이미
+# problem_definition을 반드시 거쳐야만 도달하므로 대상에 포함하지 않는다 — candidate_generation/
+# awaiting_candidate_selection 두 phase만 "구버전에서 바로 시작했을 수 있는" 지점이다.
+_LEGACY_PRE_PROBLEM_STAGE_ENTRY_PHASES = frozenset({"candidate_generation", "awaiting_candidate_selection"})
+
+
+def is_legacy_pre_problem_stage_discovery_session(state: dict) -> bool:
+    """저장된 discovery 세션이 문제 발견 단계 개편(2026-07-27) 이전에 candidate_generation
+    으로 곧바로 시작한 구버전 세션인지 판정한다. True면 호출부(백엔드 세션 조회 API)가 이
+    세션을 재개 대상에서 제외해 프론트가 새 problem_discovery 세션을 시작하게 해야 한다.
+    refinement 세션(ideation_mode != "discovery")과, 이미 problem_definition을 거친 신규
+    discovery 세션은 항상 False다."""
+    if state.get("ideation_mode") != "discovery":
+        return False
+    if state.get("phase") not in _LEGACY_PRE_PROBLEM_STAGE_ENTRY_PHASES:
+        return False
+    return not state.get("problem_definition")
 
 
 class IssueRecord(TypedDict):
@@ -204,6 +277,105 @@ class DiscussionRoundRecord(TypedDict):
     revised_proposal: str | None
     facilitator_summary: str
     needs_user_decision: bool
+
+
+# 용준/Claude(2026-07-27, 요청: "발산 전에 완성, 선택 즉시 확정" 구조 개편) — discovery
+# 모드가 candidate_generation 이전에 거치는 "문제 발견 -> 문제 정의 -> 아이디어 발산 ->
+# 반론·결합 -> (기존 후보 압축/선택) -> 검증 -> 확정" 단계의 자료 구조. 기존 필드와 의미가
+# 겹치는 것(예: 후보의 differentiation/contest_fit/target_user)은 새로 만들지 않고
+# idea_candidates/selected_idea 등 기존 구조를 그대로 재사용한다 — 아래는 그 기존 구조로는
+# 표현할 수 없는, "아직 후보가 되기 전" 단계의 신규 개념만 담는다.
+
+
+class ProblemArea(TypedDict):
+    """problem_discovery 노드가 만드는 문제 영역 카드. 완성된 서비스 이름/기능을 포함하지
+    않는다(요청: "완성된 서비스 이름이나 기능을 제시하지 않는다") — problem_definition 이후
+    에야 구체화된다."""
+
+    area_id: str
+    title: str
+    summary: str
+    who_is_affected: str
+
+
+class ProblemDefinition(TypedDict):
+    """problem_focus_selection 이후 problem_definition 노드가 채우는 구조화된 문제 정의.
+    problem_defined/target_user_defined/existing_limitations_defined(요청 5번 boolean들)는
+    이 dict의 필드 존재 여부로 코드가 결정론적으로 계산한다(아래 problem_defined() 등 참고) —
+    LLM이 boolean을 직접 반환하지 않는다."""
+
+    problem: str
+    target_user: str
+    user_context: str
+    root_cause: str
+    existing_solution: str
+    existing_limitations: str
+
+
+class SolutionDirection(TypedDict):
+    """idea_divergence 노드가 만드는 해결 방향 1개. 후보(candidate)와 달리 제목/기능을
+    확정하지 않는다 — "해결 원리 자체가 다른" 방향을 나타내는 최소 정보만 담는다(요청:
+    "단순히 기능만 다른 것이 아니라 해결 접근 방식 자체가 달라야 한다"). idea_conflict_and_merge가
+    status를 "active"/"dropped"/"merged"로 갱신한다(폐기/결합 기록은 idea_evolution에
+    남긴다 — 이 필드는 "지금 시점의 유효 상태"만 나타낸다)."""
+
+    direction_id: str
+    title: str
+    core_principle: str  # 해결 원리(기능이 아니라 접근 방식) 1~2문장
+    mechanism: str
+    target_user_fit: str
+    status: Literal["active", "dropped", "merged", "superseded", "revised"]
+    origin_direction_ids: list[str]  # 결합으로 생성됐다면 원본 direction_id들, 아니면 빈 리스트
+    parent_direction_ids: NotRequired[list[str]]
+    strengths: NotRequired[list[str]]
+    open_assumptions: NotRequired[list[str]]
+
+
+class IdeaEvolutionRecord(TypedDict):
+    """요청: "회의 중 아이디어가 어떻게 변했는지 사용자가 확인할 수 있도록 변화 기록을
+    저장". idea_conflict_and_merge/idea_validation/concept_confirmation이 append한다
+    (operator.add 리듀서 — messages/discussion_rounds와 같은 원칙). critique_count/
+    merge_or_revision_count(요청 5번)는 이 리스트에서 action_type별 개수를 세어 코드가
+    계산한다 — LLM이 카운트를 직접 반환하지 않는다(아래 critique_count()/merge_or_revision_count()
+    참고)."""
+
+    record_id: str
+    stage: str  # ConvPhase 중 이 기록이 발생한 단계(예: "idea_conflict_and_merge")
+    # 용준/Claude(2026-07-27, 요청: "problem focus 변화 이력 추가") — problem_focus_selected/
+    # problem_focus_merged는 problem_focus_selection 노드가 select_problem_focus/
+    # combine_problem_focus 액션이 성공한 시점에 남긴다. 기존 7종은 그대로 유지한다.
+    action_type: Literal[
+        "divergence",
+        "critique",
+        "merge",
+        "revision",
+        "drop",
+        "candidate_generation",
+        "validation",
+        "confirmation",
+        "problem_focus_selected",
+        "problem_focus_merged",
+    ]
+    title: str
+    content: str
+    changed_by: str  # persona_id 또는 "user"
+    # 이 발언/변경이 가리키는 id(들) — solution_direction 단계에서는 solution_direction_id,
+    # problem_focus_selected/merged에서는 area_id를 담는다(필드 이름은 기존 그대로 재사용 —
+    # "이 기록이 가리키는 대상 id 목록"이라는 의미는 동일하다).
+    target_direction_ids: list[str]
+    before: NotRequired[Any]
+    after: NotRequired[Any]
+    result_direction_id: NotRequired[str]
+    created_at: str
+
+
+class ValidationResult(TypedDict):
+    """idea_validation 노드가 채우는 검증 결과. planning_validation_completed/
+    technical_validation_completed(요청 5·7번)는 이 dict의 해당 섹션이 채워졌는지로
+    코드가 판단한다 — LLM이 "완료 여부" boolean을 직접 반환하지 않는다."""
+
+    planning: dict | None  # {value_worth_solving, target_user_clarity, differentiation, usage_motivation, contest_alignment}
+    technical: dict | None  # {data_availability, feasibility, ai_necessity, privacy_or_security_risks, prototype_feasibility}
 
 
 class ConvMessage(TypedDict):
@@ -375,6 +547,67 @@ class IdeationConvState(TypedDict):
     # 공통 가치/결합 적합도/주 기능/보조 기능/충돌 지점/미확정 사항). combine이 아니면 None.
     merge_analysis: dict | None
 
+    # 용준/Claude(2026-07-27, 요청: "발산 전에 완성, 선택 즉시 확정" 구조 개편) — discovery
+    # 모드가 candidate_generation(이제 "압축된 provisional 후보 생성"으로 재정의)보다 먼저
+    # 거치는 문제 발견/정의/발산/반론·결합 단계 전용 필드. refinement 모드에서는 전부
+    # 초기값에서 바뀌지 않는다(ideation_mode="discovery"일 때만 채워진다). 구버전 저장
+    # state에는 이 키들이 없을 수 있으므로 읽는 쪽은 항상 `.get(...)`로 접근한다.
+    problem_areas: list[ProblemArea]
+    # 사용자가 선택한 문제 영역 원본(최대 2개) — "결합해서 탐색"이면 둘 다 담긴다. 이
+    # 시점에는 아직 problem_definition이 없다(요청 3번: "문제 영역 선택"과 "문제 정의"는
+    # 상태상 구분되어야 한다 — problem_focus는 선택 그 자체, problem_definition은 그
+    # 선택을 구체화한 결과).
+    problem_focus: list[ProblemArea]
+    # "다른 문제 제안 요청" 횟수 — MAX_PROBLEM_REGENERATIONS(ideation_conv_problem.py)
+    # 도달 시 더 이상 LLM을 호출해 문제 영역을 재생성하지 않는다(candidate_regeneration_count와
+    # 동일한 원칙).
+    problem_regeneration_count: int
+    # problem_definition 노드가 채우는 구조화된 문제 정의. problem_defined()/
+    # target_user_defined()/existing_limitations_defined()가 이 필드의 부분 필드 존재
+    # 여부로 코드가 결정론적으로 계산한다(요청 5번) — None이면 아직 문제 정의가 안 된 것.
+    problem_definition: ProblemDefinition | None
+    # idea_divergence가 만들고 idea_conflict_and_merge가 갱신하는 해결 방향 목록.
+    # solution_direction_count(요청 5·6번 전환 조건)는 status="active"인 항목 수를 코드가
+    # 직접 센다 — LLM이 개수를 직접 보고하지 않는다.
+    solution_directions: list[SolutionDirection]
+    # 요청: "회의 중 아이디어가 어떻게 변했는지 사용자가 확인할 수 있도록 변화 기록을
+    # 저장" — divergence/critique/merge/revision/drop/validation/confirmation을 시간순으로
+    # 누적한다(operator.add — messages와 같은 원칙).
+    idea_evolution: Annotated[list[IdeaEvolutionRecord], operator.add]
+    # idea_conflict_and_merge가 실행된 라운드 수(사용자 개입 없이 자동 반복되는 라운드 —
+    # MAX_CONFLICT_ROUNDS 상한 판단에 쓴다. discussion_rounds/round와는 별개 카운터).
+    conflict_round_count: int
+    # candidate_selection이 골라낸 "검증 대상 잠정 후보" — concept_confirmation에서
+    # 사용자가 최종 확정하기 전까지는 이 필드만 채워지고 selected_idea는 그대로 None이다
+    # (요청 3번: "잠정 후보 선택"과 "최종 아이디어 확정"은 상태상 구분되어야 한다).
+    provisional_idea: dict | None
+    # idea_validation이 채우는 기획/개발 관점 검증 결과. planning_validation_completed/
+    # technical_validation_completed(요청 5·7번)는 이 dict의 해당 섹션이 채워졌는지로
+    # 코드가 판단한다.
+    validation_result: ValidationResult | None
+    # 사용자가 concept_confirmation에서 "확정"으로 답했는지 — request_finalize와 달리
+    # 이 값은 오직 API 레이어가 사용자의 명시적 확정 응답을 파싱했을 때만 코드가 True로
+    # 세팅한다(LLM이 직접 True를 반환하지 않는다, 요청 5번).
+    user_confirmed: bool
+    # 요청 2·3번 — concept_confirmation에서 사용자가 최종 확정한 순간에만 True가 된다.
+    # discovery 모드의 provisional_idea/candidate_selection 단계에서는 계속 False다.
+    # refinement 모드(초기 아이디어를 이미 입력한 세션)는 이 값이 처음부터 False이고,
+    # request_finalize() 호출 시점(회의 결과 정리·종료를 요청하는 기존 지점)에 True가 된다
+    # — concept_confirmation(discovery 전용, "방향 확정")과 finalizing/finalized(공통,
+    # "회의 결과 정리·종료")는 서로 다른 개념이므로 역할이 겹치지 않는다.
+    idea_locked: bool
+
+    # 용준/Claude(2026-07-27, 후속 요청 4번: "2차 프론트에서는 action code를 함께 보낼
+    # 예정 — 백엔드는 action code를 우선 사용하고 자연어 키워드 판정은 하위 호환용
+    # 폴백으로 유지") — API 레이어(ideation_conv_run.py::reply_ideation_conversation)가
+    # 이번 한 번의 그래프 호출 동안만 채우는 임시(transient) 필드다. 세션에 영구
+    # 저장되는 값이 아니라 "이번 사용자 응답을 이렇게 해석하라"는 1회성 지시이므로,
+    # apply_user_answer가 전이시킨 phase의 노드가 이 값을 소비한 뒤에는 다음 요청에
+    # 잔류하지 않도록 각 노드가 스스로 None으로 되돌린다(다른 transient 필드인
+    # forced_next_speaker/next_route와 같은 패턴). {"code": str, "payload": dict} 형태 —
+    # code가 그 phase에서 기대하는 값과 다르면 무시하고 기존 자연어 파싱으로 폴백한다.
+    pending_user_action: dict | None
+
     # 용준/Claude(2026-07-21, 요청: 위원 간 실제 회의로 개편): expert_discussion phase가
     # 실행될 때마다(라운드마다) 1건씩 쌓인다(리듀서 operator.add — messages와 같은 원칙).
     # 구버전 저장 state에는 이 키가 없을 수 있으므로 읽는 쪽은 항상
@@ -540,9 +773,16 @@ def initial_conv_state(
     build_roundtable_opening_message 참고)를 messages에 먼저 넣고, phase는 더 이상
     "planning_question"(1:1 인터뷰 진입점)이 아니라 "expert_discussion"(라운드테이블
     진입점)이다 — 기획/개발 위원이 서로를 상대로 먼저 토론하고, 사용자에게 직접 질문하는
-    것은 진행자만 한다. 비어 있으면 discovery로 시작해 후보 생성 단계(candidate_generation)
-    부터 진행한다(요청 1~2번, 변경 없음). ideation_mode는 여기서 딱 한 번 결정되어 이후
-    그래프 전체가 이 값을 그대로 읽는다."""
+    것은 진행자만 한다.
+
+    용준/Claude(2026-07-27, 요청: "발산 전에 완성, 선택 즉시 확정" 구조 개편) — 비어 있으면
+    discovery로 시작하되, 더 이상 후보 생성 단계(candidate_generation)부터 바로 시작하지
+    않는다. candidate_generation은 이제 "문제 발견(problem_discovery) -> 문제 정의 ->
+    아이디어 발산(idea_divergence) -> 반론·결합(idea_conflict_and_merge)"을 거친 뒤 그
+    결과를 압축해 provisional 후보를 만드는 단계로 재정의됐다 — 이 함수가 그 진입점을
+    "problem_discovery"로 바꾼 것 외에 discovery 모드의 다른 동작(1차 개편 범위: refinement는
+    영향 없음)은 바뀌지 않는다. ideation_mode는 여기서 딱 한 번 결정되어 이후 그래프
+    전체가 이 값을 그대로 읽는다."""
     initial_idea = _extract_initial_idea_text(user_idea)
     mode: IdeationMode = "refinement" if initial_idea else "discovery"
     opening_messages = [build_roundtable_opening_message(initial_idea, round_number=1)] if mode == "refinement" else []
@@ -553,7 +793,7 @@ def initial_conv_state(
         round=1,
         max_rounds=max_rounds,
         messages=opening_messages,
-        phase="expert_discussion" if mode == "refinement" else "candidate_generation",
+        phase="expert_discussion" if mode == "refinement" else "problem_discovery",
         pending_question=None,
         pending_expected_answer_type=None,
         pending_question_topic=None,
@@ -583,6 +823,18 @@ def initial_conv_state(
         user_selection_message=None,
         source_candidates=[],
         merge_analysis=None,
+        problem_areas=[],
+        problem_focus=[],
+        problem_regeneration_count=0,
+        problem_definition=None,
+        solution_directions=[],
+        idea_evolution=[],
+        conflict_round_count=0,
+        provisional_idea=None,
+        validation_result=None,
+        user_confirmed=False,
+        idea_locked=False,
+        pending_user_action=None,
         discussion_rounds=[],
         discussion_planning_position=None,
         discussion_development_review=None,
@@ -622,12 +874,33 @@ def apply_user_answer(previous_state: IdeationConvState, answer_message: ConvMes
     """
     prev_phase = previous_state["phase"]
     next_phase: ConvPhase
-    if prev_phase == "awaiting_candidate_selection":
-        # 용준/Claude(2026-07-21): discovery 모드 — 사용자가 후보 선택/결합/재추천/전문가
-        # 추천 중 하나로 답했다. 실제 해석(번호 선택인지, 결합인지, 재추천인지)은 이
-        # 함수가 하지 않는다 — candidate_selection 노드가 담당한다(요청: 단순 선택은
-        # 코드로 결정적으로, 자연어 결합/수정은 LLM으로).
-        next_phase = "candidate_selection"
+    if prev_phase == "awaiting_problem_focus_selection":
+        # 용준/Claude(2026-07-27): discovery 모드 — 사용자가 문제 영역 선택/결합/다른 문제
+        # 요청/직접 입력 중 하나로 답했다. 실제 해석은 problem_focus_selection 노드가
+        # 담당한다(candidate_selection과 동일한 원칙 — 단순 선택은 코드로, 나머지는 필요시
+        # LLM으로).
+        next_phase = "problem_focus_selection"
+    elif prev_phase == "awaiting_conflict_resolution":
+        # idea_conflict_and_merge가 라운드 상한(MAX_CONFLICT_ROUNDS)에 도달했는데도 최소
+        # 조건(요청 6번: 해결 방향 3개↑/반론 1회↑/수정·결합 1회↑)을 못 채웠을 때만 여기서
+        # 멈춘다 — 사용자의 결합/방향추가/방향폐기/검증진행 요청을 conflict_resolution
+        # 노드가 해석한다.
+        next_phase = "conflict_resolution"
+    elif prev_phase == "awaiting_concept_confirmation":
+        # idea_validation 이후 진행자가 "이 방향으로 확정할지, 더 수정할지" 물은 지점 —
+        # 사용자의 확정/재수정 요청을 concept_confirmation 노드가 해석한다. 이 판단은
+        # LLM이 아니라 이 노드(코드)가 결정적으로 내린다(요청 5번: user_confirmed/
+        # idea_locked는 LLM이 직접 세팅하지 않는다).
+        next_phase = "concept_confirmation"
+    elif prev_phase == "awaiting_candidate_selection":
+        # 용준/Claude(2026-07-27, 요청: "선택 즉시 확정" 구조 개편) — 이 시점에 확정되는
+        # 것은 더 이상 selected_idea가 아니라 provisional_idea다(요청 3번: "잠정 후보
+        # 선택"과 "최종 아이디어 확정"은 상태상 구분되어야 한다). 실제 해석(번호 선택인지,
+        # 결합인지, 재추천인지)은 이 함수가 하지 않는다 — provisional_selection 노드가
+        # 기존 candidate_selection 노드를 그대로 감싸 재사용하며 결과만 provisional_idea로
+        # 재해석한다(ideation_conv_problem.py::make_provisional_selection_node 참고,
+        # 기존 candidate_selection 노드/프롬프트 자체는 전혀 수정하지 않았다).
+        next_phase = "provisional_selection"
     elif prev_phase == "awaiting_planning_answer":
         next_phase = "developer_question"
     elif prev_phase == "awaiting_developer_answer":
@@ -691,13 +964,20 @@ def apply_user_answer(previous_state: IdeationConvState, answer_message: ConvMes
 def request_finalize(previous_state: IdeationConvState) -> IdeationConvState:
     """사용자가 '주제 확정하고 초안 받기'를 눌렀을 때만 호출된다(요구 9~10번 —
     전문가/진행자가 임의로 최종 확정하지 않는다). phase="awaiting_user_decision"이 아니면
-    호출부(API)가 이 함수를 부르기 전에 이미 막아야 한다."""
+    호출부(API)가 이 함수를 부르기 전에 이미 막아야 한다.
+
+    용준/Claude(2026-07-27, 요청: concept_confirmation과 finalizing/finalized의 역할
+    분리) — idea_locked=True를 여기서도 세팅한다(이미 True인 discovery 세션에는 아무
+    영향이 없다). refinement 모드는 concept_confirmation을 거치지 않으므로, "회의 결과를
+    문서로 굳혀도 되는 시점"이 이 함수 호출 시점 하나뿐이다 — 이 시점 이전까지는
+    idea_locked=False가 유지되어(요청 1번의 refinement 공통 가드) 신청서/사업계획서 작성
+    언급을 차단하는 근거가 된다."""
     if previous_state["phase"] not in {"awaiting_user_decision", "discussion_complete"}:
         raise ValueError(
             "awaiting_user_decision 또는 discussion_complete 상태에서만 최종 확정할 수 "
             f"있습니다(현재: {previous_state['phase']!r})."
         )
-    return IdeationConvState(**{**previous_state, "phase": "finalizing"})
+    return IdeationConvState(**{**previous_state, "phase": "finalizing", "idea_locked": True})
 
 
 class IdeationCancelled(Exception):
@@ -722,3 +1002,233 @@ def is_graph_entry_phase(phase: str) -> bool:
     awaiting_*/finalized/failed/awaiting_user_decision은 API가 그래프를 다시 부르지
     않고 사용자 입력을 기다려야 하는 지점이다."""
     return phase in _TERMINAL_ENTRY_PHASES or phase == "finalizing"
+
+
+# ============================================================================
+# 용준/Claude(2026-07-27, 요청: "발산 전에 완성, 선택 즉시 확정" 구조 개편) —
+# 단계 전환 조건을 위한 결정론적 파생 함수/상수. 요청 5번("LLM이 boolean이나 count를
+# 임의로 직접 결정하도록 만들지 마세요")에 따라, 아래 값은 전부 state에 이미 저장된
+# 구조화 데이터(problem_definition/solution_directions/idea_evolution/validation_result)
+# 로부터 코드가 계산한다 — 별도의 "완료 여부" 필드를 LLM 응답에서 그대로 받아 저장하지
+# 않는다.
+# ============================================================================
+
+MIN_SOLUTION_DIRECTIONS = 3
+# 용준/Claude(2026-07-28, 요청: 기본 discovery 회의를 1라운드로 단축) — 기존 2회에서 1회로
+# 낮춘다. 사용자가 명시적으로 결합/방향추가를 요청하면(conflict_resolution 노드의
+# _request_another_conflict_round, ideation_conv_problem.py) conflict_round_count를 1
+# 감소시켜 라운드를 한 번 더 여는 기존 메커니즘을 그대로 재사용하므로("사용자가 요청한
+# 경우에만 1회 추가"), 이 상수 하나만 낮춰도 "기본 1라운드 + 필요 시 사용자 요청으로 +1"
+# 요구사항이 그대로 성립한다 — 그 메커니즘 자체는 손대지 않았다.
+MAX_CONFLICT_ROUNDS = 1
+MAX_PROBLEM_REGENERATIONS = 2
+
+
+def _non_blank(value: Any) -> bool:
+    return isinstance(value, str) and value.strip() != ""
+
+
+def problem_defined(state: IdeationConvState) -> bool:
+    """problem_definition.problem이 채워졌는지 — LLM이 별도 boolean을 반환하지 않고,
+    이 필드 자체가 채워졌는지로만 판단한다."""
+    definition = state.get("problem_definition")
+    return isinstance(definition, dict) and _non_blank(definition.get("problem"))
+
+
+def target_user_defined(state: IdeationConvState) -> bool:
+    definition = state.get("problem_definition")
+    return isinstance(definition, dict) and _non_blank(definition.get("target_user"))
+
+
+def existing_limitations_defined(state: IdeationConvState) -> bool:
+    definition = state.get("problem_definition")
+    return isinstance(definition, dict) and _non_blank(definition.get("existing_limitations"))
+
+
+def solution_direction_count(state: IdeationConvState) -> int:
+    """status="active"인 해결 방향 수만 센다 — 폐기(dropped)되거나 다른 방향에 결합되어
+    사라진(merged) 방향은 "서로 다른 해결 방향"으로 더 이상 유효하지 않다."""
+    directions = state.get("solution_directions") or []
+    return sum(1 for d in directions if isinstance(d, dict) and d.get("status") == "active")
+
+
+def critique_count(state: IdeationConvState) -> int:
+    """idea_evolution에 실제로 기록된 action_type="critique" 건수 — LLM이 "반론했다"고
+    주장하는 것이 아니라, idea_conflict_and_merge 노드가 반론으로 분류해 실제로 append한
+    기록만 센다."""
+    evolution = state.get("idea_evolution") or []
+    return sum(1 for r in evolution if isinstance(r, dict) and r.get("action_type") == "critique")
+
+
+def merge_or_revision_count(state: IdeationConvState) -> int:
+    evolution = state.get("idea_evolution") or []
+    return sum(1 for r in evolution if isinstance(r, dict) and r.get("action_type") in ("merge", "revision"))
+
+
+def planning_validation_completed(state: IdeationConvState) -> bool:
+    result = state.get("validation_result")
+    return isinstance(result, dict) and isinstance(result.get("planning"), dict) and bool(result.get("planning"))
+
+
+def technical_validation_completed(state: IdeationConvState) -> bool:
+    result = state.get("validation_result")
+    return isinstance(result, dict) and isinstance(result.get("technical"), dict) and bool(result.get("technical"))
+
+
+def meets_conflict_and_merge_min_conditions(state: IdeationConvState) -> bool:
+    """요청 6번의 idea_conflict_and_merge 최소 조건: 해결 방향 3개 이상 / 반론 1회 이상 /
+    수정·결합 1회 이상. 세 조건 모두 만족해야 candidate_generation(후보 압축)으로 자동
+    진행할 수 있다 — 라운드 상한(MAX_CONFLICT_ROUNDS)에 도달했는데 이 조건을 못 채우면
+    자동 진행 대신 사용자에게 결합/방향추가/방향폐기/검증진행 중 하나를 요청한다
+    (awaiting_conflict_resolution)."""
+    directions = state.get("solution_directions") or []
+    directions_by_id = {
+        direction.get("direction_id"): direction for direction in directions if isinstance(direction, dict)
+    }
+    materialized_records = [
+        record
+        for record in (state.get("idea_evolution") or [])
+        if isinstance(record, dict)
+        and record.get("action_type") in ("merge", "revision")
+        and record.get("changed_by") == "planning_expert"
+        and record.get("result_direction_id")
+    ]
+    materialized_change = False
+    if materialized_records:
+        latest = materialized_records[-1]
+        result = directions_by_id.get(latest["result_direction_id"])
+        parents = [directions_by_id.get(direction_id) for direction_id in latest.get("target_direction_ids") or []]
+        materialized_change = bool(
+            result
+            and result.get("status") == "active"
+            and parents
+            and all(parent and parent.get("status") in ("merged", "superseded", "revised") for parent in parents)
+        )
+
+    messages = state.get("messages") or []
+    speaker_types = [(message.get("speaker_id"), message.get("message_type")) for message in messages]
+    has_ordered_messages = bool(
+        len(speaker_types) >= 3
+        and speaker_types[-1] == ("ideation_facilitator", "summary")
+        and speaker_types[-2] == ("planning_expert", "opinion")
+        and any(
+            speaker == "dev_expert" and message_type == "disagreement"
+            for speaker, message_type in speaker_types[:-2]
+        )
+    )
+    return (
+        solution_direction_count(state) >= MIN_SOLUTION_DIRECTIONS
+        and critique_count(state) >= 1
+        and merge_or_revision_count(state) >= 1
+        and materialized_change
+        and has_ordered_messages
+    )
+
+
+def ready_for_concept_confirmation(state: IdeationConvState) -> bool:
+    """concept_confirmation을 사용자에게 제안하기 전에 반드시 충족돼야 하는 조건 —
+    기획/개발 검증이 모두 완료됐는지(요청: "기획 관점의 검증이 완료됨" / "개발 관점의
+    검증이 완료됨")."""
+    return planning_validation_completed(state) and technical_validation_completed(state)
+
+
+# 용준/Claude(2026-07-27, 요청 1번: "refinement 모드에서도 idea_locked 이전에는 신청서
+# 문구나 사업계획서 작성으로 바로 넘어가지 않도록 하는 공통 가드는 적용해도 됩니다" /
+# 요청 4번 "concept_confirmation 이전 단계에서는 신청서 작성법·사업계획서 목차 등을 다루지
+# 못하게") — LLM이 만든 발화(spoken_text/content)에 확정 이전 단계에서 금지된 표현이
+# 섞였는지 키워드로 판정한다. LLM이 "이건 신청서 작성이 아니다"라고 스스로 판단하게
+# 맡기지 않고(요청 5번과 동일한 원칙 — 판단을 LLM에 맡기지 않는다), 코드가 결정적으로
+# 검사한다. 오탐이 있더라도(예: "제출 양식"이라는 단어가 인용문 안에 있는 경우) "확정
+# 전에는 절대 문서 작성으로 새지 않는다"는 안전 쪽으로 보수적으로 판단한다.
+PRE_LOCK_BANNED_PHRASES: tuple[str, ...] = (
+    "신청서 작성",
+    "신청서 문구",
+    "신청서 초안",
+    "사업계획서 목차",
+    "사업계획서 작성",
+    "제안서 표현",
+    "제출 문서 형식",
+    "제출 양식",
+    "서비스 소개문",
+    "최종 서비스명",
+    "기술 스택을 확정",
+    "기술스택을 확정",
+)
+
+# 용준/Claude(2026-07-27, 후속 요청 3번: "idea_locked=False라는 이유만으로 신청서/사업계획서
+# 키워드가 포함된 모든 발화를 교체하지 마세요 — 현재 phase와 발화 의도를 함께 확인") —
+# 위 PRE_LOCK_BANNED_PHRASES는 문서 관련 "명사구"만 보므로 "사업계획서 작성 관점에서
+# 설득력이 있는가?"처럼 실제로는 검토·질문인 발화도 우연히 걸릴 수 있다("사업계획서 작성"이
+# 부분 문자열로 들어있기 때문). 이 마커가 하나라도 있으면 "실제 작성 행위를 하는 중"이
+# 아니라 "검토·질문 중"이라는 뜻이므로 차단하지 않는다 — 질문 억양(?/글까요/인가요)이나
+# 명시적 검토·평가 표현이 이에 해당한다.
+PRE_LOCK_REVIEW_INTENT_MARKERS: tuple[str, ...] = (
+    "?",
+    "설득력이 있는가",
+    "설득력 있는가",
+    "설득력이 있을까요",
+    "타당한가",
+    "타당할까요",
+    "적합한가",
+    "적합할까요",
+    "충분한가",
+    "충분할까요",
+    "일까요",
+    "인가요",
+    "필요할까요",
+    "괜찮을까요",
+    "관점에서 검토",
+    "관점에서 보면",
+    "검토해 보면",
+    "평가해 보면",
+    "고려해야 할까요",
+)
+
+# 문서 명사구 없이도 그 자체로 "지금 실제로 작성/확정하고 있다"는 것이 명확한 행위
+# 표현 — idea_validation처럼 문서 종류를 언급하는 것 자체가 자연스러운 검증 단계(phase)
+# 에서는, 이런 명확한 행위 마커가 있을 때만 차단한다(단순 언급만으로는 차단하지 않는다).
+PRE_LOCK_DRAFTING_ACTION_MARKERS: tuple[str, ...] = (
+    "작성하겠습니다",
+    "작성해 드리겠습니다",
+    "작성해드리겠습니다",
+    "작성할게요",
+    "작성해 볼게요",
+    "초안을 만들",
+    "초안을 준비",
+    "목차를 정리하겠습니다",
+    "목차부터 정리",
+    "제출하겠습니다",
+    "완성하겠습니다",
+    "확정하겠습니다",
+    "작성을 시작",
+    "작성을 진행",
+)
+
+# 검증 단계(요청: "사업계획서에서 설득력이 있는가?" 같은 검토 질문이 자연스러운 단계)에서는
+# 문서 종류를 언급하는 것 자체를 막지 않는다 — 명확한 작성 행위 마커가 있을 때만 차단한다.
+_VALIDATION_STAGE_PHASES: frozenset[str] = frozenset(
+    {"idea_validation", "awaiting_concept_confirmation", "concept_confirmation"}
+)
+
+
+def contains_pre_lock_banned_content(text: str | None, *, phase: str | None = None) -> bool:
+    """확정 전(idea_locked=False) 발화에 신청서/사업계획서 등 문서 작성으로 새는 표현이
+    섞였는지 판정한다. 요청 3번 — 단순 키워드 매치가 아니라 현재 phase와 발화 의도를 함께
+    본다:
+    1. 은행 문서 명사구가 없으면 애초에 검사 대상이 아니다.
+    2. 질문/검토 억양(PRE_LOCK_REVIEW_INTENT_MARKERS)이 있으면 "검토 질문"으로 보고
+       차단하지 않는다(예: "사업계획서 작성 관점에서 설득력이 있는가?").
+    3. idea_validation/concept_confirmation처럼 문서 종류를 언급하는 것 자체가 자연스러운
+       검증 단계에서는, 명확한 작성 행위 마커(PRE_LOCK_DRAFTING_ACTION_MARKERS)가 있을
+       때만 차단한다 — 단순 언급만으로는 차단하지 않는다.
+    4. 그 외(일반 discussion/expert_discussion 등)에서는 기존처럼 보수적으로 차단한다
+       ("확정 전에는 절대 문서 작성으로 새지 않는다")."""
+    if not text:
+        return False
+    if not any(phrase in text for phrase in PRE_LOCK_BANNED_PHRASES):
+        return False
+    if any(marker in text for marker in PRE_LOCK_REVIEW_INTENT_MARKERS):
+        return False
+    if phase in _VALIDATION_STAGE_PHASES:
+        return any(marker in text for marker in PRE_LOCK_DRAFTING_ACTION_MARKERS)
+    return True

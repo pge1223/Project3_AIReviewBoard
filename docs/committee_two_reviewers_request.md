@@ -1,5 +1,11 @@
 # [요청] 종합 리포트 채점 위원을 기획·개발 위원 2명 체계로 — 선행 조건 2건
 
+> **[완결, 2026-07-28]** 요청 2건 모두 용준 PR #188로 dev 머지 완료
+> (domain_tags에 competition 추가 + planning_expert→planning / dev_expert→technology).
+> 이를 받아 경이 후속 PR에서 rubric_mapping_competition.json committee를
+> `[planning_expert, dev_expert]`로 교체하고 추출 캐시 버전을 v9로 올렸다.
+> 아래 본문은 요청 당시 기록.
+
 > 작성: 경이 → 용준 / 2026-07-27
 > 배경 결정(경이): 종합 리포트(심사형 회의)의 실제 채점 주체를 구 4위원(창의·기술·
 > 사업전략·완성도)에서 **아이디어 회의의 기획 전문가(planning_expert)·개발 전문가

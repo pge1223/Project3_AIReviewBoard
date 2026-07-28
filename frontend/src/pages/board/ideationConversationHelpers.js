@@ -227,6 +227,58 @@ export function nextActionGuideFor(phase) {
   }
 }
 
+const CANDIDATE_COUNT_PHASES = new Set([
+  'candidate_generation',
+  'awaiting_candidate_selection',
+  'provisional_selection',
+  'idea_validation',
+  'awaiting_concept_confirmation',
+  'concept_confirmation',
+])
+
+export function discussionIdeaCountFor(state) {
+  if (!state) return 0
+  if (state.idea_locked) return state.selected_idea ? 1 : 0
+  if (CANDIDATE_COUNT_PHASES.has(state.phase) && Array.isArray(state.idea_candidates)) {
+    return state.idea_candidates.length
+  }
+  const activeDirections = (state.solution_directions || []).filter((direction) => direction?.status === 'active')
+  if (activeDirections.length) return activeDirections.length
+  if (
+    ['problem_discovery', 'awaiting_problem_focus_selection', 'problem_focus_selection', 'problem_definition'].includes(
+      state.phase,
+    )
+  ) {
+    return state.problem_areas?.length || 0
+  }
+  return 0
+}
+
+const NEXT_STEP_LABEL = {
+  problem_discovery: '문제 정의',
+  awaiting_problem_focus_selection: '문제 정의',
+  problem_focus_selection: '문제 정의',
+  problem_definition: '해결 방향 발산',
+  idea_divergence: '전문가 반론',
+  idea_conflict_and_merge: '방향 수정·결합',
+  awaiting_conflict_resolution: '사용자 방향 결정',
+  conflict_resolution: '방향 수정·결합',
+  candidate_generation: '기획·개발 검증',
+  awaiting_candidate_selection: '기획·개발 검증',
+  provisional_selection: '기획·개발 검증',
+  idea_validation: '검증 결과 반영',
+  awaiting_concept_confirmation: '최종 아이디어 확정',
+  concept_confirmation: '최종 아이디어 확정',
+  finalized: '신청서 초안',
+}
+
+export function nextStepLabelFor(state) {
+  if (!state) return '문제 정의'
+  if (state.phase === 'finalized') return '신청서 초안'
+  if (state.idea_locked) return '구현 구체화'
+  return NEXT_STEP_LABEL[state.phase] || '회의 계속'
+}
+
 // 사용자가 후보 카드의 "이 후보 선택" 버튼을 눌렀을 때 reply API로 보낼 메시지.
 // ideation_conv_discovery.py::_NUMERIC_SELECT_RE가 "1", "1번", "1번째" 형태를 코드로
 // 결정적으로(LLM 호출 없이) 처리하므로 "n번" 형태로 보낸다 — 프런트가 후보를 자체
