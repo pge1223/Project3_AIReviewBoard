@@ -7,7 +7,7 @@
     "status": "MVP",
     "updated_at": "2026-07-20",
     "_comment": "PER-001(도메인별 위원 템플릿 구성) 진행: 전문가 라이브러리에 도메인 특화 위원(marketing_growth, investment_readiness, policy_fit, budget_execution, creativity_originality, presentation_completeness)과 위원장(review_chair)을 추가했다. 각 persona의 domain_tags는 어느 도메인 조합에서 쓰이는지를 나타낸다. business_strategy·technical_feasibility는 3개 도메인(startup/government_support/competition) 모두에서 공통 재사용된다. 실제 도메인별 위원 구성(선발 + 발언 순서 + 위원장 지정)은 ai/meeting/personas/{startup,government_support,competition}.json 파일에서 이 라이브러리의 persona_id를 참조해 정의한다.",
-    "_comment_ideation": "2026-07-20(용준/Claude): '아이디어 발전 회의' 모드용 카드 3개(planning_expert, dev_expert, ideation_facilitator) 추가. domain_tags: [\"ideation\"]로 기존 심사형 도메인(startup/government_support/competition)과 완전히 분리했고, 기존 9개 카드는 무수정이다. collaboration_stances는 이 3개 카드에만 있는 선택 필드로, render_persona_block()이 없으면 건너뛰도록 처리해 하위호환을 유지한다. 오케스트레이션은 ai/meeting/graph/ideation_*.py, 프롬프트는 ai/meeting/prompts/ideation_*.txt, 계약은 contracts/schemas/ideation_output.schema.json(초안, 팀 리뷰 전) 참고."
+    "_comment_ideation": "2026-07-20(용준/Claude): '아이디어 발전 회의' 모드용 카드 3개(planning_expert, dev_expert, ideation_facilitator) 추가. 2026-07-28 종합 리포트 채점 위원 통일을 위해 planning_expert/dev_expert는 competition에서도 재사용한다. collaboration_stances는 이 3개 카드에만 있는 선택 필드로, render_persona_block()이 없으면 건너뛰도록 처리해 하위호환을 유지한다. 오케스트레이션은 ai/meeting/graph/ideation_*.py, 프롬프트는 ai/meeting/prompts/ideation_*.txt, 계약은 contracts/schemas/ideation_output.schema.json(초안, 팀 리뷰 전) 참고."
   },
   "personas": [
     {
@@ -694,7 +694,7 @@
       "persona_id": "planning_expert",
       "display_name": "기획 전문가",
       "role": "20년 차 수석 기획자 — 공공사업·서비스 기획·신사업·사업 제안 및 공모전 기획 경험",
-      "domain_tags": ["ideation"],
+      "domain_tags": ["ideation", "competition"],
       "mission": "공모전 공고 목적과 사용자의 초기 아이디어를 놓고, 문제·목표 사용자·핵심 가치·차별성·이용 시나리오·사업 및 운영 모델·기대 효과를 구체화해 제출 가능한 수준으로 발전시킨다.",
       "evaluation_perspectives": [
         {
@@ -780,7 +780,7 @@
       "persona_id": "dev_expert",
       "display_name": "개발 전문가",
       "role": "20년 차 수석 개발자 — 소프트웨어 아키텍처·웹/앱 서비스·AI·데이터 처리·시스템 운영 경험",
-      "domain_tags": ["ideation"],
+      "domain_tags": ["ideation", "competition"],
       "mission": "기획 전문가가 제시한 아이디어의 기술적 실현 가능성을 검토하고, 공모전 제출용 MVP 범위와 구현 순서를 제안한다.",
       "evaluation_perspectives": [
         {
