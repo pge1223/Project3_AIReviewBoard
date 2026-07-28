@@ -178,7 +178,7 @@ const KIND_BADGE = {
   typo: { label: '오탈자', bg: 'var(--rose-dim)', fg: 'var(--rose)', icon: <PenLine size={12} /> },
 }
 
-export default function WorkbenchScreen({ projectId, onNext }) {
+export default function WorkbenchScreen({ projectId, onNext, onBack }) {
   const [pdfUrl, setPdfUrl] = useState(null)
   const [docError, setDocError] = useState('')
   const [reviewOutput, setReviewOutput] = useState(null)
@@ -306,7 +306,18 @@ export default function WorkbenchScreen({ projectId, onNext }) {
   const unscoredItems = useMemo(() => extractUnscoredItems(reviewOutput), [reviewOutput])
 
   return (
-    <div style={{ display: 'flex', gap: 20, height: 'calc(100vh - 64px)' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 64px)' }}>
+      {/* pge/Claude(2026-07-28, 요청: "이전 화면 버튼 없는 곳은 생성, 위치도 통일") —
+          다른 마법사 화면들과 같은 rb-back-button 스타일·위치(좌상단, 배지와 한 줄). */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12, flexShrink: 0 }}>
+        {onBack && (
+          <button type="button" className="rb-back-button" onClick={onBack} aria-label="이전 화면으로 이동">
+            {'←'}
+          </button>
+        )}
+        <div className="badge coral mono">AI 피드백</div>
+      </div>
+      <div style={{ display: 'flex', gap: 20, flex: 1, minHeight: 0 }}>
       <style>{`
         .wb-pdf-page { position: relative; background: #fff; box-shadow: 0 2px 18px rgba(0,0,0,0.12); }
         .wb-pdf-page canvas { display: block; }
@@ -499,6 +510,7 @@ export default function WorkbenchScreen({ projectId, onNext }) {
             )
           })}
         </div>
+      </div>
       </div>
 
       {/* 경이/Claude(2026-07-24): AI 피드백 → 종합 리포트 이동 버튼. WorkbenchScreen에 다음
