@@ -251,8 +251,8 @@ def _run_single(case: _Case, *, llm_call, judge_llm_call, judge_model, cache) ->
         "expert_judgment_claim_count": len(claim_buckets["expert_judgment"]),
         "linked_evidence_refs": last_message.get("linked_evidence_refs"),
         "unsupported_claim_count_grounding": last_message.get("unsupported_claim_count"),
-        "message_ids": [m.get("id") for m in new_messages],
-        "message_ids_unique": len({m.get("id") for m in new_messages}) == len(new_messages),
+        "message_ids": [m.get("message_id") for m in new_messages],
+        "message_ids_unique": len({m.get("message_id") for m in new_messages}) == len(new_messages),
     }
 
     if case.judge_against_evidence and content:

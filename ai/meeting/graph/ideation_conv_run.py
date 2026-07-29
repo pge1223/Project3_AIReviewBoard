@@ -578,8 +578,13 @@ def start_ideation_conversation(
     # 용준/Claude(2026-07-29, 요청: 생성 품질 개선 5단계 — 최상위 요청 라우터). _drive_graph
     # 호출 전 딱 한 번, 사용자 원문(초기 아이디어 설명)으로 분류한다 — 그래프 시작 노드는
     # 이 값을 다시 계산하지 않고 state["request_type"]을 그대로 읽는다(중복 분류 없음).
-    request_type = classify_query_type(_extract_initial_idea_text(user_idea))
-    state = {**state, "request_type": request_type}
+    initial_user_input = _extract_initial_idea_text(user_idea)
+    request_type = classify_query_type(initial_user_input)
+    # 용준/Claude(2026-07-29, 요청: B05 실제 운영 경로 버그 수정) — request_type과 같은
+    # 원문을 current_user_input에도 그대로 저장한다. 결정론적 session_state 답변
+    # (_deterministic_session_state_answer)이 _topic_query(user_idea+active_issue 조합)
+    # 대신 "이번 턴 사용자가 실제로 물은 문장"을 보게 하기 위함이다.
+    state = {**state, "request_type": request_type, "current_user_input": initial_user_input}
     baseline_message_count = len(state["messages"])
     single_turn = request_type in _SINGLE_TURN_REQUEST_TYPES
     result_state = _drive_graph(graph, state, on_progress, on_snapshot, stop_after_expert_turn=single_turn)
@@ -1156,7 +1161,9 @@ def reply_ideation_conversation(
     # 과 동일한 단일 지점 원칙(중복 분류 없음). document_fact_query/session_state_query면
     # 클라이언트가 넘긴 stop_after_expert_turn 값과 무관하게(OR) 위원 발언 1건에서 정지시킨다.
     request_type = classify_query_type(user_message)
-    state = {**state, "request_type": request_type}
+    # 용준/Claude(2026-07-29, 요청: B05 실제 운영 경로 버그 수정) — start와 동일하게
+    # current_user_input을 함께 갱신한다(이전 턴 값을 누적하지 않고 매 턴 덮어씀).
+    state = {**state, "request_type": request_type, "current_user_input": user_message}
     single_turn = request_type in _SINGLE_TURN_REQUEST_TYPES
     effective_stop_after_expert_turn = stop_after_expert_turn or single_turn
     graph = assemble_ideation_conversation_graph(

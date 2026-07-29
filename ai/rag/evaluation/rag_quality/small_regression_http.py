@@ -27,7 +27,7 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
-_BACKEND_DIR = Path(__file__).resolve().parents[3] / "backend"
+_BACKEND_DIR = Path(__file__).resolve().parents[4] / "backend"
 if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
@@ -63,8 +63,23 @@ def _start_session(client: TestClient) -> str:
     return resp.json()["session_id"]
 
 
-def _run_sync(client: TestClient, conv_route, request_type: str, user_message: str) -> dict:
-    session_id = _start_session(client)
+_TERMINAL_PHASES = {"discussion_complete", "awaiting_user_decision"}
+
+
+def _clone_session(conv_route, source_session_id: str, new_session_id: str) -> None:
+    """용준/Claude(2026-07-29, 요청: sync/stream 비교 방식 보정) — 독립된 두 실LLM 세션을
+    비교하면 다회 라운드형(ideation_discussion_request)에서 진행자의 계속/종료 판단이
+    세션마다 달라져(실LLM 확률적 차이) 결과가 갈릴 수 있다(실측: 서로 다른 세션에서
+    phase가 discussion_complete vs awaiting_user_decision으로 갈림). 매 reply 전 정확히
+    같은 pre-reply state를 복제해 sync/stream 양쪽에 각각 주입하면, 그 이후의 차이는
+    "같은 컨텍스트에 대한 실LLM 응답 차이"로만 좁혀진다(세션 히스토리 차이라는 혼입 변수
+    제거)."""
+    source_state = conv_route._store.get_record(source_session_id).state
+    cloned_state = {**source_state, "session_id": new_session_id, "messages": list(source_state["messages"])}
+    conv_route._store.create(cloned_state, use_rag=False)
+
+
+def _run_sync(client: TestClient, conv_route, request_type: str, user_message: str, session_id: str) -> dict:
     baseline_count = len(conv_route._store.get_record(session_id).state["messages"])
     resp = client.post(f"/ideation-conversation/{session_id}/reply", json={"message": user_message})
     if resp.status_code != 200:
@@ -85,8 +100,7 @@ def _run_sync(client: TestClient, conv_route, request_type: str, user_message: s
     }
 
 
-def _run_stream(client: TestClient, conv_route, request_type: str, user_message: str) -> dict:
-    session_id = _start_session(client)
+def _run_stream(client: TestClient, conv_route, request_type: str, user_message: str, session_id: str) -> dict:
     baseline_count = len(conv_route._store.get_record(session_id).state["messages"])
     try:
         with client.stream(
@@ -104,7 +118,7 @@ def _run_stream(client: TestClient, conv_route, request_type: str, user_message:
 
     types = [e.get("type") for e in events]
     final_state = next((e["state"] for e in events if e.get("type") == "state"), None)
-    message_ids = [m.get("id") for m in (final_state or {}).get("messages", []) if "id" in m]
+    message_ids = [m.get("message_id") for m in (final_state or {}).get("messages", []) if "message_id" in m]
     new_messages = (final_state or {}).get("messages", [])[baseline_count:]
     speakers = [m["speaker_id"] for m in new_messages]
     return {
@@ -145,19 +159,48 @@ def main(argv: Optional[list[str]] = None) -> Path:
         "cases": {},
     }
     for request_type, user_message in _CASES.items():
-        sync_result = _run_sync(client, conv_route, request_type, user_message)
-        stream_result = _run_stream(client, conv_route, request_type, user_message)
-        equivalent = (
-            "error" not in sync_result
-            and "error" not in stream_result
-            and sync_result.get("request_type") == stream_result.get("request_type")
-            and sync_result.get("phase") == stream_result.get("phase")
-            and sync_result.get("speaker_sequence") == stream_result.get("speaker_sequence")
-        )
+        # 같은 pre-reply state를 sync/stream 양쪽에 복제한다(요청: "독립적인 두 실LLM 세션
+        # 결과를 완전 동일해야 한다고 판단하지 마세요" — 히스토리 차이라는 혼입 변수를
+        # 먼저 제거한 뒤에 비교한다).
+        base_session_id = _start_session(client)
+        sync_session_id = f"{base_session_id}-SYNC"
+        stream_session_id = f"{base_session_id}-STREAM"
+        _clone_session(conv_route, base_session_id, sync_session_id)
+        _clone_session(conv_route, base_session_id, stream_session_id)
+
+        sync_result = _run_sync(client, conv_route, request_type, user_message, sync_session_id)
+        stream_result = _run_stream(client, conv_route, request_type, user_message, stream_session_id)
+
+        no_error = "error" not in sync_result and "error" not in stream_result
+        request_type_matches = no_error and sync_result.get("request_type") == stream_result.get("request_type")
+        both_terminal = no_error and sync_result.get("phase") in _TERMINAL_PHASES and stream_result.get("phase") in _TERMINAL_PHASES
+        if request_type in _SINGLE_TURN_TYPES:
+            # 단일 응답 유형은 결정론적 라우팅(위원 발언 1건, phase=discussion_complete)이라
+            # sync/stream이 정확히 같은 phase·화자 순서를 내야 한다 — 완화하지 않는다.
+            structurally_equivalent = (
+                no_error
+                and sync_result.get("phase") == stream_result.get("phase")
+                and sync_result.get("speaker_sequence") == stream_result.get("speaker_sequence")
+            )
+        else:
+            # 다회 라운드형은 진행자의 계속/종료 판단이 실LLM 확률에 따라 갈릴 수 있으므로,
+            # 둘 다 유효한 종결 phase에 도달했는지만 본다("완전 동일" 요구 안 함) — 요청
+            # 계약: request_type 동일 / 화자 순서는 의미상 동일(둘 다 committee 발언으로
+            # 시작해 정상 종결) / stream done 존재 / dedup.
+            structurally_equivalent = (
+                no_error
+                and both_terminal
+                and sync_result.get("speaker_sequence", [None])[0] == "user"
+                and stream_result.get("speaker_sequence", [None])[0] == "user"
+            )
+        equivalent = request_type_matches and structurally_equivalent
+
         report["cases"][request_type] = {
             "user_message": user_message,
             "sync": sync_result,
             "stream": stream_result,
+            "request_type_matches": request_type_matches,
+            "both_reached_terminal_phase": both_terminal,
             "sync_stream_equivalent": equivalent,
         }
 

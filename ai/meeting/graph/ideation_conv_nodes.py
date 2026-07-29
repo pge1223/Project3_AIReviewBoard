@@ -2117,8 +2117,16 @@ def _deterministic_final_direction_prefix(state: IdeationConvState, topic_query:
 # 직접 읽어 결정적 문장을 만든다. 기존 _deterministic_final_direction_prefix 함수와 그 정규식은
 # 문구·동작을 전혀 바꾸지 않는다(회귀 방지) — 새 분기만 추가한다.
 _IDEA_LOCKED_QUERY_RE = re.compile(r"확정됐(?:나요|어요|습니까)|잠겼|lock|아이디어.{0,4}확정.{0,4}(?:여부|상태)")
-_CURRENT_PHASE_QUERY_RE = re.compile(r"지금.{0,4}단계|현재.{0,4}단계|무슨.{0,4}단계|진행\s*단계")
-_PROVISIONAL_IDEA_QUERY_RE = re.compile(r"잠정|검토\s*중인?\s*(?:아이디어|후보|방향)|provisional")
+# 용준/Claude(2026-07-29, 요청: B05 실제 운영 경로 버그 수정 5번) — "지금 회의는 어느
+# 단계인가요"처럼 "지금"/"단계" 사이에 "회의는"류 명사가 끼는 자연스러운 문장도 잡도록
+# 거리 허용치를 {0,4}에서 {0,10}으로 넓힌다(문구·판정 자체는 그대로, 매칭 폭만 넓힘).
+_CURRENT_PHASE_QUERY_RE = re.compile(r"지금.{0,10}단계|현재.{0,10}단계|무슨.{0,10}단계|진행\s*단계")
+# "임시로 선택된"처럼 "잠정" 대신 "임시"를 쓰는 표현도 잠정 후보 질문으로 인식한다.
+_PROVISIONAL_IDEA_QUERY_RE = re.compile(r"잠정|임시|검토\s*중인?\s*(?:아이디어|후보|방향)|provisional")
+# 용준/Claude(2026-07-29, 요청: B05 실제 운영 경로 버그 수정 5번 — 다른 상태 질문 회귀).
+# "검증 결과는 어떻게 나왔나요" 류 질문도 같은 원칙(코드가 state["validation_result"]에서
+# 직접 읽어 결정적으로 답한다)을 적용한다.
+_VALIDATION_RESULT_QUERY_RE = re.compile(r"검증\s*결과|검증.{0,4}(?:어떻게|나왔|끝났|완료)")
 
 _PHASE_LABELS_KO: dict[str, str] = {
     "problem_discovery": "문제 발굴",
@@ -2138,17 +2146,22 @@ def _deterministic_session_state_answer(state: IdeationConvState, topic_query: s
     """session_state_query로 분류된 질문(또는 그 질문 문구를 담은 topic_query)에 대해, 정확한
     상태값을 코드가 결정적으로 조립한다. 어느 분기에도 안 걸리면 None(spoken_text를 건드리지
     않고 기존 discussion 흐름 그대로) — 최종 방향 질문이 최우선이다(가장 흔하고, 이미
-    검증됐다)."""
-    final_direction = _deterministic_final_direction_prefix(state, topic_query)
-    if final_direction is not None:
-        return final_direction
+    검증됐다).
+
+    용준/Claude(2026-07-29, 요청: B05 실제 운영 경로 버그 수정) — topic_query 인자는 호출부가
+    무엇을 넘기느냐에 따라 달라진다: session_state_query 턴에서는 호출부(make_conv_discussion_node)가
+    _topic_query(user_idea+active_issue 조합) 대신 state["current_user_input"](이번 턴 사용자
+    원문)을 넘긴다 — 이 함수 자체는 그 차이를 몰라도 되고, 매칭 대상 텍스트만 받는다. 이 함수는
+    active_issue_id/현재 쟁점 제목/역할별 검토 관점을 전혀 참조하지 않는다 — 정규식 매칭도,
+    답변 내용 조립도 모두 selected_idea/idea_locked/phase/provisional_idea/validation_result 등
+    state 필드에서 직접 읽는다."""
     text = topic_query or ""
-    if _IDEA_LOCKED_QUERY_RE.search(text):
-        return "아이디어가 최종 확정되어 잠겼습니다." if state.get("idea_locked") else "아이디어가 아직 최종 확정되지 않았습니다."
-    if _CURRENT_PHASE_QUERY_RE.search(text):
-        phase = str(state.get("phase") or "")
-        label = _PHASE_LABELS_KO.get(phase, phase or "확인 불가")
-        return f"현재 회의는 '{label}' 단계입니다."
+    # 용준/Claude(2026-07-29, 요청: B05 실제 운영 경로 버그 수정 5번) — "임시로 선택된
+    # 아이디어는?"처럼 잠정 후보를 묻는 질문은 _FINAL_DIRECTION_TOPIC_RE의 "선택된
+    # 아이디어" 문구와 겹친다. _PROVISIONAL_IDEA_QUERY_RE는 잠정/임시/검토중 같은 명시적
+    # 신호가 있을 때만 매칭되므로(범위가 더 좁다), 그 신호가 있으면 최종 방향 체크보다
+    # 먼저 확인해 "잠정 후보를 확정안으로 오인"하는 걸 막는다 — 그 신호가 없는 나머지
+    # 질문은 기존과 동일하게 최종 방향 체크가 최우선이다(가장 흔하고, 이미 검증됐다).
     if _PROVISIONAL_IDEA_QUERY_RE.search(text):
         provisional = state.get("provisional_idea")
         if isinstance(provisional, dict):
@@ -2156,6 +2169,26 @@ def _deterministic_session_state_answer(state: IdeationConvState, topic_query: s
             if title:
                 return f"현재 검증 중인 잠정 후보는 '{title}'입니다."
         return "현재 검증 중인 잠정 후보가 없습니다."
+    final_direction = _deterministic_final_direction_prefix(state, topic_query)
+    if final_direction is not None:
+        return final_direction
+    if _IDEA_LOCKED_QUERY_RE.search(text):
+        return "아이디어가 최종 확정되어 잠겼습니다." if state.get("idea_locked") else "아이디어가 아직 최종 확정되지 않았습니다."
+    if _CURRENT_PHASE_QUERY_RE.search(text):
+        phase = str(state.get("phase") or "")
+        label = _PHASE_LABELS_KO.get(phase, phase or "확인 불가")
+        return f"현재 회의는 '{label}' 단계입니다."
+    if _VALIDATION_RESULT_QUERY_RE.search(text):
+        result = state.get("validation_result")
+        planning_done = isinstance(result, dict) and isinstance(result.get("planning"), dict) and bool(result.get("planning"))
+        technical_done = isinstance(result, dict) and isinstance(result.get("technical"), dict) and bool(result.get("technical"))
+        if planning_done and technical_done:
+            return "기획 검증과 기술 검증이 모두 완료되었습니다."
+        if planning_done:
+            return "기획 검증은 완료되었고, 기술 검증은 아직 진행되지 않았습니다."
+        if technical_done:
+            return "기술 검증은 완료되었고, 기획 검증은 아직 진행되지 않았습니다."
+        return "아직 검증 결과가 없습니다."
     return None
 
 
@@ -2225,6 +2258,11 @@ def classify_query_type(
         or _IDEA_LOCKED_QUERY_RE.search(haystack)
         or _CURRENT_PHASE_QUERY_RE.search(haystack)
         or _PROVISIONAL_IDEA_QUERY_RE.search(haystack)
+        # 용준/Claude(2026-07-29, 요청: B05 실제 운영 경로 버그 수정 5번) — "검증 결과는
+        # 어떻게 나왔나요"도 같은 이유(가장 결정론적, 오탐 위험 낮음)로 session_state_query
+        # 최우선 판정에 포함한다 — 이 값이 있어야 위원 발언 1건으로 종료되고(다회 라운드로
+        # 안 새고), _deterministic_session_state_answer의 검증 결과 분기가 실제로 쓰인다.
+        or _VALIDATION_RESULT_QUERY_RE.search(haystack)
     ):
         return "session_state_query"
 
@@ -4896,7 +4934,20 @@ def make_conv_discussion_node(
         next_action = "await_user_input" if needs_user_input else "continue_discussion"
 
         spoken_text = raw.get("spoken_text", "")
-        deterministic_prefix = _deterministic_session_state_answer(state, query)
+        # 용준/Claude(2026-07-29, 요청: B05 실제 운영 경로 버그 수정) — session_state_query
+        # 턴에서는 query(_topic_query 결과 — user_idea+active_issue_id+역할별 검토 관점 조합)를
+        # 그대로 넘기지 않는다. 실측(B05 회귀): 이미 여러 라운드가 진행된 세션에서 사용자가
+        # "최종적으로 확정한 해결 방향은?"이라고 물어도, _topic_query에는 그 문장이 전혀
+        # 들어가지 않아(세션 시작 시 아이디어 설명 + 현재 쟁점 제목만 조합) 결정론적 제목
+        # 판정 정규식이 매칭되지 않고 LLM이 자유 생성해 확정 제목을 누락시켰다.
+        # state["current_user_input"](ideation_conv_run.py가 매 턴 최신 사용자 원문으로 갱신)이
+        # 있으면 request_type 분류 결과와 무관하게 항상 그 원문을 우선 사용한다 — 이 함수가
+        # 호출하는 _deterministic_session_state_answer는 내부적으로 자체 정규식 4종(최종
+        # 방향/idea_locked/현재 단계/잠정 후보/검증 결과)으로 다시 게이팅되므로, 관련 없는
+        # 질문(document_fact_query 등)에 current_user_input을 넘겨도 안전하게 None을
+        # 반환한다. current_user_input이 없으면(구버전 세션 하위 호환) 기존 query로 폴백한다.
+        session_state_topic_text = state.get("current_user_input") or query
+        deterministic_prefix = _deterministic_session_state_answer(state, session_state_topic_text)
         if deterministic_prefix and not spoken_text.startswith(deterministic_prefix):
             spoken_text = f"{deterministic_prefix} {spoken_text}".strip()
             trace_event(

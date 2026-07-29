@@ -608,6 +608,27 @@ class IdeationConvState(TypedDict):
     # "회의 결과 정리·종료")는 서로 다른 개념이므로 역할이 겹치지 않는다.
     idea_locked: bool
 
+    # 용준/Claude(2026-07-29, 요청: 생성 품질 개선 5단계 — 최상위 요청 라우터). 사용자가
+    # 방금 보낸 원문 메시지(/start의 초기 아이디어 설명, /reply의 user_message)를
+    # ideation_conv_run.py가 _drive_graph 호출 전에 딱 한 번
+    # classify_query_type(ideation_conv_nodes.py)으로 분류해 채운다 — "document_fact_query" |
+    # "session_state_query" | "expert_analysis_query" | "ideation_discussion_request" | None.
+    # 선택 필드다: 구버전 저장 세션에는 이 키가 없으므로 읽는 쪽은 항상
+    # `.get("request_type")`로 접근한다(하위 호환). 매 사용자 턴마다 최신 원문 기준으로
+    # 새로 덮어써지고, 이전 턴 값을 누적하지 않는다.
+    request_type: str | None
+
+    # 용준/Claude(2026-07-29, 요청: B05 실제 운영 경로 버그 수정 — "결정적 상태 답변이
+    # _topic_query 대신 최신 사용자 입력을 봐야 한다"). request_type과 같은 지점
+    # (ideation_conv_run.py가 _drive_graph 호출 전)에서 함께 채우는 "이번 턴 사용자 원문"
+    # 전용 필드다. user_idea(회의의 원래 아이디어·배경, 세션 시작 시 한 번 정해지고 이후
+    # 잘 안 바뀜)와 절대 혼동하면 안 된다 — current_user_input은 매 턴 사용자가 방금
+    # 입력한 문장 그 자체(/start의 초기 아이디어 설명, /reply의 user_message)이고, 이전
+    # 턴 값을 누적하지 않는다. 선택 필드다: 구버전 저장 세션에는 이 키가 없으므로 읽는
+    # 쪽은 항상 `.get("current_user_input")`로 접근한다(하위 호환 — 없으면 기존처럼
+    # _topic_query 기반 판정으로 폴백).
+    current_user_input: str | None
+
     # 용준/Claude(2026-07-27, 후속 요청 4번: "2차 프론트에서는 action code를 함께 보낼
     # 예정 — 백엔드는 action code를 우선 사용하고 자연어 키워드 판정은 하위 호환용
     # 폴백으로 유지") — API 레이어(ideation_conv_run.py::reply_ideation_conversation)가
@@ -846,6 +867,8 @@ def initial_conv_state(
         validation_result=None,
         user_confirmed=False,
         idea_locked=False,
+        request_type=None,
+        current_user_input=None,
         pending_user_action=None,
         discussion_rounds=[],
         discussion_planning_position=None,

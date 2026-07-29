@@ -577,6 +577,156 @@ def test_reply_with_explicit_discussion_request_keeps_multi_turn_flow():
 
 
 # ---------------------------------------------------------------------------
+# 5-2. 용준/Claude(2026-07-29, 요청: B05 실제 운영 경로 버그 수정) — session_state_query의
+#      결정론적 제목 답변이 _topic_query(세션 시작 시 user_idea + 현재 쟁점 제목 조합)가
+#      아니라 이번 턴 사용자 원문(current_user_input)을 봐야 한다. 실측 회귀 시나리오를
+#      그대로 재현한다: (1) 기존 회의 세션이 이미 진행 중이고(user_idea는 확정 질문과
+#      무관한 별도 아이디어), (2) idea_locked/selected_idea가 그 세션과 무관하게(별도로)
+#      확정돼 있고, (3) 사용자가 나중에 "최종적으로 확정한 해결 방향은?"이라고 reply로
+#      물어보는 상황 — final_answer_eval.py(질문 문장을 세션 시작 시 user_idea로 주입)와
+#      달리 이 시나리오에서만 버그가 재현됐었다.
+# ---------------------------------------------------------------------------
+
+
+def _start_with_confirmed_idea(llm, *, selected_idea_title="상대적 기준 검토 방식"):
+    """user_idea와 무관한 별도 아이디어가 이미 확정된 세션을 만든다 — B05 실측 조건
+    재현(active_issue_id/현재 쟁점은 확정 질문과 다른 내용이어도 된다는 요청 조건)."""
+    state = _start(llm)
+    assert state["phase"] == "discussion_complete"
+    return {
+        **state,
+        "idea_locked": True,
+        "selected_idea": {"title": selected_idea_title},
+    }
+
+
+def test_reply_session_state_query_uses_current_user_input_not_topic_query():
+    """B05 회귀: 결정론적 제목 답변이 _topic_query가 아니라 current_user_input을 봐야
+    한다. user_idea(원래 아이디어 설명)에는 "확정"/"최종" 같은 단어가 전혀 없으므로,
+    옛 코드(topic_query=_topic_query 결과)라면 정규식이 매칭되지 않아 이 테스트가
+    실패한다."""
+    llm = ScriptedLLM()
+    state = _start_with_confirmed_idea(llm)
+    baseline_message_count = len(state["messages"])
+
+    state = reply_ideation_conversation(
+        previous_state=state,
+        user_message="이 회의에서 사용자가 최종적으로 확정한 해결 방향은 무엇인가요?",
+        llm_call=llm,
+    )
+
+    assert state["request_type"] == "session_state_query"
+    assert state["phase"] == "discussion_complete"
+    new_messages = state["messages"][baseline_message_count:]
+    speakers = [m["speaker_id"] for m in new_messages]
+    # 위원 발언 1건 후 종료(다음 라운드로 회전하지 않음).
+    assert len(speakers) == 2, f"위원 발언 1건만 추가돼야 하는데 {speakers}가 추가됨"
+    committee_message = new_messages[-1]
+    assert committee_message["content"].startswith(
+        "사용자가 최종 확정한 아이디어는 '상대적 기준 검토 방식'입니다."
+    )
+    # 제목 변형·요약 없이 정확한 문자열 그대로 포함(claude 등 LLM 출력과 무관하게 보존).
+    assert "상대적 기준 검토 방식" in committee_message["content"]
+
+
+def test_reply_session_state_query_reports_not_confirmed_when_idea_locked_false():
+    """확정 전(idea_locked=False)이면 후보를 임의로 확정안이라 말하지 않는다 —
+    "후보·확정 오인 0건" 조건."""
+    llm = ScriptedLLM()
+    state = _start(llm)
+    assert state["phase"] == "discussion_complete"
+    state = {**state, "idea_locked": False, "provisional_idea": {"title": "검토 중인 후보"}}
+
+    state = reply_ideation_conversation(
+        previous_state=state,
+        user_message="이 회의에서 사용자가 최종적으로 확정한 해결 방향은 무엇인가요?",
+        llm_call=llm,
+    )
+
+    assert state["request_type"] == "session_state_query"
+    committee_message = next(m for m in reversed(state["messages"]) if m["speaker_id"] != "user")
+    assert committee_message["content"].startswith("아직 최종 확정된 아이디어가 없습니다.")
+    # 잠정 후보 제목("검토 중인 후보")이 확정안으로 둔갑해 나오면 안 된다.
+    assert "검토 중인 후보" not in committee_message["content"].split(".")[0]
+
+
+def test_reply_session_state_query_idea_locked_yes_no_questions():
+    llm = ScriptedLLM()
+    state = _start_with_confirmed_idea(llm)
+
+    state = reply_ideation_conversation(
+        previous_state=state, user_message="현재 아이디어가 확정됐나요?", llm_call=llm
+    )
+    committee_message = next(m for m in reversed(state["messages"]) if m["speaker_id"] != "user")
+    assert committee_message["content"].startswith("아이디어가 최종 확정되어 잠겼습니다.")
+
+
+def test_reply_session_state_query_current_phase_question():
+    llm = ScriptedLLM()
+    state = _start_with_confirmed_idea(llm)
+
+    state = reply_ideation_conversation(
+        previous_state=state, user_message="지금 회의는 어느 단계인가요?", llm_call=llm
+    )
+    committee_message = next(m for m in reversed(state["messages"]) if m["speaker_id"] != "user")
+    assert committee_message["content"].startswith("현재 회의는 '전문가 토론' 단계입니다.")
+
+
+def test_reply_session_state_query_provisional_idea_question():
+    llm = ScriptedLLM()
+    state = _start(llm)
+    state = {**state, "provisional_idea": {"title": "잠정 후보 A"}}
+
+    state = reply_ideation_conversation(
+        previous_state=state, user_message="현재 임시로 선택된 아이디어는 무엇인가요?", llm_call=llm
+    )
+    committee_message = next(m for m in reversed(state["messages"]) if m["speaker_id"] != "user")
+    assert committee_message["content"].startswith("현재 검증 중인 잠정 후보는 '잠정 후보 A'입니다.")
+
+
+def test_reply_session_state_query_validation_result_question():
+    llm = ScriptedLLM()
+    state = _start(llm)
+    state = {
+        **state,
+        "validation_result": {"planning": {"value_worth_solving": "충분"}, "technical": None},
+    }
+
+    state = reply_ideation_conversation(
+        previous_state=state, user_message="검증 결과는 어떻게 나왔나요?", llm_call=llm
+    )
+    committee_message = next(m for m in reversed(state["messages"]) if m["speaker_id"] != "user")
+    assert committee_message["content"].startswith(
+        "기획 검증은 완료되었고, 기술 검증은 아직 진행되지 않았습니다."
+    )
+
+
+def test_discussion_node_falls_back_to_topic_query_when_current_user_input_missing():
+    """current_user_input이 없는 구버전 세션(하위 호환) — reply_ideation_conversation/
+    start_ideation_conversation을 거치지 않고 discussion 노드를 직접 부르는 옛 호출부
+    (예: ai/rag/evaluation/rag_quality/final_answer_eval.py)에서는 이 필드가 없으므로,
+    기존처럼 _topic_query(user_idea 기반) 매칭으로 폴백해야 한다 — 새 필드가 없어도
+    기존 동작이 깨지지 않아야 한다는 요청 조건."""
+    llm = ScriptedLLM()
+    state = dict(
+        initial_conv_state(
+            "CONV-FALLBACK",
+            NOTICE_AND_CRITERIA,
+            {"description": "최종 확정한 아이디어가 뭔가요?"},
+        )
+    )
+    state["idea_locked"] = True
+    state["selected_idea"] = {"title": "상대적 기준 검토 방식"}
+    state["request_type"] = "session_state_query"
+    # current_user_input을 의도적으로 채우지 않는다(하위 호환 시나리오 재현).
+    assert "current_user_input" not in state or state.get("current_user_input") is None
+
+    update = make_conv_discussion_node("planning_expert", llm)(state)
+    message = update["messages"][0]
+    assert message["content"].startswith("사용자가 최종 확정한 아이디어는 '상대적 기준 검토 방식'입니다.")
+
+
+# ---------------------------------------------------------------------------
 # 6. 사용자가 확정하기 전에는 idea_proposal이 생기지 않는지 + finalize를 불러야만 생기는지
 # ---------------------------------------------------------------------------
 
