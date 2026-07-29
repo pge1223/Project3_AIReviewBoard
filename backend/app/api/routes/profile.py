@@ -23,6 +23,5 @@ async def update_my_profile(
 ):
     user_email = get_current_user(authorization)
     dump = request.model_dump()
-    print(f"[PROFILE PUT] received: {dump}")  # 임시 로그
     updated = await user_repo.upsert_profile(user_email, dump)
     return UserProfileResponse(**updated["profile"])
