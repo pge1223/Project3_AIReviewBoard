@@ -883,6 +883,11 @@ def _serialize_state(state: IdeationConvState) -> dict:
         "solution_directions": state.get("solution_directions", []),
         "idea_evolution": state.get("idea_evolution", []),
         "provisional_idea": state.get("provisional_idea"),
+        # 용준/Claude(2026-07-30, 요청: specification_completion 실제 웹 검증) — idea_spec
+        # (필드별 unknown/proposed/validated/user_confirmed 상태)이 그래프 state에는
+        # 채워지는데 이 직렬화 함수가 노출하지 않아, 프론트가 값을 읽을 방법이 없었다
+        # (실측: /reply 응답에 idea_spec 자체가 없음). 순수 추가 필드 — 구버전 세션은 None.
+        "idea_spec": state.get("idea_spec"),
         "validation_result": state.get("validation_result"),
         "user_confirmed": state.get("user_confirmed", False),
         "idea_locked": state.get("idea_locked", False),
