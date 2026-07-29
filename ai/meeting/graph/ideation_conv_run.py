@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -22,6 +23,7 @@ from .ideation_conv_problem import _select_areas_by_action_payload
 from .ideation_conv_nodes import (
     PHASE_TO_PENDING_PERSONA,
     REVISION_TRIGGER_STANCES,
+    _most_recent_message_by,
     _route_next_expert_turn,
     _runtime_scope_for,
     classify_query_type,
@@ -323,6 +325,73 @@ def _reply_message_type_for(previous_state: IdeationConvState) -> str:
     return "answer"
 
 
+# 용준/Claude(2026-07-30, 요청: "실제 선택지가 없는데 1번/2번을 선택하라고 요구하는 문제" —
+# 사용자가 진행자의 번호 선택지에 혼란/이의를 제기하는 표현을 결정적으로 감지한다. LLM을
+# 쓰지 않는다 — awaiting_user_decision 자체가 이미 자유 발언으로 취급돼 어떤 게이트도 거치지
+# 않았던 phase이므로(PHASE_TO_PENDING_PERSONA에 없음, 아래 참고), 이 표현이 다음 회의 턴의
+# LLM에게 그대로 "사용자의 답변"으로 넘어가 임의 해석·다음 쟁점 진행을 유발했다.
+_DECISION_CLARIFICATION_PATTERNS = (
+    re.compile(r"선택지.{0,6}(안\s*(보이|보여)|없)"),
+    re.compile(r"옵션.{0,6}(안\s*(보이|보여)|없)"),
+    re.compile(r"(뭐|무엇|뭘)\s*(를|을)?\s*고르"),
+    re.compile(r"\d\s*번.{0,10}\d\s*번.{0,10}(뭔데|무엇|뭐)"),
+    re.compile(r"다시\s*(보여|알려)"),
+    re.compile(r"안\s*(보이는데|보여)"),
+)
+
+
+def _is_decision_choice_clarification_request(text: str) -> bool:
+    """진행자가 방금 번호 선택지를 제시했는데(phase=="awaiting_user_decision"), 사용자가
+    "선택지가 안 보여"/"1번과 2번이 뭔데?"/"뭐를 고르라는 거야?"/"옵션이 없는데?"/"다시
+    보여줘" 류로 되묻는 표현인지 결정적으로 판별한다. True면 이 메시지를 선택 응답으로
+    소비하지 않고 같은 선택지를 다시 보여준다(요청 3번)."""
+    normalized = (text or "").strip()
+    if not normalized:
+        return False
+    return any(pattern.search(normalized) for pattern in _DECISION_CLARIFICATION_PATTERNS)
+
+
+def _resend_decision_choices_state(
+    *, previous_state: IdeationConvState, user_message: str
+) -> IdeationConvState | None:
+    """사용자의 선택지 관련 clarification 요청에 대해, 마지막 진행자 메시지의 선택지
+    (structured.choices/decision_options)를 그대로 다시 보여주는 새 진행자 메시지를 만든다.
+    active_issue_id/phase/pending_question 등은 전혀 바꾸지 않는다(요청: "active_issue 및
+    phase 자동 진행 금지" — 사용자가 아직 원래 선택지에 답하지 않았을 뿐이다). 재표시할
+    선택지 자체가 없으면(구버전 세션 등, structured.choices가 비어 있으면) None을 반환해
+    호출부가 기존 경로(자유 발언 처리)로 안전하게 폴백하게 한다."""
+    last_facilitator = _most_recent_message_by(previous_state["messages"], "ideation_facilitator")
+    if last_facilitator is None:
+        return None
+    last_structured = last_facilitator.get("structured") or {}
+    choices = last_structured.get("choices") or []
+    if not choices:
+        return None
+
+    answer_message = _new_user_message(user_message, previous_state["round"], message_type="interjection")
+    reclarification_message = ConvMessage(
+        message_id=f"MSG-{uuid.uuid4().hex[:10]}",
+        speaker_id="ideation_facilitator",
+        speaker_name="진행자",
+        role="진행자",
+        round=previous_state["round"],
+        message_type="question",
+        content="선택지를 다시 안내해 드릴게요. 아래 중 하나를 선택해 주세요.",
+        referenced_message_ids=[],
+        evidence=[],
+        created_at=datetime.now(timezone.utc).isoformat(),
+        structured={**last_structured, "choices": choices},
+    )
+    return IdeationConvState(
+        **{
+            **previous_state,
+            "messages": previous_state["messages"] + [answer_message, reclarification_message],
+            # phase/active_issue_id/pending_question 등은 그대로 유지 — 사용자는 아직 원래
+            # 질문에 답하지 않았다.
+        }
+    )
+
+
 def _new_facilitator_message(content: str, round_number: int) -> ConvMessage:
     """후보 재생성 상한 안내와 같이 그래프 노드를 거치지 않고 바로
     반환해야 하는 진행자 메시지를 만든다."""
@@ -541,6 +610,8 @@ def start_ideation_conversation(
     index_target_evidence: IndexTargetEvidenceFn | None = None,
     evidence_planner=None,
     external_evidence_lookup=None,
+    similar_case_lookup=None,
+    compose_evidence_pool=None,
     on_progress: IdeationConvProgressCallback | None = None,
     on_snapshot: IdeationConvSnapshotCallback | None = None,
     application_form_items: list[dict] | None = None,
@@ -568,6 +639,8 @@ def start_ideation_conversation(
         index_target_evidence=index_target_evidence,
         evidence_planner=evidence_planner,
         external_evidence_lookup=external_evidence_lookup,
+        similar_case_lookup=similar_case_lookup,
+        compose_evidence_pool=compose_evidence_pool,
     )
     state = initial_conv_state(
         session_id, notice_and_criteria, user_idea, max_rounds=max_rounds,
@@ -609,6 +682,8 @@ def retry_failed_ideation_conversation_node(
     index_target_evidence: IndexTargetEvidenceFn | None = None,
     evidence_planner=None,
     external_evidence_lookup=None,
+    similar_case_lookup=None,
+    compose_evidence_pool=None,
     on_progress: IdeationConvProgressCallback | None = None,
     on_snapshot: IdeationConvSnapshotCallback | None = None,
 ) -> IdeationConvState:
@@ -631,6 +706,8 @@ def retry_failed_ideation_conversation_node(
         index_target_evidence=index_target_evidence,
         evidence_planner=evidence_planner,
         external_evidence_lookup=external_evidence_lookup,
+        similar_case_lookup=similar_case_lookup,
+        compose_evidence_pool=compose_evidence_pool,
     )
     retry_state = IdeationConvState(**{**previous_state, "phase": retry_phase, "failed_node": None})
     baseline_message_count = len(retry_state.get("messages") or [])
@@ -989,6 +1066,8 @@ def reply_ideation_conversation(
     index_target_evidence: IndexTargetEvidenceFn | None = None,
     evidence_planner=None,
     external_evidence_lookup=None,
+    similar_case_lookup=None,
+    compose_evidence_pool=None,
     on_progress: IdeationConvProgressCallback | None = None,
     on_snapshot: IdeationConvSnapshotCallback | None = None,
     stop_after_expert_turn: bool = False,
@@ -1098,12 +1177,29 @@ def reply_ideation_conversation(
             index_target_evidence=index_target_evidence,
             evidence_planner=evidence_planner,
             external_evidence_lookup=external_evidence_lookup,
+            similar_case_lookup=similar_case_lookup,
+            compose_evidence_pool=compose_evidence_pool,
         )
         restart_baseline = len(restart_state["messages"])
         restart_result = _drive_graph(
             graph, restart_state, on_progress, on_snapshot, stop_after_expert_turn=stop_after_expert_turn
         )
         return _guard_pre_lock_messages(restart_result, restart_baseline)
+
+    # 용준/Claude(2026-07-30, 요청: "실제 선택지가 없는데 1번/2번을 선택하라고 요구하는
+    # 문제") — awaiting_user_decision은 PHASE_TO_PENDING_PERSONA에 없어 아래 sufficiency
+    # 게이트를 거치지 않고 곧바로 apply_user_answer로 넘어갔다(자유 발언 취급). 사용자가
+    # 방금 진행자가 제시한 선택지에 대해 "안 보인다"/"뭘 고르라는 거야" 류로 되물으면, 그
+    # 자유 발언 취급 규칙을 그대로 적용하지 않고 같은 선택지를 다시 보여준다 — active_issue/
+    # phase를 그대로 두고, 이 메시지를 선택값으로 저장하거나 다음 쟁점으로 넘기지 않는다.
+    if previous_state["phase"] == "awaiting_user_decision" and _is_decision_choice_clarification_request(
+        user_message
+    ):
+        resend_state = _resend_decision_choices_state(previous_state=previous_state, user_message=user_message)
+        if resend_state is not None:
+            if on_progress is not None:
+                on_progress(_progress(resend_state))
+            return resend_state
 
     pending_persona = PHASE_TO_PENDING_PERSONA.get(previous_state["phase"])
     extra_message: ConvMessage | None = None
@@ -1173,6 +1269,8 @@ def reply_ideation_conversation(
         index_target_evidence=index_target_evidence,
         evidence_planner=evidence_planner,
         external_evidence_lookup=external_evidence_lookup,
+        similar_case_lookup=similar_case_lookup,
+        compose_evidence_pool=compose_evidence_pool,
     )
     reply_baseline = len(state["messages"])
     result_state = _drive_graph(
@@ -1201,6 +1299,8 @@ def continue_ideation_expert_turn(
     index_target_evidence: IndexTargetEvidenceFn | None = None,
     evidence_planner=None,
     external_evidence_lookup=None,
+    similar_case_lookup=None,
+    compose_evidence_pool=None,
     on_progress: IdeationConvProgressCallback | None = None,
     on_snapshot: IdeationConvSnapshotCallback | None = None,
 ) -> IdeationConvState:
@@ -1278,6 +1378,8 @@ def continue_ideation_expert_turn(
         index_target_evidence=index_target_evidence,
         evidence_planner=evidence_planner,
         external_evidence_lookup=external_evidence_lookup,
+        similar_case_lookup=similar_case_lookup,
+        compose_evidence_pool=compose_evidence_pool,
     )
     turn_baseline = len(state["messages"])
     result_state = _drive_graph(graph, state, on_progress, on_snapshot, stop_after_expert_turn=True)

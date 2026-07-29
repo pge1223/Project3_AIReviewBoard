@@ -62,6 +62,16 @@ logger = logging.getLogger(__name__)
 # 적용은 주입된 함수(호출부)가 알아서 하게 한다.
 ClaimGroundingFn = Callable[[str, Any, list[dict]], dict]
 ExternalEvidenceLookupFn = Callable[[str, str], dict]
+# 용준/Claude(2026-07-29, 요청: target/criteria/외부근거/전문가판단 분리) — RAG-006(유사
+# 공공서비스 사례)도 RAG-007(external_evidence_lookup)과 동일한 경계 원칙을 따른다: 실제
+# 구현(ai/rag/orchestration/ideation_similar_case_service.py)은 backend가 주입하고, 이
+# 파일은 (persona_id, query) -> dict({"similar_cases": [...], "warnings": [...]}) 라는
+# 모양만 안다.
+SimilarCaseLookupFn = Callable[[str, str], dict]
+# compose_ideation_evidence_pool(ai/rag/orchestration/ideation_evidence_service.py)의 순수
+# 병합 로직도 같은 이유로 주입된다 — ai/meeting/graph는 ai.rag를 import하지 않는다
+# (ai/rag/tests/test_meeting_evidence_service.py::TestScopeBoundary가 이 경계를 강제한다).
+ComposeEvidencePoolFn = Callable[..., list[dict]]
 
 
 def _lookup_discussion_external_evidence(
@@ -98,6 +108,37 @@ def _lookup_discussion_external_evidence(
         "used_public_api_search": bool(result.get("used_public_api_search")),
         "warnings": list(result.get("warnings") or []),
     }
+
+
+def _lookup_discussion_similar_cases(
+    lookup: SimilarCaseLookupFn | None,
+    persona_id: str,
+    query: str,
+) -> tuple[list[dict], dict]:
+    """RAG-006(유사 공공서비스 사례) 조회. _lookup_discussion_external_evidence와 동일한
+    fail-closed 계약 — lookup이 없거나(use_rag 미사용) 예외/빈 결과여도 회의는 그대로
+    진행된다. similar_success_cases 컬렉션이 비어 있으면 그냥 빈 리스트가 온다(가짜 사례를
+    만들지 않는다)."""
+    empty_meta: dict = {"warnings": []}
+    if lookup is None:
+        return [], empty_meta
+    try:
+        result = lookup(persona_id, f"{query} 유사 사례 공공서비스")
+    except Exception:
+        logger.exception("Similar case lookup failed during discussion")
+        return [], empty_meta
+    if not isinstance(result, dict):
+        return [], empty_meta
+
+    items = []
+    for item in result.get("similar_cases") or []:
+        if not isinstance(item, dict):
+            continue
+        quote = str(item.get("quote") or item.get("short_summary") or item.get("text") or "").strip()
+        if not quote or not str(item.get("source_url") or "").strip():
+            continue
+        items.append({**item, "quote": quote, "text": quote, "reference_only": True})
+    return items, {"warnings": list(result.get("warnings") or [])}
 
 
 def _merge_discussion_external_evidence(
@@ -631,6 +672,9 @@ def _evidence_anchor_response(raw: dict, retrieved: list[dict], persona_id: str)
         item
         for item in retrieved
         if isinstance(item, dict)
+        and not item.get("summary_only")
+        and item.get("source_type") != "official_page_summary"
+        and item.get("allow_grounded_claim") is not False
         and isinstance(item.get("ref"), str)
         and item.get("ref")
         and isinstance(item.get("quote") or item.get("text"), str)
@@ -688,6 +732,105 @@ def _evidence_anchor_response(raw: dict, retrieved: list[dict], persona_id: str)
         "needs_user_input": False,
         "user_question": None,
         "evidence_first_fallback": True,
+    }
+
+
+# 용준/Claude(2026-07-29, 요청: target/criteria/외부근거/전문가판단 분리) — source_type
+# (ai/rag/orchestration/ideation_evidence_service.py::compose_ideation_evidence_pool이
+# 태깅) 값을 화면 표시용 4개 버킷 중 하나로 묶는다. document_role과 겹치는 값(target/
+# criteria)은 별도 상수로 두고, 외부 자료 계열은 전부 "외부 근거" 하나로 묶는다 — 사용자
+# 요구사항이 카드 안 metadata(source_type/organization/...)로 세부 종류를 보여주는 것이지
+# 버킷 자체를 더 쪼개는 것이 아니기 때문이다.
+_TARGET_SOURCE_TYPE = "target"
+_CRITERIA_SOURCE_TYPE = "criteria"
+_EXTERNAL_SOURCE_TYPES = frozenset(
+    {
+        "official_statistics",
+        "official_report",
+        "similar_case",
+        "press_release",
+        "news",
+        "external_other",
+        "official_page_summary",
+    }
+)
+
+
+def _classify_linked_evidence_buckets(grounding: dict, evidence_pool: list[dict]) -> dict:
+    """grounding["claim_evidence_links"](claim_id 단위로 실제 연결된 (ref, chunk_id) 쌍)과
+    evidence_pool(이번 턴 retrieved — source_type이 태깅된 상태)을 대조해 화면 표시용 4개
+    버킷을 산출한다. 순수 함수이며 claim_grounding.py의 검증 결과 자체는 바꾸지 않는다 —
+    이미 실제로 인용·검증된 근거만 재분류하는 추가(additive) 레이어다.
+
+    검색만 되고 어떤 claim에도 실제로 인용되지 않은 evidence_pool 항목은 어느 버킷에도
+    들어가지 않는다(요청: 근거 보기에는 실제로 연결된 자료만 노출)."""
+    source_type_by_key: dict[str, str] = {}
+    # 용준/Claude(2026-07-30, 요청: "사용자 답변은 EvidenceToggle에 절대 표시하지 마세요") —
+    # ideation_target_indexing_service.py::index_user_answer_as_target()가 사용자 채팅
+    # 답변을 document_role="target"(선택된 아이디어와 동일)으로 색인하지만
+    # ideation_source_type="user_session_answer"로 구분해 둔다. 이 태그를 여기서도 함께
+    # 봐야 "선택 아이디어(ideation_source_type=ideation_candidate 또는 None)"와 "사용자가
+    # 회의 중 답한 채팅 원문"이 같은 target 버킷에 섞이지 않는다.
+    ideation_source_type_by_key: dict[str, str] = {}
+    for item in evidence_pool:
+        if not isinstance(item, dict):
+            continue
+        source_type = item.get("source_type") or item.get("document_role")
+        ideation_source_type = item.get("ideation_source_type")
+        if not source_type:
+            continue
+        for key in (item.get("ref"), item.get("chunk_id")):
+            if key:
+                source_type_by_key[key] = source_type
+                if ideation_source_type:
+                    ideation_source_type_by_key[key] = ideation_source_type
+
+    reviewed_target_refs: list[str] = []
+    linked_criteria_refs: list[str] = []
+    linked_external_evidence_refs: list[str] = []
+    linked_claim_ids: set[str] = set()
+
+    for link in grounding.get("claim_evidence_links") or []:
+        linked_claim_ids.add(link["claim_id"])
+        for ref, chunk_id in zip(link.get("evidence_refs") or [], link.get("chunk_ids") or []):
+            source_type = source_type_by_key.get(ref) or source_type_by_key.get(chunk_id)
+            ideation_source_type = ideation_source_type_by_key.get(ref) or ideation_source_type_by_key.get(chunk_id)
+            if source_type == _TARGET_SOURCE_TYPE:
+                if ideation_source_type != "user_session_answer":
+                    reviewed_target_refs.append(chunk_id)
+                # user_session_answer는 어느 버킷에도 넣지 않는다 — 검토 대상(선택 아이디어)이
+                # 아니라 회의 중 사용자 채팅 원문이므로 근거 카드로 노출하지 않는다.
+            elif source_type == _CRITERIA_SOURCE_TYPE:
+                linked_criteria_refs.append(chunk_id)
+            elif source_type in _EXTERNAL_SOURCE_TYPES:
+                linked_external_evidence_refs.append(chunk_id)
+            # source_type이 미분류/None이면 어느 버킷에도 넣지 않는다 — 근거 없이 지어내지
+            # 않는다는 원칙(_compose_by_document_role의 missing_document_roles와 동일).
+
+    expert_judgment_without_external_evidence = [
+        claim["claim_id"]
+        for claim in grounding.get("claims") or []
+        if claim.get("claim_id") not in linked_claim_ids
+        # linked_claim_ids에 없다는 것은: expert_judgment claim이거나(근거 불필요, 정상),
+        # document_fact/user_provided_fact인데 grounding 검증에 실패해 unsupported로 남은
+        # claim이다 — 두 경우 모두 "화면에 문서 근거로 보여줄 수 없는 주장"이라는 같은
+        # 의미이므로 같은 버킷에 둔다.
+    ]
+
+    def _dedup(seq: list[str]) -> list[str]:
+        seen: set[str] = set()
+        out: list[str] = []
+        for value in seq:
+            if value and value not in seen:
+                seen.add(value)
+                out.append(value)
+        return out
+
+    return {
+        "reviewed_target_refs": _dedup(reviewed_target_refs),
+        "linked_criteria_refs": _dedup(linked_criteria_refs),
+        "linked_external_evidence_refs": _dedup(linked_external_evidence_refs),
+        "expert_judgment_without_external_evidence": expert_judgment_without_external_evidence,
     }
 
 
@@ -1750,6 +1893,7 @@ def _build_message(
     structured: dict | None = None,
     message_id: str | None = None,
     grounding: dict | None = None,
+    evidence_buckets: dict | None = None,
 ) -> ConvMessage:
     """structured는 선택 필드다(요청 9번 — 프런트 "상세 보기" 토글용, 기존 content 문자열은
     그대로 유지한 채 순수 추가). opinion/agreement/disagreement 메시지만 값을 채우고
@@ -1792,6 +1936,14 @@ def _build_message(
             else "insufficient"
             if grounding
             else None
+        ),
+        reviewed_target_refs=list(evidence_buckets["reviewed_target_refs"]) if evidence_buckets else [],
+        linked_criteria_refs=list(evidence_buckets["linked_criteria_refs"]) if evidence_buckets else [],
+        linked_external_evidence_refs=(
+            list(evidence_buckets["linked_external_evidence_refs"]) if evidence_buckets else []
+        ),
+        expert_judgment_without_external_evidence=(
+            list(evidence_buckets["expert_judgment_without_external_evidence"]) if evidence_buckets else []
         ),
     )
 
@@ -2024,17 +2176,13 @@ def resolve_effective_issue(state: IdeationConvState, persona_id: str | None = N
     resolve_retrieval_issue()와 정확히 같은 우선순위를 따르며(아래에서 그 함수가 이 함수의
     title만 재사용하도록 리팩터링했다 — 요청: "_topic_query()가 사용한 issue title/query와
     Planner의 issue가 반드시 동일") 반환하는 title 문자열은 항상 같다."""
-    issue_id = state.get("active_issue_id")
-    if issue_id:
-        title = _active_issue_title(state) or issue_id
-        return {"issue_id": issue_id, "title": title, "source": "active_issue_id"}
-
-    # 용준/Claude(2026-07-29, 요청: expert_analysis_query 단일 응답 규칙 — 실측 버그: "MVP
-    # 기술 위험을 데이터/개인정보/음성 기능에 한정해서" 물었는데 canonical 9개 평가축
-    # 로테이션(_TOPIC_TITLE_KO)이 관련 없는 "로드맵"으로 쟁점을 드리프트시켰다) —
-    # expert_analysis_query는 사용자가 이번 턴에서 명시한 범위 자체가 유일한 쟁점이다.
-    # active_issue_id가 아직 없다고 해서 canonical 주제 로테이션이나 unresolved_issues
-    # 누적 문구로 새 쟁점을 여는 대신, 이번 사용자 질문 원문을 그대로 쟁점/검색어로 쓴다.
+    # 용준/Claude(2026-07-30, 요청: "이전 쟁점이 query를 지배하면 안 됨" — 실측 버그) —
+    # 기존에는 active_issue_id가 이미 있으면(예: 이전 라운드의 "성공 지표" 쟁점) 아래
+    # expert_analysis_query 분기에 아예 도달하지 못해, 사용자가 이번 턴에 명시적으로 다른
+    # 주제(예: "주요 기능/데이터/기술 방향/MVP")를 요청해도 검색어와 쟁점이 계속 이전
+    # 쟁점을 가리켰다. current_user_input은 "사용자가 방금 이 턴에서 무엇을 물었는가"라는
+    # 가장 신선한 신호이므로, expert_analysis_query로 분류된 턴에서는 active_issue_id보다
+    # 먼저 검사한다(요청: current_user_input > active_issue 우선순위).
     if state.get("request_type") == "expert_analysis_query":
         current_user_input = (state.get("current_user_input") or "").strip()
         if current_user_input:
@@ -2043,6 +2191,11 @@ def resolve_effective_issue(state: IdeationConvState, persona_id: str | None = N
                 "title": current_user_input,
                 "source": "current_user_input",
             }
+
+    issue_id = state.get("active_issue_id")
+    if issue_id:
+        title = _active_issue_title(state) or issue_id
+        return {"issue_id": issue_id, "title": title, "source": "active_issue_id"}
 
     if state.get("unresolved_issues"):
         title = " ".join(state["unresolved_issues"])
@@ -2251,6 +2404,15 @@ _QUERY_TYPE_KEYWORDS: dict[str, tuple[tuple[str, int], ...]] = {
         ("기술 위험", 4), ("위험 요소", 3), ("mvp", 3), ("MVP", 3), ("개선 제안", 3),
         ("개선하려면", 2), ("보완하려면", 2), ("어떻게 생각", 2), ("타당한가", 2),
         ("가능할까요", 2),
+        # 용준/Claude(2026-07-30, 요청: "명시적인 분석 범위가 포함된 사용자 요청을
+        # expert_analysis_query로 분류" — 실측: "주요 기능, 필요한 데이터, 기술 구현
+        # 방향, MVP에 대해 회의해줘"가 "MVP" 키워드 하나로만 우연히 임계값을 넘었고,
+        # "MVP"가 빠진 동등한 요청("주요 기능과 필요한 데이터에 대해 얘기해줘")은
+        # ideation_discussion_request로 잘못 떨어졌다. 사용자가 검토 범위를 구체적인
+        # 복합 명사구로 직접 지정하는 표현을 키워드로 추가한다 — "기능"/"데이터" 같은
+        # 단일 일반 명사는 오탐 위험이 커서 넣지 않고, 범위를 명시하는 복합 표현만 넣는다.
+        ("주요 기능", 3), ("필요한 데이터", 3), ("기술 구현 방향", 4), ("기술 구현", 3),
+        ("구현 방향", 3),
     ),
 }
 _FALLBACK_QUERY_TYPE = "ideation_discussion_request"
@@ -4105,12 +4267,33 @@ def resolve_user_input_gate(
             missing_information=missing_information,
             distinct_alternatives=distinct_alternatives,
         )
+        # 용준/Claude(2026-07-30, 요청 1번 — "구조화된 선택지가 실제로 생성되고 UI에
+        # 표시된 경우에만 번호 선택을 요청") — 이 시점까지의 로직(classify_user_decision_topic
+        # 이 product_direction_choice를 distinct_alternatives>=2일 때만 반환하고, 그 외
+        # 템플릿 topic은 항상 2개 옵션을 갖는 고정 템플릿을 씀)상 options가 2개 미만이 될 수
+        # 없지만, 향후 템플릿/분기 추가로 이 불변식이 깨지는 경우를 대비해 여기서 한 번 더
+        # 방어적으로 검사한다. 각 option은 label(제목)과 detail(설명)이 모두 비어 있지
+        # 않아야 한다 — 번호는 있는데 내용이 비어 있는 선택지를 보여주지 않는다.
+        well_formed_options = [
+            option
+            for option in options
+            if isinstance(option, dict)
+            and str(option.get("label") or "").strip()
+            and str(option.get("detail") or "").strip()
+        ]
+        if len(well_formed_options) < 2:
+            return {
+                "resolution_mode": "continue_with_expert_judgment",
+                "decision_topic": None,
+                "blocking_reason_code": "insufficient_structured_options",
+                "near_issue_cap": decision["near_issue_cap"],
+            }
         return {
             "resolution_mode": "require_user_decision",
             "decision_topic": topic,
             "blocking_reason_code": decision["blocking_reason_code"],
             "decision_question": question,
-            "decision_options": options,
+            "decision_options": well_formed_options,
             "decision_default": default_label,
             "fingerprint": fingerprint,
             "near_issue_cap": decision["near_issue_cap"],
@@ -4132,6 +4315,17 @@ def resolve_user_input_gate(
     }
 
 
+def _compose_evidence_pool_fallback(
+    project_items: list[dict], external_items: list[dict], similar_case_items: list[dict]
+) -> list[dict]:
+    """compose_evidence_pool이 주입되지 않았을 때(예: 그래프를 직접 호출하는 구버전 테스트)
+    쓰는 최소 폴백 — RAG-007/006 통합 이전과 동일하게 external_items 상위 3개만 이어붙이고
+    similar_case/source_type 태깅은 하지 않는다(완전히 하위 호환, 실제 병합·우선순위·태깅
+    로직은 ai/rag/orchestration/ideation_evidence_service.py::compose_ideation_evidence_pool이
+    담당한다)."""
+    return list(project_items) + list(external_items[:3])
+
+
 def make_conv_discussion_node(
     persona_id: str,
     llm_call: LLMCall,
@@ -4139,6 +4333,8 @@ def make_conv_discussion_node(
     ground_claims: ClaimGroundingFn | None = None,
     evidence_planner: "EvidencePlanningFn | None" = None,
     external_evidence_lookup: ExternalEvidenceLookupFn | None = None,
+    similar_case_lookup: SimilarCaseLookupFn | None = None,
+    compose_evidence_pool: ComposeEvidencePoolFn | None = None,
 ) -> Callable[[IdeationConvState], dict]:
     """용준/Claude(2026-07-22, 요청: 동적 전문가 회의로 개편): 기획/개발 전문가의 "발언 턴"
     노드. 예전에는 speaks_second/discussion_stage를 빌드 시점에 고정해 "기획 1회 → 개발
@@ -4181,15 +4377,30 @@ def make_conv_discussion_node(
             persona_id,
             query,
         )
+        # 용준/Claude(2026-07-29, 요청: target/criteria/외부근거/전문가판단 분리) — RAG-006
+        # (유사 공공서비스 사례)도 RAG-007과 같은 방식으로 후보를 가져온다. 실제 병합은
+        # compose_evidence_pool(주입, ai.rag.orchestration.ideation_evidence_service::
+        # compose_ideation_evidence_pool)에 위임한다 — project 근거(target/criteria)에는
+        # source_type 태그만 얹고 개수는 그대로 두며, 외부 후보는 우선순위(공식 통계/보고서
+        # > 유사 사례 > 보도자료 > 뉴스) + score로 정렬해 무관한 자료로 quota를 채우지 않고
+        # 최대 몇 건만 남긴다.
+        similar_case_items, similar_case_meta = _lookup_discussion_similar_cases(
+            similar_case_lookup,
+            persona_id,
+            query,
+        )
+        composer = compose_evidence_pool or _compose_evidence_pool_fallback
+        pool = composer(retrieved, external_items, similar_case_items)
+        retrieved = list(pool[: len(retrieved)])
         external_prompt_evidence = [
             {
                 **item,
                 "ref": f"E{len(retrieved) + index + 1}",
                 "claim_type": "document_fact",
             }
-            for index, item in enumerate(external_items[:3])
+            for index, item in enumerate(pool[len(retrieved) :])
         ]
-        retrieved = list(retrieved) + external_prompt_evidence
+        retrieved = retrieved + external_prompt_evidence
         # 용준/Claude(2026-07-22, RAG 근거 유실 수정): evidence_lookup 자체가 None이면(use_rag
         # 미사용 세션) "검색을 아예 안 했다"는 뜻이고, evidence_lookup은 있지만 결과가 빈
         # 배열이면 "검색은 했지만 0건"이다 — 둘 다 result_count=0으로 보이지만 원인이 다르므로
@@ -4514,7 +4725,16 @@ def make_conv_discussion_node(
         # 안내문이 이미 "다음 쟁점으로 이동하지 말라"고 전제한다). resolve_issue_duplicate의
         # 중복 판정/다음 공식 주제 로테이션은 여러 라운드짜리 일반 토론 전용 로직이므로 이
         # 요청 유형에는 아예 적용하지 않고, 이번 턴이 제안한 쟁점을 그대로 쓴다.
-        if state.get("request_type") == "expert_analysis_query" and not state.get("active_issue_id"):
+        #
+        # 용준/Claude(2026-07-30, 요청: "이전 쟁점이 query를 지배하면 안 됨" — 실측 버그) —
+        # 기존에는 "and not state.get('active_issue_id')"가 붙어 있어, 이미 진행 중인 쟁점이
+        # 있을 때(가장 흔한 경우) 사용자가 명시적으로 새 주제를 요청해도 이 분기를 타지 못하고
+        # 아래 resolve_issue_duplicate(다회차 토론 전용 dedup/로테이션)로 빠졌다 — 그 결과
+        # candidate_issue_id(이번 턴 LLM이 resolve_effective_issue의 current_user_input 기반
+        # 쟁점으로 이미 답한 값)가 이전 active_issue_id와 잘못 비교/병합될 수 있었다.
+        # request_type이 expert_analysis_query면 active_issue_id 존재 여부와 무관하게 항상
+        # 이번 턴이 명시한 쟁점을 그대로 채택한다.
+        if state.get("request_type") == "expert_analysis_query":
             issue_dedup = {
                 "issue_id": candidate_issue_id,
                 "issue_title": candidate_issue_title,
@@ -5028,6 +5248,7 @@ def make_conv_discussion_node(
             # 이미 주입됨)를 그대로 저장한다.
             evidence=retrieved,
             grounding=grounding,
+            evidence_buckets=_classify_linked_evidence_buckets(grounding, retrieved),
             # 용준/Claude(2026-07-21, 프런트 상세보기): content(위)는 하위 호환을 위해 그대로
             # 유지하고, 필드별 구조를 선택 정보로 추가한다 — 프런트가 판단/제안만 기본 노출하고
             # 근거/확정/미확정을 "상세 보기"로 접을 수 있게 한다(요청 9번). content를 대체하는

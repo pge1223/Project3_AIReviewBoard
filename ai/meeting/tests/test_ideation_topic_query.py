@@ -198,6 +198,27 @@ def test_resolve_effective_issue_ignores_current_user_input_for_other_request_ty
     assert issue["title"] == "시민 알림의 실행 가능성"
 
 
+def test_resolve_effective_issue_prefers_current_user_input_over_stale_active_issue():
+    """용준/Claude(2026-07-30, 요청: "이전 '성공 지표' 쟁점이 query를 지배하면 안 됨" — 실측
+    버그) — active_issue_id가 이미 채워진 상태(예: 이전 라운드의 "성공 지표" 쟁점)에서도,
+    사용자가 이번 턴에 expert_analysis_query로 명시적으로 다른 주제를 요청하면 그 원문이
+    active_issue_id보다 우선해야 한다. 기존에는 active_issue_id를 먼저 검사해 current_user_input
+    분기에 아예 도달하지 못했다."""
+    state = _state_with_issue(issue_id="success_metrics", issue_title="성공 지표")
+    state["request_type"] = "expert_analysis_query"
+    state["current_user_input"] = "주요 기능, 필요한 데이터, 기술 구현 방향, MVP에 대해 회의해줘"
+
+    issue = resolve_effective_issue(state, "planning_expert")
+
+    assert issue["source"] == "current_user_input"
+    assert issue["title"] == state["current_user_input"]
+    assert "성공 지표" not in issue["title"]
+
+    query = _topic_query(state, "planning_expert")
+    assert "주요 기능" in query
+    assert "성공 지표" not in query
+
+
 def test_resolve_retrieval_issue_skips_resolved_topics():
     state = _state_without_active_issue()
     state["resolved_topics"] = ["problem", "target_user", "core_value", "contest_fit"]
@@ -444,6 +465,22 @@ def test_classify_query_type_session_state():
 def test_classify_query_type_expert_analysis():
     assert classify_query_type("이 기능의 구현 가능성이 어때요?") == "expert_analysis_query"
     assert classify_query_type("데이터 확보 방안과 기술 위험을 개선 제안 해주세요") == "expert_analysis_query"
+
+
+def test_classify_query_type_scoped_analysis_request_without_mvp_keyword():
+    """용준/Claude(2026-07-30, 요청: "명시적인 분석 범위가 포함된 사용자 요청을
+    expert_analysis_query로 분류") — "MVP" 키워드 없이도 "주요 기능/필요한 데이터/기술
+    구현 방향"처럼 검토 범위를 구체적으로 지정하면 expert_analysis_query로 분류돼야
+    한다(이전에는 "MVP"가 우연히 포함된 문장만 통과하고, 동등한 표현인데 "MVP"가 빠진
+    문장은 ideation_discussion_request로 잘못 떨어졌다)."""
+    assert (
+        classify_query_type("주요 기능, 필요한 데이터, 기술 구현 방향, MVP에 대해 회의해줘")
+        == "expert_analysis_query"
+    )
+    assert (
+        classify_query_type("주요 기능과 필요한 데이터에 대해 얘기해줘")
+        == "expert_analysis_query"
+    )
 
 
 def test_classify_query_type_fallback_for_ambiguous_text():
