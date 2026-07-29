@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
+import { ArrowRight, CheckCircle2 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { login } from '../api/authApi'
-import SpaceBackground from '../components/landing/SpaceBackground'
 import './LoginPage.css'
 
 export default function LoginPage() {
@@ -11,9 +11,6 @@ export default function LoginPage() {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
-  // 가은/Claude(2026-07-21): "한 번 로그인하면 자동 로그인" — 뒤로가기/북마크 등으로
-  // 이미 로그인된 상태에서 이 화면에 들어오면 로그인 폼을 다시 보여주지 않고 바로
-  // board로 보낸다.
   useEffect(() => {
     if (localStorage.getItem('auth_token')) {
       navigate('/board', { replace: true })
@@ -27,8 +24,6 @@ export default function LoginPage() {
     try {
       const { access_token } = await login(email, password)
       localStorage.setItem('auth_token', access_token)
-      // 가은/Claude(2026-07-21): board가 이제 기본 진입점이라 로그인 후에도 board로
-      // 보낸다 — "내 프로젝트"는 board 우측 상단 버튼으로 들어간다.
       navigate('/board')
     } catch (err) {
       setError(err.message)
@@ -37,140 +32,85 @@ export default function LoginPage() {
     }
   }
 
-  // 로그인하지 않은 사용자는 회원가입 화면에서 계정을 만든 뒤 입장한다.
-  function handleRegisterClick() {
-    navigate('/register')
-  }
-
   return (
-    <div style={styles.page}>
-      <SpaceBackground />
-      <div className="login-card-glow">
-        <div style={styles.card}>
-          <img src="/images/logo1.png" alt="AI Review Board" style={styles.logo} />
-          <p style={styles.subtitle}>문서를 놓고 전문가들이 회의하는 AI 위원회</p>
+    <main className="login-page">
+      <div className="login-orb login-orb-purple" />
+      <div className="login-orb login-orb-green" />
+      <div className="login-orb login-orb-coral" />
 
-          <form onSubmit={handleSubmit} style={styles.form}>
-            <label style={styles.label}>
-              이메일
-              <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@example.com"
-                style={styles.input}
-                autoComplete="email"
-              />
-            </label>
+      <section className="login-shell" aria-label="AI Review Board 로그인">
+        <div className="login-intro">
+          <div className="login-brand">
+            <img src="/images/logo1.png" alt="AI Review Board" className="login-brand-logo" />
+          </div>
 
-            <label style={styles.label}>
-              비밀번호
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
-                style={styles.input}
-                autoComplete="current-password"
-              />
-            </label>
+          <div className="login-intro-copy">
+            <span className="login-eyebrow">AI REVIEW REVIEW</span>
+            <h1>혼자 고민하던 기획서,<br />AI 전문가와 함께 완성하세요.</h1>
+            <p>
+              여러 관점의 AI 전문가가 공모전 기준을 분석하고,
+              더 설득력 있는 문서로 발전시켜 드립니다.
+            </p>
+          </div>
 
-            {error && <p style={styles.error}>{error}</p>}
-
-            <button type="submit" disabled={loading} style={styles.button}>
-              {loading ? '로그인 중...' : '로그인'}
-            </button>
-          </form>
-
-          <button type="button" style={styles.guestButton} onClick={handleRegisterClick}>
-            회원가입
-          </button>
+          <ul className="login-benefits">
+            <li><CheckCircle2 size={17} /> 공모전 평가 기준 자동 분석</li>
+            <li><CheckCircle2 size={17} /> AI 멘토별 구체적인 피드백</li>
+            <li><CheckCircle2 size={17} /> 개선 과정과 결과를 한눈에 확인</li>
+          </ul>
         </div>
-      </div>
-    </div>
-  )
-}
 
-const styles = {
-  page: {
-    position: 'relative',
-    zIndex: 1,
-    minHeight: '100vh',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  card: {
-    position: 'relative',
-    zIndex: 2,
-    width: 360,
-    background: '#fff',
-    borderRadius: 16,
-    border: '1px solid #ece9f7',
-    boxShadow: '0 8px 24px rgba(124, 77, 255, 0.12)',
-    padding: '40px 32px',
-  },
-  logo: {
-    display: 'block',
-    width: '100%',
-    maxWidth: 240,
-    height: 'auto',
-    margin: '0 auto',
-    borderRadius: 10,
-  },
-  subtitle: {
-    margin: '8px 0 32px',
-    fontSize: 13,
-    color: '#5c7a95',
-    textAlign: 'center',
-  },
-  form: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 16,
-  },
-  label: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 6,
-    fontSize: 13,
-    color: '#3d5a75',
-  },
-  input: {
-    padding: '10px 12px',
-    fontSize: 14,
-    border: '1px solid #ded9f2',
-    borderRadius: 8,
-    outline: 'none',
-    background: '#faf9ff',
-    color: '#1f2333',
-  },
-  error: {
-    margin: 0,
-    fontSize: 13,
-    color: '#d64545',
-  },
-  button: {
-    marginTop: 8,
-    padding: '12px',
-    fontSize: 14,
-    fontWeight: 600,
-    color: '#fff',
-    background: '#7c4dff',
-    border: 'none',
-    borderRadius: 8,
-    cursor: 'pointer',
-  },
-  guestButton: {
-    marginTop: 10,
-    width: '100%',
-    padding: '12px',
-    fontSize: 14,
-    fontWeight: 600,
-    color: '#4b4f63',
-    background: 'transparent',
-    border: '1px solid #ded9f2',
-    borderRadius: 8,
-    cursor: 'pointer',
-  },
+        <div className="login-form-side">
+          <div className="login-form-card">
+            <div className="login-mobile-brand">
+              <img src="/images/logo1.png" alt="AI Review Board" className="login-brand-logo" />
+            </div>
+            <div className="login-form-heading">
+              <span className="login-badge">다시 만나서 반가워요</span>
+              <h2>로그인</h2>
+              <p>계정에 로그인하고 작업을 이어가세요.</p>
+            </div>
+
+            <form onSubmit={handleSubmit} className="login-form">
+              <label>
+                <span>이메일</span>
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="you@example.com"
+                  autoComplete="email"
+                  required
+                />
+              </label>
+
+              <label>
+                <span>비밀번호</span>
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="비밀번호를 입력하세요"
+                  autoComplete="current-password"
+                  required
+                />
+              </label>
+
+              {error && <p className="login-error" role="alert">{error}</p>}
+
+              <button type="submit" className="login-submit" disabled={loading}>
+                <span>{loading ? '로그인 중...' : '로그인'}</span>
+                {!loading && <ArrowRight size={18} />}
+              </button>
+            </form>
+
+            <div className="login-divider"><span>처음 방문하셨나요?</span></div>
+            <button type="button" className="login-register" onClick={() => navigate('/register')}>
+              회원가입
+            </button>
+          </div>
+        </div>
+      </section>
+    </main>
+  )
 }
