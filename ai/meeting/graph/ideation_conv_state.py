@@ -417,6 +417,17 @@ class ConvMessage(TypedDict):
     missing_information: list[str]
     evidence_status: str | None
     sufficiency: str | None
+    # 용준/Claude(2026-07-29, 요청: target/criteria/외부근거/전문가판단 분리) — evidence(위)는
+    # "이번 턴에 주입된 검색 결과 전체"(감사용, 화면에 그대로 노출하지 않음)이고,
+    # linked_evidence_refs(위)는 "실제로 claim에 연결된 chunk_id 전체"인데 그 안에
+    # target(검토 대상)/criteria(공모전 근거)/외부 근거가 섞여 있어 프론트가 구분할 수
+    # 없었다. 아래 4개 필드는 linked_evidence_refs를 source_type 기준으로 재분류한 신규
+    # 선택 필드다(claims/grounding이 없는 메시지 타입은 빈 리스트로 채운다 — 기존 세션
+    # 데이터와 하위 호환, TypedDict라 런타임 강제되지 않는다).
+    reviewed_target_refs: list[str]
+    linked_criteria_refs: list[str]
+    linked_external_evidence_refs: list[str]
+    expert_judgment_without_external_evidence: list[str]
 
 
 class IdeationConvState(TypedDict):
@@ -592,6 +603,18 @@ class IdeationConvState(TypedDict):
     # 사용자가 최종 확정하기 전까지는 이 필드만 채워지고 selected_idea는 그대로 None이다
     # (요청 3번: "잠정 후보 선택"과 "최종 아이디어 확정"은 상태상 구분되어야 한다).
     provisional_idea: dict | None
+    # 용준/Claude(2026-07-30, 요청: "미확정 필드 확인 -> 필드별 논의 -> 구조화 저장 ->
+    # 검증 -> 사용자 확인" 흐름) — provisional_idea의 자연어 필드(main_features 등)와는
+    # 별도로, 필수 설계 필드마다 상태 기계(unknown/proposed/validated/user_confirmed)를
+    # 추적한다. 각 값은 {"value","status","source_turn_ids","evidence_refs","updated_by",
+    # "updated_at","expert_judgment"} 구조다(ideation_conv_problem.py::_new_field_spec).
+    # provisional_idea가 새로 채택될 때만 초기화되고(make_specification_completion_node가
+    # 최초 진입 시 부트스트랩), 그 외에는 이 필드 하나만 갱신된다 — provisional_idea
+    # 자체(자연어 표현)는 건드리지 않는다(하위 호환 유지).
+    idea_spec: dict | None
+    # 필드별 specification_completion 논의 횟수(요청 8번 — 필드당 최대 2회, 무한 반복
+    # 방지). provisional_idea가 바뀌면 idea_spec과 함께 초기화된다.
+    spec_completion_rounds: dict
     # idea_validation이 채우는 기획/개발 관점 검증 결과. planning_validation_completed/
     # technical_validation_completed(요청 5·7번)는 이 dict의 해당 섹션이 채워졌는지로
     # 코드가 판단한다.
@@ -864,6 +887,8 @@ def initial_conv_state(
         conflict_round_count=0,
         validation_revise_count=0,
         provisional_idea=None,
+        idea_spec=None,
+        spec_completion_rounds={},
         validation_result=None,
         user_confirmed=False,
         idea_locked=False,

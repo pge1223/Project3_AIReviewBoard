@@ -6210,6 +6210,42 @@ def make_canvas_update_node(llm_call: LLMCall) -> Callable[[IdeationConvState], 
     return node
 
 
+# 용준/Claude(2026-07-30, 요청: "필드 값이 자연어 발언에만 존재하고 provisional_idea
+# 구조에 저장되지 않았다면 실패로 간주" — 실측: 상세 화면 main_features/required_data 등이
+# 계속 "아직 확정되지 않음"으로 남았다) — idea_spec(ideation_conv_problem.py::
+# make_specification_completion_node가 채움) 필드명과 idea_proposal(PROPOSAL_ROWS,
+# 프론트 IdeationConversationScreen.jsx) 필드명이 서로 다르므로 매핑한다. synthesis LLM이
+# 이 필드들을 대화 기록만으로 재구성하길 기대하지 않고, 이미 위원들이 구조화 저장한 값을
+# 코드로 직접 덮어써 항상 실제 값이 나가도록 보장한다.
+_IDEA_SPEC_TO_PROPOSAL_FIELD: dict[str, str] = {
+    "core_user_value": "core_user_value",
+    "main_features": "key_features",
+    "required_data": "required_data",
+    "technical_approach": "tech_direction",
+    "mvp_scope": "mvp_scope",
+    "differentiation": "differentiation",
+    "risks_and_mitigations": "risks_and_mitigations",
+    "success_metrics": "success_metrics",
+    "assumptions_to_validate": "unverified_assumptions",
+}
+
+
+def _merge_idea_spec_into_proposal(raw: dict, idea_spec: dict | None) -> dict:
+    if not idea_spec:
+        return raw
+    merged = dict(raw)
+    for spec_field, proposal_field in _IDEA_SPEC_TO_PROPOSAL_FIELD.items():
+        entry = idea_spec.get(spec_field)
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("status", "unknown") == "unknown":
+            continue
+        value = entry.get("value")
+        if value:
+            merged[proposal_field] = value
+    return merged
+
+
 def make_conv_synthesis_node(llm_call: LLMCall) -> Callable[[IdeationConvState], dict]:
     """사용자가 확정 버튼을 눌렀을 때만 실행되는 최종 종합 노드(요청 9~10번 — 오케스트레이션
     레벨에서 phase="finalizing"으로만 진입 가능하게 막아 두었으므로, 이 노드 자체가 또
@@ -6239,6 +6275,7 @@ def make_conv_synthesis_node(llm_call: LLMCall) -> Callable[[IdeationConvState],
         used = state.get("llm_calls_used", 0) + 1
         if not ok:
             return {"phase": "failed", "failed_node": "conv_synthesis", "llm_calls_used": used}
+        raw = _merge_idea_spec_into_proposal(raw, state.get("idea_spec"))
         return {"idea_proposal": raw, "phase": "finalized", "llm_calls_used": used}
 
     return node

@@ -56,6 +56,7 @@ from .ideation_conv_state import (
     MAX_CONFLICT_ROUNDS,
     MAX_PROBLEM_REGENERATIONS,
     MAX_VALIDATION_REVISE_ROUNDS,
+    ConvMessage,
     IdeationConvState,
     critique_count,
     meets_conflict_and_merge_min_conditions,
@@ -1440,6 +1441,11 @@ def make_provisional_from_merge_node(
             "selected_idea": None,
             "idea_locked": False,
             "validation_result": None,
+            # 용준/Claude(2026-07-30, 요청: specification_completion 흐름 추가) — 새
+            # provisional_idea가 채택될 때마다(재결합 라운드 포함, 방향 자체가 바뀌므로)
+            # 필드별 논의를 처음부터 다시 시작한다.
+            "idea_spec": None,
+            "spec_completion_rounds": {},
             # 용준/Claude(2026-07-28) — 여기서 validation_revise_count를 리셋하지 않는다.
             # 이 노드는 idea_conflict_and_merge가 "proceed"할 때마다 실행되는데, 그 "proceed"가
             # 검증 실패 후 재결합 라운드에서 온 것일 수도 있다(정확히 그 경우를 위해 이
@@ -1447,7 +1453,12 @@ def make_provisional_from_merge_node(
             # 늘려놓은 값이 매 재결합마다 지워져 자동 반복 상한이 무력화된다.
             "idea_evolution": evolution_records,
             "messages": [bridge_message],
-            "phase": "idea_validation",
+            # 용준/Claude(2026-07-30, 요청: "최종 validation으로 바로 넘어가지 말고
+            # specification_completion 단계를 추가") — 기존에는 곧바로 "idea_validation"
+            # (validate_planning)으로 갔다. main_features/required_data 등 설계 필드가
+            # 아직 unknown인 채로 검증·최종 추천으로 넘어가던 문제(실측: 상세 화면에
+            # "아직 확정되지 않음"이 계속 남음)를 이 단계가 막는다.
+            "phase": "specification_completion",
         }
 
     return node
@@ -1687,10 +1698,346 @@ def make_provisional_selection_node(
         result["idea_locked"] = False
         result["validation_result"] = None
         result["validation_revise_count"] = 0
-        result["phase"] = "idea_validation"
+        # 용준/Claude(2026-07-30, 요청: specification_completion 흐름 추가) — 아래
+        # make_provisional_from_merge_node와 동일한 이유로 새 provisional_idea마다
+        # idea_spec을 리셋하고, 곧바로 idea_validation이 아니라 specification_completion을
+        # 먼저 거친다(레거시 카드 선택 경로도 동일한 게이트를 통과해야 한다).
+        result["idea_spec"] = None
+        result["spec_completion_rounds"] = {}
+        result["phase"] = "specification_completion"
         return result
 
     return node
+
+
+# ============================================================================
+# 7.5 specification_completion — main_features/required_data 등 설계 필드를
+#     "아직 확정되지 않음"으로 남기지 않고 위원 제안(proposed)으로 채운다
+# ============================================================================
+#
+# 용준/Claude(2026-07-30, 요청: "미확정 필드 확인 -> 필드별 논의 -> 구조화 저장 -> 검증 ->
+# 사용자 확인" 흐름 추가) — 실측: 회의가 여러 턴 진행돼도 상세 화면의 main_features/
+# required_data/technical_approach/mvp_scope/risks_and_mitigations/success_metrics/
+# assumptions_to_validate가 계속 "아직 확정되지 않음"으로 남았다. 원인은 provisional_idea
+# 생성 함수(solution_direction_to_idea, ideation_conv_discovery.py)가 애초에 이 필드들을
+# 만들지 않고(문서 자체에 없는 필드), 이후 discussion/synthesis 단계도 이 필드들을 구조화
+# 저장으로 되돌려 쓰지 않았기 때문이다 — "회의 횟수를 늘리는" 우회로는 고칠 수 없는
+# 구조적 공백이었다. 이 노드가 provisional_selection/provisional_from_merge 직후,
+# idea_validation 이전에 끼어들어 그 공백을 직접 채운다.
+
+_SPEC_BOOTSTRAP_FIELDS: tuple[str, ...] = ("core_user_value", "differentiation")
+# 권장 순서(요청 4번 그대로) — 한 번에 모든 필드를 논의하지 않고, 이 노드가 그래프
+# 자기 자신으로 루프하며 한 번의 실행마다 딱 하나의 unknown 필드만 채운다.
+_SPEC_FIELD_ORDER: tuple[str, ...] = (
+    "main_features",
+    "required_data",
+    "technical_approach",
+    "mvp_scope",
+    "risks_and_mitigations",
+    "success_metrics",
+    "assumptions_to_validate",
+)
+_SPEC_REQUIRED_FIELDS: tuple[str, ...] = _SPEC_BOOTSTRAP_FIELDS + _SPEC_FIELD_ORDER
+_SPEC_FIELD_LABELS_KO: dict[str, str] = {
+    "core_user_value": "핵심 사용자 가치",
+    "main_features": "주요 기능",
+    "required_data": "필요한 데이터",
+    "technical_approach": "기술 구현 방향",
+    "mvp_scope": "MVP 범위",
+    "differentiation": "차별성",
+    "risks_and_mitigations": "위험 요소와 대응 방안",
+    "success_metrics": "성공 지표",
+    "assumptions_to_validate": "검증이 필요한 가정",
+}
+# 요청 5번 — 필드별 위원 역할. 공동 검토 필드는 기획위원 먼저, 개발위원이 그 제안을 보고
+# 이어서 발언한다(discussion 노드의 "먼저 말한 위원 발언을 이어 말한다" 원칙과 동일).
+_SPEC_FIELD_OWNERS: dict[str, tuple[str, ...]] = {
+    "main_features": ("planning_expert",),
+    "required_data": ("dev_expert",),
+    "technical_approach": ("dev_expert",),
+    "mvp_scope": ("planning_expert", "dev_expert"),
+    "risks_and_mitigations": ("planning_expert", "dev_expert"),
+    "success_metrics": ("planning_expert",),
+    "assumptions_to_validate": ("planning_expert", "dev_expert"),
+}
+# 요청 8번 — 필드별 최대 논의 횟수(무한 반복 방지). 상한에 도달하면 위원들이 만든
+# 초안이 부족해도(예: 빈 응답 반복) 그대로 proposed로 확정하고 다음 필드로 넘어간다 —
+# "추가 논의가 필요합니다"를 반복하지 않는다(요청 8번 그대로).
+_SPEC_MAX_ROUNDS_PER_FIELD = 2
+
+
+def _new_field_spec(
+    value: Any,
+    *,
+    status: str,
+    updated_by: str,
+    source_turn_ids: list[str] | None = None,
+    evidence_refs: list[str] | None = None,
+    expert_judgment: bool = False,
+) -> dict:
+    return {
+        "value": value,
+        "status": status,
+        "source_turn_ids": list(source_turn_ids or []),
+        "evidence_refs": list(evidence_refs or []),
+        "updated_by": updated_by,
+        "updated_at": _now_iso(),
+        "expert_judgment": expert_judgment,
+    }
+
+
+def _bootstrap_idea_spec(provisional_idea: dict) -> dict:
+    """provisional_idea가 이미 갖고 있는 core_value/differentiation은 그대로 proposed로
+    승격하고(solution_direction_to_idea/candidate 스키마 둘 다 이 두 필드는 항상 채운다),
+    나머지 설계 필드는 unknown으로 시작한다."""
+    idea_spec: dict[str, dict] = {}
+    core_value = provisional_idea.get("core_value") or provisional_idea.get("core_user_value")
+    if isinstance(core_value, str) and core_value.strip():
+        idea_spec["core_user_value"] = _new_field_spec(core_value.strip(), status="proposed", updated_by="facilitator")
+    else:
+        idea_spec["core_user_value"] = _new_field_spec(None, status="unknown", updated_by="facilitator")
+    differentiation = provisional_idea.get("differentiation")
+    if isinstance(differentiation, str) and differentiation.strip():
+        idea_spec["differentiation"] = _new_field_spec(differentiation.strip(), status="proposed", updated_by="facilitator")
+    else:
+        idea_spec["differentiation"] = _new_field_spec(None, status="unknown", updated_by="facilitator")
+    for field in _SPEC_FIELD_ORDER:
+        idea_spec[field] = _new_field_spec(None, status="unknown", updated_by="facilitator")
+    return idea_spec
+
+
+def _next_unknown_spec_field(idea_spec: dict) -> str | None:
+    for field in _SPEC_FIELD_ORDER:
+        if (idea_spec.get(field) or {}).get("status", "unknown") == "unknown":
+            return field
+    return None
+
+
+def spec_gate_passed(idea_spec: dict | None) -> bool:
+    """completion gate(요청 8번) — 필수 필드가 전부 unknown이 아니어야(proposed 이상)
+    validate_planning/final_recommendation/awaiting_concept_confirmation으로 넘어갈 수
+    있다. idea_spec 자체가 없으면(구버전 세션 하위 호환) 통과시킨다 — 이 게이트는
+    새로 만드는 세션부터 적용된다."""
+    if idea_spec is None:
+        return True
+    return all((idea_spec.get(field) or {}).get("status", "unknown") != "unknown" for field in _SPEC_REQUIRED_FIELDS)
+
+
+def _spec_field_query(state: IdeationConvState, provisional_idea: dict, label: str) -> str:
+    contest_text = _contest_query(state)
+    idea_fragment = " ".join(
+        str(provisional_idea.get(field) or "") for field in ("title", "problem", "target_user", "solution")
+    ).strip()
+    return " / ".join(part for part in (contest_text, idea_fragment, label) if part)[:600]
+
+
+def _validate_spec_field_response(raw: dict) -> str | None:
+    if not isinstance(raw, dict):
+        return "response_not_object"
+    value = raw.get("value")
+    if not isinstance(value, list) or not value or not all(isinstance(v, str) and v.strip() for v in value):
+        return "value_missing_or_invalid_list"
+    if raw.get("claim_type") not in ("document_fact", "expert_judgment"):
+        return "invalid_claim_type"
+    return None
+
+
+def _spec_field_prompt(*, persona_id: str, label: str, provisional_idea: dict, evidence: list[dict]) -> str:
+    role_label = "기획위원" if persona_id == "planning_expert" else "개발위원"
+    return f"""[specification_completion — {role_label}가 "{label}" 항목 초안 제시]
+당신은 {role_label}입니다. 검증 대상 아이디어(provisional_idea)의 "{label}" 항목이 아직
+구체화되지 않았습니다. 사용자에게 되묻지 말고, 공고문/평가기준과 아이디어 내용을 참고해
+합리적인 초안을 직접 제시하세요 — 이것은 최종 확정이 아니라 수정 가능한 제안입니다.
+
+규칙:
+- value는 문자열 하나가 아니라 항목별 배열(1~4개)로 작성합니다.
+- claim_type은 "document_fact"(검색 근거에 실제로 적힌 내용을 근거로 삼음) 또는
+  "expert_judgment"(근거 없는 전문가 판단) 중 하나입니다. document_fact면 evidence_refs에
+  근거의 "ref" 값을 반드시 포함합니다. 근거가 없으면 expert_judgment로 표시합니다 —
+  근거가 없다고 해서 제안 자체를 거부하지 않습니다.
+- 근거에 없는 수치·법령 등을 지어내지 않습니다.
+- 유효한 JSON 객체 하나만 반환합니다.
+
+[검증 대상 provisional_idea]
+{json.dumps(provisional_idea, ensure_ascii=False)}
+
+[검색 근거]
+{json.dumps(evidence, ensure_ascii=False)}
+
+{{
+  "value": ["string", "string"],
+  "claim_type": "document_fact | expert_judgment",
+  "evidence_refs": ["string"],
+  "reason": "string"
+}}"""
+
+
+def _spec_fallback_values(label: str) -> list[str]:
+    return [f"{label}: 위원 논의만으로 구체안을 확정하지 못해 잠정 기본안으로 진행합니다."]
+
+
+def make_specification_completion_node(
+    llm_call: LLMCall,
+    evidence_lookup: EvidenceLookup | None = None,
+) -> Callable[[IdeationConvState], dict]:
+    """provisional_idea 채택 직후, idea_validation으로 바로 넘어가지 않고 main_features 등
+    필수 설계 필드를 채운다. 그래프가 이 노드를 조건부 자기 루프로 반복 호출해(요청 4번
+    "한 번에 모든 필드를 논의하지 마세요") 매 실행마다 unknown 필드 하나씩만 진행하고,
+    모든 필수 필드가 proposed 이상이 되면 phase="idea_validation"으로 전환해 루프를
+    끝낸다(_route_after_specification_completion이 이 phase 전환만 보고 라우팅한다)."""
+
+    def node(state: IdeationConvState) -> dict:
+        provisional_idea = state.get("provisional_idea") or {}
+        idea_spec = state.get("idea_spec")
+        if not idea_spec:
+            idea_spec = _bootstrap_idea_spec(provisional_idea)
+
+        field = _next_unknown_spec_field(idea_spec)
+        if field is None:
+            # 이미 모든 필드가 채워진 채로 이 노드에 도달함(방어적 — 정상적으로는 직전
+            # 실행이 이미 phase를 idea_validation으로 바꿔 그래프를 빠져나갔어야 한다).
+            return {"idea_spec": idea_spec, "phase": "idea_validation"}
+
+        label = _SPEC_FIELD_LABELS_KO.get(field, field)
+        owners = _SPEC_FIELD_OWNERS.get(field, ("planning_expert",))
+        query = _spec_field_query(state, provisional_idea, label)
+
+        round_counts = dict(state.get("spec_completion_rounds") or {})
+        current_round = round_counts.get(field, 0) + 1
+        round_counts[field] = current_round
+
+        used = state.get("llm_calls_used", 0)
+        speaker_messages: list[ConvMessage] = []
+        collected_values: list[str] = []
+        collected_chunk_ids: list[str] = []
+        saw_document_fact = False
+
+        for persona_id in owners:
+            retrieved = call_evidence_lookup(
+                evidence_lookup, persona_id, query, runtime_scope=_runtime_scope_for(state)
+            )
+            normalized_evidence = [
+                {**item, "quote": str(item.get("quote") or item.get("text") or "").strip()}
+                for item in retrieved
+                if isinstance(item, dict)
+            ]
+            prompt = _spec_field_prompt(
+                persona_id=persona_id, label=label, provisional_idea=provisional_idea, evidence=normalized_evidence
+            )
+            raw, ok, attempts = _safe_call_structured_json(
+                llm_call, prompt, _validate_spec_field_response, f"specification_completion_{field}_{persona_id}"
+            )
+            used += attempts
+            if not ok:
+                continue
+
+            valid_refs = {item.get("ref") for item in normalized_evidence if item.get("ref")}
+            ref_to_chunk = {item.get("ref"): item.get("chunk_id") for item in normalized_evidence}
+            claim_type = raw.get("claim_type")
+            evidence_refs = [ref for ref in (raw.get("evidence_refs") or []) if ref in valid_refs]
+            if claim_type == "document_fact" and not evidence_refs:
+                # 근거를 인용하지 못했는데 document_fact라고 주장하면 안전하게
+                # expert_judgment로 강등한다(요청 11번 — 근거 없이 문서 근거처럼 보이면 안 됨).
+                claim_type = "expert_judgment"
+            if claim_type == "document_fact":
+                saw_document_fact = True
+                collected_chunk_ids.extend(ref_to_chunk[ref] for ref in evidence_refs if ref in ref_to_chunk)
+
+            value_items = [v.strip() for v in raw.get("value") or [] if isinstance(v, str) and v.strip()]
+            collected_values.extend(value_items)
+
+            role_label = "기획위원" if persona_id == "planning_expert" else "개발위원"
+            speaker_messages.append(
+                _build_message(
+                    persona_id=persona_id,
+                    round_number=state["round"],
+                    message_type="opinion",
+                    content=_safe_validation_message(
+                        f"{role_label} 관점에서 {label} 초안을 제시합니다: {', '.join(value_items) or '초안을 만들지 못했습니다.'}",
+                        f"{role_label} 관점에서 {label} 초안을 검토했습니다.",
+                        normalized_evidence,
+                    ),
+                    referenced_message_ids=[],
+                    evidence=normalized_evidence,
+                    structured={
+                        "specification_completion": {
+                            "field": field,
+                            "value": value_items,
+                            "claim_type": claim_type,
+                        }
+                    },
+                )
+            )
+
+        deduped_values = list(dict.fromkeys(collected_values))
+        if not deduped_values:
+            if current_round < _SPEC_MAX_ROUNDS_PER_FIELD:
+                # 요청 8번 — 아직 상한에 도달하지 않았으면 같은 필드를 다음 실행에서
+                # 다시 시도한다(proposed로 확정하지 않고, 다음 필드로도 넘어가지 않는다).
+                return {
+                    "idea_spec": idea_spec,
+                    "spec_completion_rounds": round_counts,
+                    "messages": speaker_messages,
+                    "llm_calls_used": used,
+                    "phase": "specification_completion",
+                }
+            deduped_values = _spec_fallback_values(label)
+            saw_document_fact = False
+
+        field_spec = _new_field_spec(
+            deduped_values,
+            status="proposed",
+            updated_by="+".join(owners),
+            source_turn_ids=[m["message_id"] for m in speaker_messages],
+            evidence_refs=list(dict.fromkeys(collected_chunk_ids)),
+            expert_judgment=not saw_document_fact,
+        )
+        # 요청 2번(2회 논의 후 재검증) — provisional_idea에 실제 반영됐는지 다시 읽어서
+        # 확인한 뒤에만 다음 필드로 넘어간다. value가 비어 있으면(방어적) proposed로
+        # 확정하지 않는다 — 자연어 발언에만 존재하고 구조에 저장되지 않은 값은 실패로
+        # 간주한다(요청 8번 강제 불변식).
+        if not field_spec["value"]:
+            return {
+                "idea_spec": idea_spec,
+                "spec_completion_rounds": round_counts,
+                "messages": speaker_messages,
+                "llm_calls_used": used,
+                "phase": "specification_completion",
+            }
+        updated_idea_spec = {**idea_spec, field: field_spec}
+        stored_field = updated_idea_spec[field]
+        if stored_field.get("status") != "proposed" or not stored_field.get("value"):
+            raise AssertionError(f"specification_completion: {field} write-back 검증 실패")
+
+        facilitator_message = _build_message(
+            persona_id="ideation_facilitator",
+            round_number=state["round"],
+            message_type="summary",
+            content=f"{label} 항목을 위원 제안으로 정리했습니다: {', '.join(deduped_values[:3])}",
+            referenced_message_ids=[m["message_id"] for m in speaker_messages],
+            evidence=[],
+        )
+        speaker_messages.append(facilitator_message)
+
+        next_field = _next_unknown_spec_field(updated_idea_spec)
+        next_phase = "idea_validation" if next_field is None else "specification_completion"
+        return {
+            "idea_spec": updated_idea_spec,
+            "spec_completion_rounds": round_counts,
+            "messages": speaker_messages,
+            "llm_calls_used": used,
+            "phase": next_phase,
+        }
+
+    return node
+
+
+def _route_after_specification_completion(state: IdeationConvState) -> str:
+    if state.get("phase") == "failed":
+        return "failed"
+    if state.get("phase") == "idea_validation":
+        return "proceed"
+    return "continue"
 
 
 # ============================================================================
@@ -2173,7 +2520,19 @@ def make_technical_validation_node(
             {"external_evidence": state.get("external_evidence", []), **(state.get("external_evidence_meta") or {})},
             technical_external_result,
         )
+        # 용준/Claude(2026-07-30, 요청 9번 — "validated는 위원 검토 완료 상태이며 사용자
+        # 최종 확정과 다르다") — 기획·개발 검증을 통과(needs_revision이 아님)하면 그
+        # 시점까지 proposed였던 idea_spec 필드를 validated로 승격한다. 새 LLM 호출을
+        # 추가하지 않는다 — 이미 방금 끝난 검증 결과를 그대로 반영할 뿐이다. user_confirmed는
+        # 오직 concept_confirmation의 명시적 사용자 확정에서만 세팅된다(여기서 건드리지 않음).
+        idea_spec = state.get("idea_spec")
+        if idea_spec and not needs_revision:
+            idea_spec = {
+                field: ({**spec, "status": "validated"} if spec.get("status") == "proposed" else spec)
+                for field, spec in idea_spec.items()
+            }
         return {
+            "idea_spec": idea_spec,
             "validation_result": validation_result,
             "unresolved_issues": list(state["unresolved_issues"]) + [a for a in unresolved if a not in state["unresolved_issues"]],
             "idea_evolution": [evolution_record],
@@ -2266,6 +2625,8 @@ def make_concept_confirmation_node(llm_call: LLMCall) -> Callable[[IdeationConvS
                 }
             return {
                 "provisional_idea": None,
+                "idea_spec": None,
+                "spec_completion_rounds": {},
                 "validation_result": None,
                 "selected_idea": None,
                 "idea_locked": False,
@@ -2302,7 +2663,16 @@ def make_concept_confirmation_node(llm_call: LLMCall) -> Callable[[IdeationConvS
             for topic in _CONFIRMED_CORE_TOPICS:
                 if topic not in resolved_topics:
                     resolved_topics.append(topic)
+            # 용준/Claude(2026-07-30, 요청 10번 — "사용자 최종 승인 전에는 user_confirmed
+            # 금지") — 이 is_confirm 분기가 사용자의 명시적 확정(action_code="confirm_concept"
+            # 또는 확정 키워드) 그 자체이므로, 여기서만 idea_spec 전체를 user_confirmed로
+            # 승격한다. validated가 아니었던(예: 검증을 아직 안 거친 레거시 경로) 필드도
+            # 사용자가 이 화면까지 도달했다는 것 자체가 검토를 마쳤다는 뜻이므로 함께 올린다.
+            idea_spec = state.get("idea_spec")
+            if idea_spec:
+                idea_spec = {field: {**spec, "status": "user_confirmed"} for field, spec in idea_spec.items()}
             return {
+                "idea_spec": idea_spec,
                 "selected_idea": provisional_idea,
                 "user_idea": provisional_idea,
                 "initial_idea": provisional_idea.get("title"),
