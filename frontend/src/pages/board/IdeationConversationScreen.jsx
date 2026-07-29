@@ -180,7 +180,7 @@ function StreamingCursorStyle() {
       .rb-idea-finalize{ min-width:0; margin-top:24px; }
       .rb-idea-right{
         min-width:0; min-height:0; height:calc(100vh - 64px);
-        display:grid; grid-template-rows:minmax(0, 1fr) minmax(0, 1fr);
+        display:grid; grid-template-rows:minmax(0, .7fr) minmax(0, 1.3fr);
         gap:16px;
       }
       .rb-ideation-side{ position:static; margin:0; min-width:0; min-height:0; display:flex; flex-direction:column; overflow:auto; }
@@ -210,9 +210,9 @@ function StreamingCursorStyle() {
           grid-template-columns:minmax(0,1fr);
           min-height:0;
         }
-        .rb-idea-right{ height:auto; grid-template-rows:auto minmax(380px, 560px); }
+        .rb-idea-right{ height:auto; grid-template-rows:auto minmax(520px, 720px); }
         .rb-ideation-side{ overflow:visible; }
-        .rb-ideation-canvas-col{ max-height:560px; }
+        .rb-ideation-canvas-col{ max-height:720px; }
         .rb-idea-chat-panel .rb-idea-chat-scroll{ min-height:420px; }
       }
       .rb-ideation-candidate-card{ transition: transform .18s ease, box-shadow .18s ease; }
@@ -374,9 +374,16 @@ function EvidenceToggle({
   const targetItems = resolveRefs(reviewedTargetRefs)
   const criteriaItems = resolveRefs(linkedCriteriaRefs)
   const externalItems = resolveRefs(linkedExternalEvidenceRefs)
-  const totalCount = criteriaItems.length + externalItems.length + targetItems.length
+  // 용준/Claude(2026-07-30, 요청: "검토 대상은 근거가 아니다 — 총 개수에 합산 금지") —
+  // 선택 아이디어(target)는 위원이 검토한 대상일 뿐 공모전/외부 문서 근거가 아니므로
+  // "근거 N건" 합계에서 완전히 분리한다. evidenceCount(criteria+external)==0이면
+  // target이 몇 건이든 "근거"라는 단어를 쓰지 않고 "검토 대상"과 "문서 근거 없음"을
+  // 각각 별도로 보여준다.
+  const evidenceItems = [...criteriaItems, ...externalItems]
+  const evidenceCount = evidenceItems.length
+  const targetCount = targetItems.length
 
-  if (totalCount === 0) {
+  if (evidenceCount === 0 && targetCount === 0) {
     if ((expertJudgmentWithoutExternalEvidence || []).length > 0 || (claims || []).length > 0) {
       return <ExpertJudgmentPill />
     }
@@ -384,7 +391,43 @@ function EvidenceToggle({
   }
 
   return (
-    <div style={{ marginTop: 4 }}>
+    <div style={{ marginTop: 4, display: 'flex', flexDirection: 'column', gap: 4 }}>
+      {evidenceCount > 0 ? (
+        <>
+          <button
+            type="button"
+            onClick={() => setOpen((v) => !v)}
+            style={{
+              background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+              fontSize: 13, color: 'var(--text-2)', display: 'flex', alignItems: 'center', gap: 2,
+            }}
+          >
+            {open ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+            근거 {evidenceCount}건 {open ? '접기' : '보기'}
+          </button>
+          {open && (
+            <div style={{ marginTop: 4, display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {/* 표시 순서: 공모전 근거 -> 외부 근거(둘 다 "증거" 계열). 검토 대상(target)은
+                  근거가 아니므로 이 목록에 섞지 않고 아래 별도 토글로 분리한다. */}
+              {criteriaItems.map((e, i) => <EvidenceCard key={`criteria-${e.chunk_id || i}`} item={e} kind="criteria" />)}
+              {externalItems.map((e, i) => <EvidenceCard key={`external-${e.chunk_id || i}`} item={e} kind="external" />)}
+            </div>
+          )}
+        </>
+      ) : (
+        <ExpertJudgmentPill label="전문가 판단 · 문서 근거 없음" />
+      )}
+      {targetCount > 0 && (
+        <TargetReviewToggle items={targetItems} />
+      )}
+    </div>
+  )
+}
+
+function TargetReviewToggle({ items }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div>
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -394,22 +437,18 @@ function EvidenceToggle({
         }}
       >
         {open ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
-        근거 {totalCount}건 {open ? '접기' : '보기'}
+        검토 대상 {items.length}건 {open ? '접기' : '보기'}
       </button>
       {open && (
         <div style={{ marginTop: 4, display: 'flex', flexDirection: 'column', gap: 6 }}>
-          {/* 표시 순서: 공모전 근거 -> 외부 근거(둘 다 "증거" 계열) -> 검토 대상(참고용,
-              증거가 아니라는 것을 시각적으로도 마지막에 배치해 드러낸다). */}
-          {criteriaItems.map((e, i) => <EvidenceCard key={`criteria-${e.chunk_id || i}`} item={e} kind="criteria" />)}
-          {externalItems.map((e, i) => <EvidenceCard key={`external-${e.chunk_id || i}`} item={e} kind="external" />)}
-          {targetItems.map((e, i) => <EvidenceCard key={`target-${e.chunk_id || i}`} item={e} kind="target" />)}
+          {items.map((e, i) => <EvidenceCard key={`target-${e.chunk_id || i}`} item={e} kind="target" />)}
         </div>
       )}
     </div>
   )
 }
 
-function ExpertJudgmentPill() {
+function ExpertJudgmentPill({ label = '전문가 판단 · 외부 근거 없음' }) {
   return (
     <div
       style={{
@@ -423,7 +462,7 @@ function ExpertJudgmentPill() {
         padding: '2px 7px',
       }}
     >
-      전문가 판단 · 외부 근거 없음
+      {label}
     </div>
   )
 }

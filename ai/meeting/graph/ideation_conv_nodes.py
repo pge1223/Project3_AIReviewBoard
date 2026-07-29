@@ -700,7 +700,16 @@ def _evidence_anchor_response(raw: dict, retrieved: list[dict], persona_id: str)
     # 화면에 노출되지 않음)에만 남기고, 사용자 화면 문장(spoken_text)은 원문을 인용하지 않는
     # 자연어 요약 한 문장으로만 구성한다 — 이 함수의 원래 제약("새 문서 사실을 지어내지
     # 않는다")은 quote를 claims에 그대로 두는 것으로 유지된다.
-    spoken_text = f"{judgment} 세부 내용은 문서 근거를 확인해 정리했습니다."
+    #
+    # 용준/Claude(2026-07-30, 요청: "문서 근거 0건이면 '문서 근거를 확인했습니다' 문구를
+    # 쓰지 마세요") — 이 함수가 앵커로 고르는 evidence가 target(선택 아이디어)이면 그건
+    # 공모전/외부 "문서" 근거가 아니라 위원이 검토한 대상일 뿐이다. 위 749행에서 target을
+    # criteria/external보다 우선 앵커로 고르므로, 이 문구가 실제로 target에만 연결된
+    # 상황에서도 "문서 근거를 확인했다"고 말해 온 것이 실측된 문제였다.
+    if evidence.get("document_role") == "target":
+        spoken_text = f"{judgment} 현재 선택된 아이디어를 검토한 {role_label}의 판단입니다."
+    else:
+        spoken_text = f"{judgment} 세부 내용은 문서 근거를 확인해 정리했습니다."
     return {
         **raw,
         "judgment": judgment,
