@@ -24,6 +24,7 @@ from .ideation_conv_nodes import (
     REVISION_TRIGGER_STANCES,
     _route_next_expert_turn,
     _runtime_scope_for,
+    classify_query_type,
     conversation_context_for,
     generate_expert_delegation_facilitator_recommendation,
     generate_expert_delegation_proposal,
@@ -40,6 +41,7 @@ from .ideation_conv_state import (
     ConvMessage,
     IdeationCancelled,
     IdeationConvState,
+    _extract_initial_idea_text,
     apply_user_answer,
     contains_pre_lock_banned_content,
     initial_conv_state,
@@ -496,6 +498,37 @@ def _drive_graph(
     return final_state
 
 
+# 용준/Claude(2026-07-29, 요청: 생성 품질 개선 5단계 — 최상위 요청 라우터). document_fact_query/
+# session_state_query는 위원 발언 1건으로 답이 끝나야 한다(요청: "회의 라운드 없이 direct
+# answer"). 새 정지 메커니즘을 만들지 않고 아바타 페이싱용으로 이미 검증된
+# _drive_graph(stop_after_expert_turn=True)를 재사용한다 — 다만 그 메커니즘의 원래 의도는
+# "한 번에 하나씩 재생하고 다음 요청에서 이어감"(세션이 expert_discussion phase에 일시정지로
+# 남음)이라, 우리가 원하는 "완전히 끝남"과 다르다. 그래서 _drive_graph가 반환한 뒤 phase만
+# 후처리로 덮어쓴다 — 그래프 구조(_route_entry/엣지)는 손대지 않는다.
+#
+# 용준/Claude(2026-07-29, 요청: expert_analysis_query 전용 단일 응답 경로). expert_analysis_query
+# ("구현 가능성과 MVP 위험을 분석해 주세요" 같은 전문가 판단 질문)도 같은 이유로 여기 추가한다
+# — 기존에는 classify_query_type이 이 값을 올바르게 분류해도 이 집합에 없어 그대로 일반
+# ideation_discussion_request 다회 라운드 경로로 흘러갔다(요청 이슈: "14개 메시지의 기존 다회
+# 회의 흐름을 그대로 실행"). 사용자가 명시적으로 "회의"/"토론"을 요청하는 문장은
+# classify_query_type이 애초에 expert_analysis_query로 분류하지 않고(fallback인
+# ideation_discussion_request로 떨어짐) 이 집합에 들어오지 않으므로, 기존 다회 흐름은 그대로
+# 유지된다.
+_SINGLE_TURN_REQUEST_TYPES = frozenset(
+    {"document_fact_query", "session_state_query", "expert_analysis_query"}
+)
+
+
+def _finalize_single_turn_request(state: IdeationConvState) -> IdeationConvState:
+    """document_fact_query/session_state_query로 정지된 결과의 phase를 "일시정지"가 아니라
+    "완전히 끝남"으로 마무리한다. stop_after_expert_turn이 실제로 멈춘 경우만
+    phase=="expert_discussion"이므로 그때만 덮어쓴다 — 이미 "failed" 등 다른 종결 상태로
+    끝난 경우는 건드리지 않는다."""
+    if state.get("phase") == "expert_discussion":
+        return IdeationConvState(**{**state, "phase": "discussion_complete"})
+    return state
+
+
 def start_ideation_conversation(
     *,
     session_id: str,
@@ -511,6 +544,7 @@ def start_ideation_conversation(
     on_progress: IdeationConvProgressCallback | None = None,
     on_snapshot: IdeationConvSnapshotCallback | None = None,
     application_form_items: list[dict] | None = None,
+    initial_state_overrides: dict[str, Any] | None = None,
 ) -> IdeationConvState:
     """세션을 시작해 기획 전문가의 첫 질문 하나만 만들고 멈춘다(요청 목표 흐름 1~3번).
 
@@ -519,7 +553,14 @@ def start_ideation_conversation(
 
     용준/Claude(2026-07-27, RAG-007 연결): external_evidence_lookup도 순수 추가 파라미터다
     (기본값 None) — problem_discovery, candidate_planning/candidate_feasibility,
-    idea_validation 노드에 전달된다."""
+    idea_validation 노드에 전달된다.
+
+    용준/Claude(2026-07-29, 요청: RAG 품질 개선 3단계 — 오프라인 평가 하네스가 실제 확정된
+    세션 state를 재현). initial_state_overrides도 순수 추가 파라미터다(기본값 None) —
+    initial_conv_state()가 만든 state에 이 dict를 얕게 덮어쓴다. 오프라인 평가(ai/rag/
+    evaluation/rag_quality/)가 candidate_selection 노드를 거치지 않고도 "이 세션은 이미
+    후보를 확정했다"는 state(idea_locked/selected_idea 등)를 재현할 때 쓴다 — 일반 호출부는
+    이 값을 넘기지 않아 기존과 완전히 동일하게 동작한다."""
     graph = assemble_ideation_conversation_graph(
         llm_call,
         evidence_lookup=evidence_lookup,
@@ -532,8 +573,18 @@ def start_ideation_conversation(
         session_id, notice_and_criteria, user_idea, max_rounds=max_rounds,
         application_form_items=application_form_items,
     )
+    if initial_state_overrides:
+        state = {**state, **initial_state_overrides}
+    # 용준/Claude(2026-07-29, 요청: 생성 품질 개선 5단계 — 최상위 요청 라우터). _drive_graph
+    # 호출 전 딱 한 번, 사용자 원문(초기 아이디어 설명)으로 분류한다 — 그래프 시작 노드는
+    # 이 값을 다시 계산하지 않고 state["request_type"]을 그대로 읽는다(중복 분류 없음).
+    request_type = classify_query_type(_extract_initial_idea_text(user_idea))
+    state = {**state, "request_type": request_type}
     baseline_message_count = len(state["messages"])
-    result_state = _drive_graph(graph, state, on_progress, on_snapshot)
+    single_turn = request_type in _SINGLE_TURN_REQUEST_TYPES
+    result_state = _drive_graph(graph, state, on_progress, on_snapshot, stop_after_expert_turn=single_turn)
+    if single_turn:
+        result_state = _finalize_single_turn_request(result_state)
     return _guard_pre_lock_messages(result_state, baseline_message_count)
 
 
@@ -1100,6 +1151,14 @@ def reply_ideation_conversation(
         # 방어적 점검 — apply_user_answer()는 항상 그래프 진입 가능한 phase로만 전이시키므로
         # 정상 흐름에서는 절대 여기 도달하지 않는다.
         raise AssertionError(f"apply_user_answer가 진입 불가능한 phase를 반환했습니다: {state['phase']!r}")
+    # 용준/Claude(2026-07-29, 요청: 생성 품질 개선 5단계 — 최상위 요청 라우터). 방금 도착한
+    # user_message 원문으로 _drive_graph 호출 전 딱 한 번 분류한다 — start_ideation_conversation
+    # 과 동일한 단일 지점 원칙(중복 분류 없음). document_fact_query/session_state_query면
+    # 클라이언트가 넘긴 stop_after_expert_turn 값과 무관하게(OR) 위원 발언 1건에서 정지시킨다.
+    request_type = classify_query_type(user_message)
+    state = {**state, "request_type": request_type}
+    single_turn = request_type in _SINGLE_TURN_REQUEST_TYPES
+    effective_stop_after_expert_turn = stop_after_expert_turn or single_turn
     graph = assemble_ideation_conversation_graph(
         llm_call,
         evidence_lookup=evidence_lookup,
@@ -1109,7 +1168,11 @@ def reply_ideation_conversation(
         external_evidence_lookup=external_evidence_lookup,
     )
     reply_baseline = len(state["messages"])
-    result_state = _drive_graph(graph, state, on_progress, on_snapshot, stop_after_expert_turn=stop_after_expert_turn)
+    result_state = _drive_graph(
+        graph, state, on_progress, on_snapshot, stop_after_expert_turn=effective_stop_after_expert_turn
+    )
+    if single_turn:
+        result_state = _finalize_single_turn_request(result_state)
 
     if result_state.get("forced_next_speaker") is not None:
         # 2026-07-26 라운드테이블 재설계: apply_user_answer가 awaiting_user_decision 직후

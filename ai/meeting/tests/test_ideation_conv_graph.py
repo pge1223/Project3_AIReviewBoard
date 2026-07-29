@@ -327,6 +327,48 @@ def test_start_runs_roundtable_immediately_without_interview_question():
     assert dev_prompts, "라운드테이블에서는 사용자 답변을 기다리지 않고 개발 위원도 곧바로 실행돼야 한다"
 
 
+def test_deterministic_final_direction_prefix_overrides_llm_wording_end_to_end():
+    """용준/Claude(2026-07-29, 요청: RAG 품질 개선 3단계 — 정확한 상태값은 코드가 결정적으로
+    출력) — start_ideation_conversation(initial_state_overrides=...)로 "이미 확정된 세션"을
+    재현하면, "최종 확정한 아이디어가 뭔가요" 질문에 대한 위원 발언 맨 앞에 정확한 제목이
+    코드로 결정적으로 붙는다 — ScriptedLLM의 spoken_text 내용과 무관하게(LLM이 다른 말을
+    해도) 항상 붙어야 한다."""
+    llm = ScriptedLLM()
+    state = start_ideation_conversation(
+        session_id="CONV-TEST-FINAL-DIRECTION",
+        notice_and_criteria=NOTICE_AND_CRITERIA,
+        user_idea={"description": "최종 확정한 아이디어가 뭔가요?"},
+        llm_call=llm,
+        max_rounds=1,
+        initial_state_overrides={
+            "idea_locked": True,
+            "selected_idea": {"title": "동네 가게 손님 응대 챗봇"},
+        },
+    )
+    opinion_messages = [m for m in state["messages"] if m["message_type"] == "opinion"]
+    assert opinion_messages, "발언이 하나도 생성되지 않음"
+    for message in opinion_messages:
+        assert message["content"].startswith("사용자가 최종 확정한 아이디어는 '동네 가게 손님 응대 챗봇'입니다.")
+
+
+def test_deterministic_final_direction_prefix_reports_not_confirmed_when_idea_locked_false():
+    """확정 전(idea_locked=False)이면 코드가 후보를 임의로 확정안이라 말하지 않고 "아직
+    없다"고 결정적으로 답한다."""
+    llm = ScriptedLLM()
+    state = start_ideation_conversation(
+        session_id="CONV-TEST-NOT-CONFIRMED",
+        notice_and_criteria=NOTICE_AND_CRITERIA,
+        user_idea={"description": "최종 확정한 아이디어가 뭔가요?"},
+        llm_call=llm,
+        max_rounds=1,
+        initial_state_overrides={"idea_locked": False, "selected_idea": None},
+    )
+    opinion_messages = [m for m in state["messages"] if m["message_type"] == "opinion"]
+    assert opinion_messages, "발언이 하나도 생성되지 않음"
+    for message in opinion_messages:
+        assert message["content"].startswith("아직 최종 확정된 아이디어가 없습니다.")
+
+
 def test_roundtable_updates_idea_canvas_without_changing_meeting_phase():
     """진행자 정리 뒤 캔버스가 갱신되고 기존 회의 종료 phase는 그대로 유지된다."""
     llm = ScriptedLLM()
@@ -475,6 +517,63 @@ def test_max_rounds_completes_discussion_without_empty_user_wait():
     assert state["round"] == 2
     assert len(state["discussion_rounds"]) == 2
     assert state["pending_question"] is None
+
+
+# ---------------------------------------------------------------------------
+# 5-1. 용준/Claude(2026-07-29, 요청: expert_analysis_query 전용 단일 응답 경로) —
+#      "구현 가능성/MVP 위험을 분석해 주세요" 같은 전문가 판단 질문은 회의 라운드 없이
+#      위원 발언 1건 후 곧바로 discussion_complete로 끝나야 한다(document_fact_query/
+#      session_state_query와 같은 단일 응답 경로 재사용, _SINGLE_TURN_REQUEST_TYPES 참고).
+# ---------------------------------------------------------------------------
+
+
+def test_reply_with_expert_analysis_query_stops_after_one_expert_turn():
+    llm = ScriptedLLM()
+    state = _start(llm)
+    assert state["phase"] == "discussion_complete"
+    baseline_message_count = len(state["messages"])
+
+    state = reply_ideation_conversation(
+        previous_state=state,
+        user_message="구현 가능성과 MVP 위험을 분석해 주세요",
+        llm_call=llm,
+    )
+
+    assert state["request_type"] == "expert_analysis_query"
+    # 다회 라운드로 회전하지 않고, 곧바로 완전히 끝난 상태(discussion_complete)로 마무리된다
+    # (document_fact_query/session_state_query와 동일하게 "일시정지"가 아니라 종결).
+    assert state["phase"] == "discussion_complete"
+    new_messages = state["messages"][baseline_message_count:]
+    speakers = [m["speaker_id"] for m in new_messages]
+    # 사용자 메시지 + 위원 발언 1건만 추가되고, 개발 위원/진행자 정리 발언은 없어야 한다
+    # (기존 다회 라운드였다면 planning_expert -> dev_expert -> ideation_facilitator까지
+    # 이어졌을 것).
+    assert speakers[0] == "user"
+    assert speakers[1] in ("planning_expert", "dev_expert")
+    assert len(speakers) == 2, f"위원 발언 1건만 추가돼야 하는데 {speakers}가 추가됨"
+
+
+def test_reply_with_explicit_discussion_request_keeps_multi_turn_flow():
+    """"회의"/"토론"을 명시적으로 요청하면(요청 조건: classify_query_type이
+    expert_analysis_query로 오분류하지 않는 일반 문장) 기존 다회 라운드(위원 -> 위원 ->
+    진행자 정리)가 그대로 유지돼야 한다 — expert_analysis_query 전용 경로 추가가 기존
+    ideation_discussion_request 흐름을 건드리지 않는지 확인."""
+    llm = ScriptedLLM(dev_next_action="await_user_decision")
+    state = _start(llm)
+    assert state["phase"] == "discussion_complete"
+    baseline_message_count = len(state["messages"])
+
+    state = reply_ideation_conversation(
+        previous_state=state,
+        user_message="이 부분에 대해 위원들이 좀 더 토론해 주세요",
+        llm_call=llm,
+    )
+
+    assert state["request_type"] == "ideation_discussion_request"
+    assert state["phase"] == "discussion_complete"
+    new_messages = state["messages"][baseline_message_count:]
+    speakers = [m["speaker_id"] for m in new_messages]
+    assert speakers == ["user", "planning_expert", "dev_expert", "ideation_facilitator"]
 
 
 # ---------------------------------------------------------------------------
@@ -1073,6 +1172,51 @@ def test_empty_discussion_response_falls_back_to_safe_expert_judgment():
     assert update.get("phase") != "failed"
     assert update["previous_speaker"] == "planning_expert"
     assert "전문가 판단으로 진행" in update["messages"][0]["content"]
+
+
+def test_discussion_uses_external_cases_before_asking_user_for_missing_data():
+    llm = ScriptedLLM()
+    calls: list[tuple[str, str]] = []
+
+    def external_lookup(persona_id: str, query: str) -> dict:
+        calls.append((persona_id, query))
+        return {
+            "external_evidence": [
+                {
+                    "source_id": "NAVER-CASE-1",
+                    "document_id": "NEWS-1",
+                    "chunk_id": "NEWS-CHUNK-1",
+                    "title": "AI 채용 모델 편향성 조사 사례",
+                    "publisher": "example.com",
+                    "source_url": "https://example.com/ai-bias-case",
+                    "reference_date": "2026-07-20",
+                    "quote": "감사 결과 특정 집단의 오류율 차이가 확인돼 모델을 재검증했다.",
+                    "provider": "naver_api_hub",
+                }
+            ],
+            "used_dataset_search": False,
+            "used_public_api_search": True,
+            "warnings": [],
+        }
+
+    state = initial_conv_state(
+        session_id="CONV-EXTERNAL-CASE",
+        notice_and_criteria=NOTICE_AND_CRITERIA,
+        user_idea={"description": "AI 모델의 편향성을 점검하는 공공 서비스"},
+    )
+    update = make_conv_discussion_node(
+        "planning_expert",
+        llm,
+        external_evidence_lookup=external_lookup,
+    )(state)
+
+    assert calls and calls[0][0] == "planning_expert"
+    assert "구체적 사례 통계 최신 동향" in calls[0][1]
+    discussion_prompt = next(prompt for prompt in llm.captured_prompts if "[의견 규칙]" in prompt)
+    assert "특정 집단의 오류율 차이" in discussion_prompt
+    assert "https://example.com/ai-bias-case" in discussion_prompt
+    assert update["messages"][0]["evidence"][0]["provider"] == "naver_api_hub"
+    assert update["external_evidence_meta"]["used_public_api_search"] is True
 
 
 def test_sufficiency_call_failure_fails_open_and_conversation_still_progresses():
