@@ -1831,7 +1831,64 @@ def _spec_field_query(state: IdeationConvState, provisional_idea: dict, label: s
     return " / ".join(part for part in (contest_text, idea_fragment, label) if part)[:600]
 
 
-def _validate_spec_field_response(raw: dict) -> str | None:
+# 용준/Claude(2026-07-30, 요청 3번 — "품질 게이트") — 실측: 필드당 "1~4개 항목"만
+# 요구하는 느슨한 프롬프트로는 개수는 채워져도 required_data가 "용도" 없이 데이터명만
+# 나열되거나, mvp_scope에 포함/제외/검증 구분이 없거나, risks_and_mitigations가 위험만
+# 있고 대응이 빠지는 등 구조가 비어 있었다. 필드마다 요구되는 최소 구조를 프롬프트에
+# 명시하고, 아래 _validate_spec_field_response가 그 구조를 실제로 검사한다.
+_SPEC_FIELD_MIN_ITEMS: dict[str, int] = {
+    "main_features": 3,
+    "required_data": 3,
+    "technical_approach": 4,
+    "mvp_scope": 3,
+    "risks_and_mitigations": 3,
+    "success_metrics": 3,
+    "assumptions_to_validate": 3,
+}
+# "A — B"(항목 — 용도/측정방법/검증방법) 짝 구조가 필요한 필드. 각 value 문자열 안에
+# 구분자가 있어야 한다 — 없으면 항목명만 나열하고 용도/방법을 생략했다는 뜻이다.
+_SPEC_FIELD_PAIR_REQUIRED: frozenset[str] = frozenset(
+    {"required_data", "risks_and_mitigations", "success_metrics", "assumptions_to_validate"}
+)
+_SPEC_PAIR_SEPARATOR_RE = re.compile(r"[—\-:]|용도|측정|검증|대응")
+_SPEC_PLACEHOLDER_RE = re.compile(
+    r"^아직\s*확정되지\s*않음$|추가\s*논의가?\s*필요|구체화가?\s*필요|^확인\s*필요$"
+)
+_SPEC_FIELD_INSTRUCTIONS: dict[str, str] = {
+    "main_features": "구체적인 기능을 3개 이상 제시하세요. 각 항목은 사용자가 실제로 무엇을 할 수 있는지 한 문장으로 씁니다(추상적인 표어가 아니라 기능 단위).",
+    "required_data": (
+        "필요한 데이터 종류를 3개 이상 제시하세요. 각 항목은 반드시 "
+        "\"데이터명 — 이 데이터를 어디에 쓰는지(용도)\" 형식으로, 데이터명과 용도를 "
+        "\" — \"로 구분해 한 문자열에 함께 씁니다."
+    ),
+    "technical_approach": (
+        "입력(어떤 데이터를 받는지) · 처리(어떻게 분석·가공하는지) · 저장(어디에 어떻게 "
+        "저장하는지) · 출력(사용자에게 무엇을 보여주는지) 네 단계를 각각 최소 1개 항목씩, "
+        "총 4개 이상 제시하세요. 각 항목 앞에 어느 단계인지 명시합니다(예: \"입력: ...\")."
+    ),
+    "mvp_scope": (
+        "다음 세 종류를 모두 포함해 최소 3개 이상 제시하세요 — \"포함: ...\"(MVP에 실제로 "
+        "들어갈 기능, 1개 이상), \"제외: ...\"(이번 MVP에서는 의도적으로 빼는 범위, 1개 "
+        "이상), \"검증 대상: ...\"(MVP로 확인하려는 가설, 1개 이상). 각 항목은 반드시 이 "
+        "세 접두어 중 하나로 시작합니다."
+    ),
+    "risks_and_mitigations": (
+        "위험 요소와 그에 대한 구체적 대응 방안을 3쌍 이상 제시하세요. 각 항목은 반드시 "
+        "\"위험: ... / 대응: ...\" 형식으로, 위험만 쓰고 대응 방안을 생략하지 않습니다."
+    ),
+    "success_metrics": (
+        "측정 가능한 지표를 3개 이상 제시하세요. 각 항목은 반드시 \"지표명 — 측정 방법\" "
+        "형식으로, 지표와 그것을 어떻게 측정할지(설문/로그 분석/전후 비교 등)를 함께 씁니다."
+    ),
+    "assumptions_to_validate": (
+        "아직 검증되지 않은 가정을 3개 이상 제시하세요. 각 항목은 반드시 \"가정 — 검증 "
+        "방법\" 형식으로, 가정과 그것을 어떻게 검증할지(사용자 인터뷰/파일럿 운영/데이터 "
+        "분석 등)를 함께 씁니다."
+    ),
+}
+
+
+def _validate_spec_field_response(raw: dict, field: str) -> str | None:
     if not isinstance(raw, dict):
         return "response_not_object"
     value = raw.get("value")
@@ -1839,18 +1896,39 @@ def _validate_spec_field_response(raw: dict) -> str | None:
         return "value_missing_or_invalid_list"
     if raw.get("claim_type") not in ("document_fact", "expert_judgment"):
         return "invalid_claim_type"
+    if any(_SPEC_PLACEHOLDER_RE.search(v.strip()) for v in value):
+        return "placeholder_value_not_allowed"
+    min_items = _SPEC_FIELD_MIN_ITEMS.get(field, 1)
+    if len(value) < min_items:
+        return "insufficient_item_count"
+    if len(value) != len(set(v.strip() for v in value)):
+        return "duplicate_value_items"
+    if field in _SPEC_FIELD_PAIR_REQUIRED and not all(_SPEC_PAIR_SEPARATOR_RE.search(v) for v in value):
+        return "missing_pair_structure"
+    if field == "mvp_scope":
+        joined = " ".join(value)
+        if not all(marker in joined for marker in ("포함", "제외", "검증")):
+            return "missing_mvp_scope_structure"
+    if field == "technical_approach":
+        joined = " ".join(value)
+        if not all(marker in joined for marker in ("입력", "처리", "저장", "출력")):
+            return "missing_technical_approach_structure"
     return None
 
 
-def _spec_field_prompt(*, persona_id: str, label: str, provisional_idea: dict, evidence: list[dict]) -> str:
+def _spec_field_prompt(*, persona_id: str, field: str, label: str, provisional_idea: dict, evidence: list[dict]) -> str:
     role_label = "기획위원" if persona_id == "planning_expert" else "개발위원"
+    instruction = _SPEC_FIELD_INSTRUCTIONS.get(field, "구체적인 항목을 3개 이상 제시하세요.")
     return f"""[specification_completion — {role_label}가 "{label}" 항목 초안 제시]
 당신은 {role_label}입니다. 검증 대상 아이디어(provisional_idea)의 "{label}" 항목이 아직
 구체화되지 않았습니다. 사용자에게 되묻지 말고, 공고문/평가기준과 아이디어 내용을 참고해
 합리적인 초안을 직접 제시하세요 — 이것은 최종 확정이 아니라 수정 가능한 제안입니다.
 
 규칙:
-- value는 문자열 하나가 아니라 항목별 배열(1~4개)로 작성합니다.
+- {instruction}
+- "아직 확정되지 않음", "추가 논의가 필요합니다", "구체화가 필요합니다", "확인이 필요합니다"
+  같은 보류성 문구를 항목 값으로 쓰지 않습니다 — 항목 자체가 구체적인 결론이어야 합니다.
+- 다른 항목과 사실상 같은 내용을 표현만 바꿔 반복하지 않습니다.
 - claim_type은 "document_fact"(검색 근거에 실제로 적힌 내용을 근거로 삼음) 또는
   "expert_judgment"(근거 없는 전문가 판단) 중 하나입니다. document_fact면 evidence_refs에
   근거의 "ref" 값을 반드시 포함합니다. 근거가 없으면 expert_judgment로 표시합니다 —
@@ -1865,15 +1943,19 @@ def _spec_field_prompt(*, persona_id: str, label: str, provisional_idea: dict, e
 {json.dumps(evidence, ensure_ascii=False)}
 
 {{
-  "value": ["string", "string"],
+  "value": ["string", "string", "string"],
   "claim_type": "document_fact | expert_judgment",
   "evidence_refs": ["string"],
   "reason": "string"
 }}"""
 
 
-def _spec_fallback_values(label: str) -> list[str]:
-    return [f"{label}: 위원 논의만으로 구체안을 확정하지 못해 잠정 기본안으로 진행합니다."]
+def _spec_fallback_values(field: str, label: str) -> list[str]:
+    min_items = _SPEC_FIELD_MIN_ITEMS.get(field, 1)
+    return [
+        f"{label} 항목 {index}: 위원 논의만으로 구체안을 확정하지 못해 잠정 기본안으로 진행합니다."
+        for index in range(1, min_items + 1)
+    ]
 
 
 def make_specification_completion_node(
@@ -1922,10 +2004,13 @@ def make_specification_completion_node(
                 if isinstance(item, dict)
             ]
             prompt = _spec_field_prompt(
-                persona_id=persona_id, label=label, provisional_idea=provisional_idea, evidence=normalized_evidence
+                persona_id=persona_id, field=field, label=label, provisional_idea=provisional_idea, evidence=normalized_evidence
             )
             raw, ok, attempts = _safe_call_structured_json(
-                llm_call, prompt, _validate_spec_field_response, f"specification_completion_{field}_{persona_id}"
+                llm_call,
+                prompt,
+                lambda payload: _validate_spec_field_response(payload, field),
+                f"specification_completion_{field}_{persona_id}",
             )
             used += attempts
             if not ok:
@@ -1981,7 +2066,7 @@ def make_specification_completion_node(
                     "llm_calls_used": used,
                     "phase": "specification_completion",
                 }
-            deduped_values = _spec_fallback_values(label)
+            deduped_values = _spec_fallback_values(field, label)
             saw_document_fact = False
 
         field_spec = _new_field_spec(
