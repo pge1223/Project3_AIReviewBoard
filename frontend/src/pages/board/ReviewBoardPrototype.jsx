@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   Link2, Upload, FileText, Sparkles,
   CheckCircle2, Circle, AlertCircle, AlertTriangle, Award, Target, ShieldCheck,
-  ArrowRight, TrendingUp, ChevronDown, ChevronUp, ChevronRight, Calendar, FolderOpen, X, Trash2,
+  ArrowRight, TrendingUp, ChevronDown, ChevronUp, ChevronRight, Calendar, X, Trash2,
   Menu, User, LogOut, ExternalLink, Gift, AlertOctagon, Quote, FileStack,
 } from "lucide-react";
 import { createProject, getProject, updateProject, getLatestMeeting } from "../../api/projectApi";
@@ -343,7 +343,6 @@ function ModeCard({ meta, selected, onSelect }) {
 }
 
 function EntryScreen({ onEnter, onModeSelect, loading, error, projectId, ensureProject, documents, setDocuments }) {
-  const navigate = useNavigate();
   const [mode, setMode] = useState(null);
   const [dismissedAlerts, setDismissedAlerts] = useState([]);
 
@@ -597,9 +596,6 @@ function EntryScreen({ onEnter, onModeSelect, loading, error, projectId, ensureP
           <h1 className="es-title">새 분석 시작</h1>
           <p className="es-subtitle">현재 준비 상태에 맞는 분석 방식을 선택하고 필요한 자료를 등록해 주세요.</p>
         </div>
-        <button type="button" className="btn-ghost rb-inline-projects" onClick={() => navigate('/projects')}>
-          <FolderOpen size={14} /> 내 프로젝트
-        </button>
       </div>
 
       <div className="es-layout">
@@ -2199,6 +2195,19 @@ export default function ReviewBoardPrototype() {
     if (i > 0) setStage(seq[i - 1]);
   };
 
+  // pge/Claude(2026-07-29, 요청: "신청서 초안 페이지에 메인으로 돌아가기, 새 분석 시작으로") —
+  // 이 세션을 완전히 마무리하고 EntryScreen("새 분석 시작")으로 새로 시작한다. goPrev처럼
+  // 단계만 한 칸 되돌리는 게 아니라, mode/projectId/문서·회의 상태를 전부 비워서 다음
+  // "분석 시작"이 이전 세션 상태를 이어받지 않게 한다.
+  const goToMain = () => {
+    setMode(null);
+    setProjectId(null);
+    setTargetDocuments(null);
+    setCriteriaDocuments([]);
+    setIdeationConv(null);
+    setStage("entry");
+  };
+
   // 가은/Claude(2026-07-20): projectId가 아직 없으면(공고 URL/파일을 하나도 안 넣고
   // 바로 "분석 시작"을 눌렀거나, EntryScreen의 URL/파일 액션이 이미 만들어뒀거나) 여기서
   // 한 번 더 보장한다 — DocumentUploadPage.jsx의 ensureProject()와 동일한 "지연 생성"
@@ -2390,7 +2399,7 @@ export default function ReviewBoardPrototype() {
           onReturnToConversation={() => setStage('ideation')}
         />
       )}
-      {stage === "form_draft" && <ApplicationFormDraftScreen ideationConv={ideationConv} onBack={goPrev} />}
+      {stage === "form_draft" && <ApplicationFormDraftScreen ideationConv={ideationConv} onBack={goPrev} onGoMain={goToMain} />}
       {stage === "upload" && (
         <UploadAndAnalyzeScreen projectId={projectId} onFeedbackReady={handleFeedbackReady} onBack={goPrev} initialDocuments={targetDocuments} />
       )}
