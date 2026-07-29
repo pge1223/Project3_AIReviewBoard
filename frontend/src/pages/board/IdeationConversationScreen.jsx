@@ -904,11 +904,12 @@ function ProblemAreaSelectionBlock({ problemAreas, externalEvidence, onSend, dis
   return (
     <div style={{ marginTop: 4 }}>
       <div style={{ fontSize: 13.5, color: 'var(--text-2)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-        탐색할 문제 영역
+        해결할 문제 선택
       </div>
       <div className="rb-ideation-notice">
-        공모전 분석 결과를 바탕으로 해결할 가치가 있는 문제 영역을 찾았습니다. 먼저 탐색하고
-        싶은 문제를 선택해 주세요. 이 선택은 최종 아이디어 확정이 아닙니다.
+        공고문과 최근 이슈를 바탕으로, 이번 공모전에서 해결할 수 있는 문제 후보를 찾았습니다.
+        각 후보를 살펴보고 '누가 어떤 상황에서 어떤 불편을 겪는지'를 기준으로 논의할 문제를
+        선택해 주세요. 해결 방법과 아이디어는 다음 단계에서 구체화합니다.
       </div>
       <ExternalEvidenceStrip items={externalEvidence} />
       <div style={{ marginTop: 10 }}>
@@ -1417,6 +1418,10 @@ export function IdeationScreen({
   // 1번 참고). 남은 유력 용의점은 이 rAF 루프 effect가 (StrictMode 이중 호출 등으로) 두 번
   // 동시에 도는 경우다 — 이 ref로 같은 컴포넌트 인스턴스에서 루프가 항상 하나만 돌게 막는다.
   const rafLoopActiveRef = useRef(false)
+  // 회의 대화 메시지가 처음 채워질 때(마운트 직후 fetch 완료 시점)는 auto-follow
+  // effect가 곧바로 맨 아래로 스크롤해버려 마운트 시 scrollTop = 0 초기화를 덮어썼다.
+  // 이 ref로 "메시지가 처음 채워진 순간"을 구분해 그때만 맨 위 고정을 유지한다.
+  const initialMessagesLoadedRef = useRef(false)
 
   useEffect(() => {
     return () => {
@@ -1424,6 +1429,13 @@ export function IdeationScreen({
       streamAbortRef.current?.abort()
       pendingFinalRef.current = null
     }
+  }, [])
+
+  // 버그 수정: 최초 렌더 시 스크롤 컨테이너가 맨 아래에서 시작하던 문제 —
+  // 마운트 시점에 명시적으로 맨 위로 초기화한다.
+  useEffect(() => {
+    const container = chatScrollRef.current
+    if (container) container.scrollTop = 0
   }, [])
 
   // 실제 LLM 델타가 도착하는 즉시 content(수신 텍스트)는 이미 갱신돼 있다 — 이 루프는
@@ -1666,7 +1678,17 @@ export function IdeationScreen({
 
   useEffect(() => {
     const container = chatScrollRef.current
-    if (!container || !shouldFollowChatRef.current) return
+    if (!container) return
+
+    const messageCount = ideationConv?.messages?.length || 0
+    if (messageCount > 0 && !initialMessagesLoadedRef.current) {
+      // 메시지가 처음 채워지는 시점 — 맨 아래로 따라가지 않고 맨 위에 고정한 채로 시작한다.
+      initialMessagesLoadedRef.current = true
+      container.scrollTop = 0
+      return
+    }
+
+    if (!shouldFollowChatRef.current) return
 
     // scrollIntoView()는 채팅 박스의 모든 스크롤 가능한 조상(바깥 페이지 포함)을 함께
     // 움직인다. 컨테이너의 scrollTop만 바꿔 새 위원 발언이 와도 페이지 위치는 고정한다.
