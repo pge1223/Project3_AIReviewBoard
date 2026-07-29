@@ -1,0 +1,2850 @@
+<!DOCTYPE html>
+<html lang="ko">
+
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport"
+    content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no">
+  <meta name="keywords" content="">
+  <meta name="description" content="">
+  <meta name="format-detection" content="telephone=no">
+  <title>오픈소스 허브 - 오픈소스 포털</title>
+
+
+  <!-- 로컬 정적 리소스는 @{...} -->
+  <link rel="stylesheet" href="/css/pretendard-gov-local.css">
+  <link rel="stylesheet" href="/css/token/krds_tokens.css">
+  <link rel="stylesheet" href="/css/plugin/swiper-bundle.min.css">
+  <link rel="stylesheet" href="/css/pattern/output.css">
+  <link rel="stylesheet" href="/css/main.css">
+
+  <script defer src="/js/plugin/swiper-bundle.min.js"></script>
+  <script defer src="/js/component/ui-script.js?v=5"></script>
+  <script defer src="/js/pattern/pattern.js"></script>
+  <script defer src="/js/main.js"></script>
+
+  <script>
+    /*<![CDATA[*/
+    var menuPath = "8";
+    var currentPage = 1;
+    var currentSearchKeyword = "";
+    var currentDomesticYn = "";
+    var currentRiskLevel = "";
+    var currentSourceCategory = "855";
+    var currentFieldCategory = "";
+    var currentTechCategory = "";
+    var currentYearFrom = "";
+    var currentYearTo = "";
+    var fieldCategoryData = "{\"1160\":{\"name\":\"\uACF5\uD1B5\",\"children\":[]},\"858\":{\"name\":\"\uC790\uB3D9\uCC28\",\"children\":[{\"id\":1061,\"name\":\"\uD30C\uC6CC\uD2B8\uB808\uC778\"},{\"id\":1062,\"name\":\"\uC0E4\uC2DC\"},{\"id\":1063,\"name\":\"\uC804\uC7A5\uC2DC\uC2A4\uD15C\"},{\"id\":1064,\"name\":\"\uCC28\uCCB4 \uBC0F \uC758\uC7A5\"},{\"id\":1065,\"name\":\"\uC790\uC728\uC8FC\uD589\"},{\"id\":1066,\"name\":\"\uC2A4\uB9C8\uD2B8\uD329\uD1A0\uB9AC\"},{\"id\":1067,\"name\":\"\uC5F0\uB8CC\"},{\"id\":1068,\"name\":\"\uB85C\uBD07\"},{\"id\":1159,\"name\":\"\uCEE4\uB125\uD2F0\uB4DC\uCE74\"}]},\"859\":{\"name\":\"\uC778\uACF5\uC9C0\uB2A5\",\"children\":[{\"id\":1069,\"name\":\"\uC778\uD504\uB77C \uBC0F \uCEF4\uD4E8\uD305\"},{\"id\":1070,\"name\":\"\uB370\uC774\uD130 \uBC0F \uC800\uC7A5\uC18C\"},{\"id\":1071,\"name\":\"\uBAA8\uB378 \uBC0F \uC54C\uACE0\uB9AC\uC998 \"},{\"id\":1072,\"name\":\"\uBAA8\uB378 \uAC1C\uBC1C\/\uD559\uC2B5 \uBC0F \uCD94\uB860\"},{\"id\":1073,\"name\":\"\uD50C\uB7AB\uD3FC \uBC0F MLOps\"},{\"id\":1074,\"name\":\"\uC751\uC6A9 \uBC0F \uC11C\uBE44\uC2A4\"},{\"id\":1075,\"name\":\"\uBCF4\uC548, \uC815\uB82C \uBC0F \uAC70\uBC84\uB10C\uC2A4\"}]}}";
+    if (typeof fieldCategoryData === 'string') {
+      fieldCategoryData = fieldCategoryData ? JSON.parse(fieldCategoryData) : {};
+    }
+    var techCategoryData = "{\"1080\":{\"name\":\"Programming\",\"children\":[{\"id\":1194,\"name\":\"Json\"},{\"id\":1202,\"name\":\"Node.js\"},{\"id\":1195,\"name\":\"Xml\"},{\"id\":1091,\"name\":\"Apex\"},{\"id\":1092,\"name\":\"C\"},{\"id\":1093,\"name\":\"C#\"},{\"id\":1094,\"name\":\"C++\"},{\"id\":1095,\"name\":\"Dart\"},{\"id\":1096,\"name\":\"Erlang\"},{\"id\":1097,\"name\":\"Go\"},{\"id\":1098,\"name\":\"Groovy\"},{\"id\":1099,\"name\":\"Haskell\"},{\"id\":1100,\"name\":\"Java\"},{\"id\":1101,\"name\":\"JavaScript\"},{\"id\":1102,\"name\":\"Kotlin\"},{\"id\":1103,\"name\":\"Lua\"},{\"id\":1104,\"name\":\"MicroPython\"},{\"id\":1105,\"name\":\"Perl\"},{\"id\":1106,\"name\":\"PHP\"},{\"id\":1107,\"name\":\"Python\"},{\"id\":1108,\"name\":\"Ruby\"},{\"id\":1109,\"name\":\"Rust\"},{\"id\":1110,\"name\":\"Scala\"},{\"id\":1111,\"name\":\"SQL\"},{\"id\":1112,\"name\":\"Swift\"},{\"id\":1113,\"name\":\"TypeScript\"}]},\"1081\":{\"name\":\"Database\",\"children\":[{\"id\":1164,\"name\":\"Data\"},{\"id\":1208,\"name\":\"Database\"},{\"id\":1114,\"name\":\"BigQuery\"},{\"id\":1115,\"name\":\"MariaDB\"},{\"id\":1116,\"name\":\"Oracle\"},{\"id\":1117,\"name\":\"Redis\"},{\"id\":1118,\"name\":\"SQLite\"}]},\"1082\":{\"name\":\"Cloud\",\"children\":[{\"id\":1119,\"name\":\"Firebase\"}]},\"1083\":{\"name\":\"Web\",\"children\":[{\"id\":1196,\"name\":\"Crossplatform\"},{\"id\":1199,\"name\":\"Polymer\"},{\"id\":1197,\"name\":\"Web\"},{\"id\":1120,\"name\":\"AngularJS\"},{\"id\":1121,\"name\":\"Express\"},{\"id\":1122,\"name\":\"jQuery\"},{\"id\":1124,\"name\":\"React\"}]},\"1084\":{\"name\":\"Embedded\",\"children\":[{\"id\":1172,\"name\":\"Automotive\"},{\"id\":1171,\"name\":\"Embedded\"},{\"id\":1125,\"name\":\"Arduino\"},{\"id\":1126,\"name\":\"Catch2\"},{\"id\":1127,\"name\":\"CMake\"},{\"id\":1128,\"name\":\"SCons\"}]},\"1085\":{\"name\":\"Frameworks\",\"children\":[{\"id\":1205,\"name\":\"Backend\"},{\"id\":1176,\"name\":\"Compression\"},{\"id\":1175,\"name\":\"Framework\"},{\"id\":1204,\"name\":\"Frontend\"},{\"id\":1161,\"name\":\"Library\"},{\"id\":1174,\"name\":\"Lightweight\"},{\"id\":1177,\"name\":\"Parsing\"},{\"id\":1180,\"name\":\"Rendering\"},{\"id\":1178,\"name\":\"Serialization\"},{\"id\":1129,\"name\":\"Flutter\"},{\"id\":1130,\"name\":\"GTK\"},{\"id\":1131,\"name\":\"Hadoop\"},{\"id\":1132,\"name\":\"Numpy\"},{\"id\":1133,\"name\":\"OpenCL\"},{\"id\":1134,\"name\":\"Opencv\"},{\"id\":1135,\"name\":\"OpenGL\"},{\"id\":1136,\"name\":\"Qt\"},{\"id\":1137,\"name\":\"TensorFlow\"}]},\"1086\":{\"name\":\"Developer tools\",\"children\":[{\"id\":1167,\"name\":\"Debugging\"},{\"id\":1206,\"name\":\"DesignTool\"},{\"id\":1210,\"name\":\"Document Processing\"},{\"id\":1207,\"name\":\"Testing\"},{\"id\":1166,\"name\":\"Tools\"},{\"id\":1165,\"name\":\"Utilities\"},{\"id\":1138,\"name\":\"Ant\"},{\"id\":1139,\"name\":\"Google Test\"},{\"id\":1140,\"name\":\"Gradle\"},{\"id\":1141,\"name\":\"Kubernetes\"},{\"id\":1142,\"name\":\"npm\"},{\"id\":1143,\"name\":\"Podman\"},{\"id\":1144,\"name\":\"Terraform\"}]},\"1087\":{\"name\":\"Development environments\",\"children\":[{\"id\":1209,\"name\":\"Accessibility\"},{\"id\":1203,\"name\":\"DevOps\"},{\"id\":1168,\"name\":\"Development\"},{\"id\":1169,\"name\":\"Platform\"},{\"id\":1145,\"name\":\"Eclipse\"},{\"id\":1146,\"name\":\"Vim\"}]},\"1088\":{\"name\":\"Operating system\",\"children\":[{\"id\":1186,\"name\":\"Cryptography\"},{\"id\":1187,\"name\":\"Encryption\"},{\"id\":1191,\"name\":\"Filesystem\"},{\"id\":1184,\"name\":\"Kernel\"},{\"id\":1162,\"name\":\"Linux\"},{\"id\":1190,\"name\":\"Network\"},{\"id\":1192,\"name\":\"Protocol\"},{\"id\":1183,\"name\":\"Security\"},{\"id\":1189,\"name\":\"System\"},{\"id\":1193,\"name\":\"Unix\"},{\"id\":1147,\"name\":\"Android\"},{\"id\":1148,\"name\":\"BSD\"},{\"id\":1149,\"name\":\"Cygwin\"},{\"id\":1150,\"name\":\"Debian\"},{\"id\":1151,\"name\":\"iOS\"},{\"id\":1152,\"name\":\"MacOS\"},{\"id\":1153,\"name\":\"Ubuntu\"},{\"id\":1154,\"name\":\"Windows\"}]},\"1089\":{\"name\":\"Collaborative work\",\"children\":[{\"id\":1155,\"name\":\"Jira\"},{\"id\":1156,\"name\":\"Linear\"},{\"id\":1157,\"name\":\"Shortcut\"}]},\"1090\":{\"name\":\"Communication tools\",\"children\":[{\"id\":1163,\"name\":\"Communication\"},{\"id\":1158,\"name\":\"Matrix\"}]}}";
+    if (typeof techCategoryData === 'string') {
+      techCategoryData = techCategoryData ? JSON.parse(techCategoryData) : {};
+    }
+    var selectedSourceTags = "[{\"type\":\"source\",\"parentId\":855,\"childId\":null,\"parentName\":\"\uAC1C\uBC1C\uC790\uB300\uD68C\",\"childName\":null}]";
+    if (typeof selectedSourceTags === 'string') {
+      selectedSourceTags = selectedSourceTags ? JSON.parse(selectedSourceTags) : [];
+    }
+    var selectedFieldTags = "[]";
+    if (typeof selectedFieldTags === 'string') {
+      selectedFieldTags = selectedFieldTags ? JSON.parse(selectedFieldTags) : [];
+    }
+    var selectedSourceParents = ["\uAC1C\uBC1C\uC790\uB300\uD68C"];
+    if (typeof selectedSourceParents === 'string') {
+      selectedSourceParents = selectedSourceParents ? JSON.parse(selectedSourceParents) : [];
+    }
+    var selectedTechTags = "[]";
+    if (typeof selectedTechTags === 'string') {
+      selectedTechTags = selectedTechTags ? JSON.parse(selectedTechTags) : [];
+    }
+    var selectedFieldParents = [];
+    if (typeof selectedFieldParents === 'string') {
+      selectedFieldParents = selectedFieldParents ? JSON.parse(selectedFieldParents) : [];
+    }
+    var selectedTechParents = [];
+    if (typeof selectedTechParents === 'string') {
+      selectedTechParents = selectedTechParents ? JSON.parse(selectedTechParents) : [];
+    }
+    var currentModalType = null;
+    var currentModalParentId = null;
+    var currentModalParentName = '';
+    var modalSelectedValues = new Set();
+    /*]]>*/
+    
+    // URL 파라미터 생성 함수
+    function buildFilterUrl(pageIndex) {
+      let params = new URLSearchParams();
+      params.append('pageIndex', pageIndex || 1);
+      
+      if (currentSearchKeyword) params.append('searchKeyword', currentSearchKeyword);
+      if (currentDomesticYn) params.append('domesticYn', currentDomesticYn);
+      if (currentRiskLevel) params.append('riskLevel', currentRiskLevel);
+    if (currentSourceCategory) params.append('sourceCategory', currentSourceCategory);
+      if (selectedSourceTags && selectedSourceTags.length > 0) {
+        selectedSourceTags.forEach(function(tag) {
+          if (tag && tag.parentId !== undefined && tag.parentId !== null) {
+            var value = String(tag.parentId);
+            if (tag.childId !== undefined && tag.childId !== null && tag.childId !== '') {
+              value += ':' + tag.childId;
+            }
+            params.append('sourceTags', value);
+          }
+        });
+      }
+      // 연도 필터 파라미터 추가 (빈 값도 명시적으로 전달하여 필터 초기화 가능하도록)
+      if (currentYearFrom !== undefined && currentYearFrom !== null) {
+        params.append('yearFrom', currentYearFrom);
+      }
+      if (currentYearTo !== undefined && currentYearTo !== null) {
+        params.append('yearTo', currentYearTo);
+      }
+      if (selectedFieldTags && selectedFieldTags.length > 0) {
+        selectedFieldTags.forEach(function(tag) {
+          if (tag && tag.parentId !== undefined && tag.parentId !== null) {
+            var value = String(tag.parentId);
+            if (tag.childId !== undefined && tag.childId !== null && tag.childId !== '') {
+              value += ':' + tag.childId;
+            }
+            params.append('fieldTags', value);
+          }
+        });
+      }
+      if (selectedTechTags && selectedTechTags.length > 0) {
+        selectedTechTags.forEach(function(tag) {
+          if (tag && tag.parentId !== undefined && tag.parentId !== null) {
+            var value = String(tag.parentId);
+            if (tag.childId !== undefined && tag.childId !== null && tag.childId !== '') {
+              value += ':' + tag.childId;
+            }
+            params.append('techTags', value);
+          }
+        });
+      }
+
+      return `/pages/${menuPath}?${params.toString()}`;
+    }
+    
+    // 검색 실행 함수
+    function performSearch() {
+      const searchInput = document.getElementById('search-wrd');
+      currentSearchKeyword = searchInput.value.trim();
+      window.location.href = buildFilterUrl(1);
+    }
+    
+    // 검색 초기화 함수
+    function resetSearch() {
+      window.location.href = `/pages/${menuPath}?pageIndex=1`;
+    }
+    
+    // 필터 적용 함수
+    function applyFilter(filterType, filterValue, filterLabel) {
+      if (filterType === 'domestic') {
+        currentDomesticYn = filterValue;
+      } else if (filterType === 'riskLevel') {
+        currentRiskLevel = filterValue;
+      }else if (filterType === 'source') {
+        if (!filterValue) {
+          currentSourceCategory = '';
+          selectedSourceTags = [];
+          window.location.href = buildFilterUrl(1);
+        } else {
+          var parentId = parseInt(filterValue, 10);
+          if (isNaN(parentId)) {
+            return;
+          }
+          currentSourceCategory = String(parentId);
+          const existingIndex = selectedSourceTags.findIndex(function(tag) {
+            return tag.parentId === parentId;
+          });
+          if (existingIndex >= 0) {
+            selectedSourceTags.splice(existingIndex, 1);
+            if (selectedSourceTags.length === 0) {
+              currentSourceCategory = '';
+            }
+          } else {
+            selectedSourceTags.push({
+              type: 'source',
+              parentId: parentId,
+              parentName: filterLabel || '',
+              childId: null,
+              childName: ''
+            });
+          }
+          window.location.href = buildFilterUrl(1);
+        }
+        return;
+      } else if (filterType === 'field') {
+        if (!filterValue) {
+          currentFieldCategory = '';
+          selectedFieldTags = [];
+          window.location.href = buildFilterUrl(1);
+        } else {
+          var fieldParentId = parseInt(filterValue, 10);
+          if (isNaN(fieldParentId)) {
+            return;
+          }
+          currentFieldCategory = String(fieldParentId);
+          openTagModal('field', fieldParentId, filterLabel);
+        }
+        return;
+      } else if (filterType === 'tech') {
+        if (!filterValue) {
+          currentTechCategory = '';
+          selectedTechTags = [];
+          window.location.href = buildFilterUrl(1);
+        } else {
+          var techParentId = parseInt(filterValue, 10);
+          if (isNaN(techParentId)) {
+            return;
+          }
+          currentTechCategory = String(techParentId);
+          openTagModal('tech', techParentId, filterLabel);
+        }
+        return;
+            }
+      window.location.href = buildFilterUrl(1);
+    }
+    
+    var yearModalPreviousFocus = null;
+
+    function getYearModalFocusables() {
+      var modal = document.getElementById('year-modal');
+      if (!modal || modal.style.display !== 'flex') return [];
+      var sel = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
+      return Array.prototype.filter.call(modal.querySelectorAll(sel), function(el) {
+        return el.offsetParent !== null && !el.disabled;
+      });
+    }
+
+    // 기간 모달 열기
+    function openYearModal() {
+      yearModalPreviousFocus = document.activeElement;
+      const modal = document.getElementById('year-modal');
+      modal.style.display = 'flex';
+      
+      // 현재 값 설정
+      if (currentYearFrom) {
+        document.getElementById('year-from').value = currentYearFrom;
+      }
+      if (currentYearTo) {
+        document.getElementById('year-to').value = currentYearTo;
+      }
+
+      var firstInput = document.getElementById('year-from');
+      if (firstInput) {
+        firstInput.focus();
+      }
+    }
+
+    // 기간 모달 닫기
+    function closeYearModal() {
+      const modal = document.getElementById('year-modal');
+      if (modal) {
+        modal.style.display = 'none';
+      }
+      if (yearModalPreviousFocus && typeof yearModalPreviousFocus.focus === 'function') {
+        try { yearModalPreviousFocus.focus(); } catch (err) {}
+        yearModalPreviousFocus = null;
+      }
+    }
+    
+    // 기간 필터 적용
+    function applyYearFilter() {
+      const yearFrom = document.getElementById('year-from').value.trim();
+      const yearTo = document.getElementById('year-to').value.trim();
+      
+      // 연도 유효성 검사
+      if (yearFrom && yearTo) {
+        const fromYear = parseInt(yearFrom);
+        const toYear = parseInt(yearTo);
+        
+        if (isNaN(fromYear) || isNaN(toYear)) {
+          alert('올바른 연도를 입력해주세요.');
+          return;
+        }
+        
+        if (fromYear > toYear) {
+          alert('시작 연도가 종료 연도보다 클 수 없습니다.');
+          return;
+        }
+      }
+      
+      // 연도 값 설정 (빈 값도 허용)
+      currentYearFrom = yearFrom || '';
+      currentYearTo = yearTo || '';
+      
+      closeYearModal();
+      
+      // 검색 실행
+      window.location.href = buildFilterUrl(1);
+    }
+    
+    // 기간 필터 초기화
+    function clearYearFilter() {
+      currentYearFrom = '';
+      currentYearTo = '';
+      window.location.href = buildFilterUrl(1);
+    }
+
+    var tagModalPreviousFocus = null;
+
+    function getTagModalFocusables() {
+      var modal = document.getElementById('tag-modal');
+      if (!modal || modal.style.display !== 'flex') return [];
+      var sel = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
+      return Array.prototype.filter.call(modal.querySelectorAll(sel), function(el) {
+        return el.offsetParent !== null && !el.disabled;
+      });
+    }
+
+    function openTagModal(type, parentId, parentName) {
+      tagModalPreviousFocus = document.activeElement;
+      currentModalType = type;
+      modalSelectedValues = new Set();
+
+      const resolvedParentId = typeof parentId === 'number' ? parentId : parseInt(parentId, 10);
+      if (isNaN(resolvedParentId)) {
+        return;
+      }
+      currentModalParentId = resolvedParentId;
+
+      const parentKey = String(resolvedParentId);
+      let parentData = null;
+      if (type === 'field') {
+        parentData = fieldCategoryData[parentKey];
+      } else if (type === 'tech') {
+        parentData = techCategoryData[parentKey];
+      }
+
+      const resolvedParentName = parentName || (parentData && parentData.name ? parentData.name : '');
+      currentModalParentName = resolvedParentName;
+
+      const modal = document.getElementById('tag-modal');
+      const title = document.getElementById('tag-modal-title');
+      const body = document.getElementById('tag-modal-body');
+
+      if (!modal || !body) {
+        return;
+      }
+
+      const children = parentData && Array.isArray(parentData.children) ? parentData.children : [];
+      const existingSelection = type === 'field' ? selectedFieldTags : selectedTechTags;
+
+      if (existingSelection && existingSelection.length > 0) {
+        existingSelection
+          .filter(function(tag) { return tag.parentId === resolvedParentId; })
+          .forEach(function(tag) {
+            if (tag.childId === undefined || tag.childId === null || tag.childId === '') {
+              modalSelectedValues.add('ALL');
+            } else {
+              modalSelectedValues.add(String(tag.childId));
+            }
+          });
+      }
+
+      if (modalSelectedValues.size === 0) {
+        modalSelectedValues.add('ALL');
+      }
+
+      body.innerHTML = '';
+      const options = [{ id: 'ALL', name: '전체' }];
+      if (children && children.length > 0) {
+        children.forEach(function(item) {
+          if (item && item.id !== undefined && item.name) {
+            options.push({
+              id: String(item.id),
+              name: item.name
+            });
+          }
+        });
+      }
+
+      var titlePrefix = type === 'field' ? '산업분류' : '기술분류';
+      options.forEach(function(option) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        const value = option.id;
+        const selected = modalSelectedValues.has(value);
+        btn.className = 'modal-tag-btn' + (selected ? ' active' : '');
+        btn.setAttribute('data-value', value);
+        btn.setAttribute('aria-label', titlePrefix + ' ' + option.name + (selected ? ' 선택됨' : ' 선택안함'));
+        btn.textContent = option.name;
+        body.appendChild(btn);
+      });
+
+      if (title) {
+        title.textContent = titlePrefix + ' - ' + resolvedParentName;
+      }
+
+      modal.style.display = 'flex';
+      document.body.classList.add('modal-open');
+
+      var focusables = getTagModalFocusables();
+      if (focusables.length > 0) {
+        focusables[0].focus();
+      }
+    }
+
+    function closeTagModal() {
+      const modal = document.getElementById('tag-modal');
+      if (modal) {
+        modal.style.display = 'none';
+      }
+      document.body.classList.remove('modal-open');
+      modalSelectedValues = new Set();
+      currentModalType = null;
+      currentModalParentId = null;
+      currentModalParentName = '';
+
+      if (tagModalPreviousFocus && typeof tagModalPreviousFocus.focus === 'function') {
+        try { tagModalPreviousFocus.focus(); } catch (err) {}
+        tagModalPreviousFocus = null;
+      }
+    }
+
+    function applyTagModal() {
+      const selections = Array.from(modalSelectedValues);
+      if (!currentModalType || currentModalParentId === null) {
+        closeTagModal();
+        return;
+      }
+
+      if (currentModalType === 'field') {
+        const parentId = currentModalParentId;
+        const parentName = currentModalParentName;
+        const remaining = selectedFieldTags.filter(function(tag) {
+          return tag.parentId !== parentId;
+        });
+
+        if (selections.length === 0 || (selections.length === 1 && selections[0] === 'ALL')) {
+          selectedFieldTags = remaining.concat({
+            type: 'field',
+            parentId: parentId,
+            parentName: parentName,
+            childId: null,
+            childName: ''
+          });
+          currentFieldCategory = String(parentId);
+        } else {
+          const newEntries = selections
+            .filter(function(value) { return value !== 'ALL'; })
+            .map(function(value) {
+              const childId = parseInt(value, 10);
+              const childName = getChildName('field', parentId, childId);
+              return {
+                type: 'field',
+                parentId: parentId,
+                parentName: parentName,
+                childId: childId,
+                childName: childName
+              };
+            });
+          selectedFieldTags = remaining.concat(newEntries);
+          currentFieldCategory = String(parentId);
+        }
+      } else if (currentModalType === 'tech') {
+        const parentId = currentModalParentId;
+        const parentName = currentModalParentName;
+        const remaining = selectedTechTags.filter(function(tag) {
+          return tag.parentId !== parentId;
+        });
+
+        if (selections.length === 0 || (selections.length === 1 && selections[0] === 'ALL')) {
+          selectedTechTags = remaining.concat({
+            type: 'tech',
+            parentId: parentId,
+            parentName: parentName,
+            childId: null,
+            childName: ''
+          });
+          currentTechCategory = String(parentId);
+        } else {
+          const newEntries = selections
+            .filter(function(value) { return value !== 'ALL'; })
+            .map(function(value) {
+              const childId = parseInt(value, 10);
+              const childName = getChildName('tech', parentId, childId);
+              return {
+                type: 'tech',
+                parentId: parentId,
+                parentName: parentName,
+                childId: childId,
+                childName: childName
+              };
+            });
+          selectedTechTags = remaining.concat(newEntries);
+          currentTechCategory = String(parentId);
+        }
+      }
+
+      closeTagModal();
+      window.location.href = buildFilterUrl(1);
+    }
+
+    function getChildName(type, parentId, childId) {
+      if (childId === undefined || childId === null || isNaN(childId)) {
+        return '';
+      }
+      const parentKey = String(parentId);
+      const data = type === 'field' ? fieldCategoryData[parentKey] : techCategoryData[parentKey];
+      if (!data || !Array.isArray(data.children)) {
+        return '';
+      }
+      const child = data.children.find(function(item) {
+        return String(item.id) === String(childId);
+      });
+      return child ? child.name : '';
+    }
+
+    // 오픈소스 포털 기능
+    document.addEventListener('DOMContentLoaded', function () {
+      // Enter 키로 검색
+      const searchInput = document.getElementById('search-wrd');
+      if (searchInput) {
+        searchInput.addEventListener('keypress', function(e) {
+          if (e.key === 'Enter') {
+            performSearch();
+          }
+        });
+      }
+      
+      // 필터 및 태그 관련 클릭 이벤트
+      document.addEventListener('click', function(e) {
+        const removeBtn = e.target.closest('.tag-remove-btn');
+        if (removeBtn) {
+          e.stopPropagation();
+          const tagEl = removeBtn.closest('.selected-tag');
+          if (tagEl) {
+            const tagType = tagEl.getAttribute('data-type');
+            const parentIdAttr = tagEl.getAttribute('data-parent-id');
+            const childIdAttr = tagEl.getAttribute('data-child-id');
+            const parentId = parentIdAttr ? parseInt(parentIdAttr, 10) : null;
+            const childId = childIdAttr ? parseInt(childIdAttr, 10) : null;
+            if (tagType === 'field') {
+              selectedFieldTags = selectedFieldTags.filter(function(tag) {
+                return !(tag.parentId === parentId && ((tag.childId !== undefined && tag.childId !== null ? tag.childId : null) === (childId !== null ? childId : null)));
+              });
+              if (selectedFieldTags.length === 0) {
+                currentFieldCategory = '';
+              }
+            } else if (tagType === 'tech') {
+              selectedTechTags = selectedTechTags.filter(function(tag) {
+                return !(tag.parentId === parentId && ((tag.childId !== undefined && tag.childId !== null ? tag.childId : null) === (childId !== null ? childId : null)));
+              });
+              if (selectedTechTags.length === 0) {
+                currentTechCategory = '';
+              }
+            } else if (tagType === 'source') {
+              selectedSourceTags = selectedSourceTags.filter(function(tag) {
+                return !(tag.parentId === parentId);
+              });
+              if (selectedSourceTags.length === 0) {
+                currentSourceCategory = '';
+              }
+            } else if (tagType === 'domestic') {
+              currentDomesticYn = '';
+            } else if (tagType === 'riskLevel') {
+              currentRiskLevel = '';
+            }
+            window.location.href = buildFilterUrl(1);
+          }
+          return;
+        }
+
+        const modalBtn = e.target.closest('.modal-tag-btn');
+        if (modalBtn) {
+          const value = modalBtn.getAttribute('data-value');
+          if (value === 'ALL') {
+            modalSelectedValues.clear();
+            modalSelectedValues.add('ALL');
+          } else {
+            if (modalSelectedValues.has(value)) {
+              modalSelectedValues.delete(value);
+            } else {
+              modalSelectedValues.add(value);
+            }
+            if (modalSelectedValues.size === 0) {
+              modalSelectedValues.add('ALL');
+            }
+            if (modalSelectedValues.has('ALL') && modalSelectedValues.size > 1) {
+              modalSelectedValues.delete('ALL');
+            }
+          }
+
+          const container = modalBtn.parentElement;
+          if (container) {
+            var prefix = currentModalType === 'field' ? '산업분류' : '기술분류';
+            container.querySelectorAll('.modal-tag-btn').forEach(function(btn) {
+              const btnValue = btn.getAttribute('data-value');
+              const labelName = (btn.textContent || '').trim();
+              const selected = modalSelectedValues.has(btnValue);
+              if (selected) {
+                btn.classList.add('active');
+              } else {
+                btn.classList.remove('active');
+              }
+              btn.setAttribute('aria-label', prefix + ' ' + labelName + (selected ? ' 선택됨' : ' 선택안함'));
+            });
+          }
+          return;
+        }
+
+        const filterBtn = e.target.closest('.filter-btn');
+        if (filterBtn && filterBtn.hasAttribute('data-filter-type')) {
+          const filterType = filterBtn.getAttribute('data-filter-type');
+          const filterValue = filterBtn.getAttribute('data-filter-value');
+          const filterLabel = filterBtn.getAttribute('data-filter-label') || filterBtn.textContent || '';
+          applyFilter(filterType, filterValue, filterLabel);
+        }
+      });
+
+      const tagModal = document.getElementById('tag-modal');
+      if (tagModal) {
+        tagModal.addEventListener('click', function(event) {
+          if (event.target === tagModal) {
+            closeTagModal();
+          }
+        });
+      }
+
+      document.addEventListener('keydown', function(event) {
+        var tagModal = document.getElementById('tag-modal');
+        if (tagModal && tagModal.style.display === 'flex') {
+          if (event.key === 'Escape') {
+            event.preventDefault();
+            closeTagModal();
+            return;
+          }
+          if (event.key === 'Tab') {
+            var focusables = getTagModalFocusables();
+            if (focusables.length > 0) {
+              var first = focusables[0];
+              var last = focusables[focusables.length - 1];
+              if (event.shiftKey) {
+                if (document.activeElement === first) {
+                  event.preventDefault();
+                  last.focus();
+                }
+              } else {
+                if (document.activeElement === last) {
+                  event.preventDefault();
+                  first.focus();
+                }
+              }
+            }
+          }
+          return;
+        }
+        var yearModal = document.getElementById('year-modal');
+        if (yearModal && yearModal.style.display === 'flex') {
+          if (event.key === 'Escape') {
+            event.preventDefault();
+            closeYearModal();
+            return;
+          }
+          if (event.key === 'Tab') {
+            var focusables = getYearModalFocusables();
+            if (focusables.length > 0) {
+              var first = focusables[0];
+              var last = focusables[focusables.length - 1];
+              if (event.shiftKey) {
+                if (document.activeElement === first) {
+                  event.preventDefault();
+                  last.focus();
+                }
+              } else {
+                if (document.activeElement === last) {
+                  event.preventDefault();
+                  first.focus();
+                }
+              }
+            }
+          }
+        }
+      }, true);
+
+      // 컴포넌트 카드 클릭 이벤트
+      document.querySelectorAll('.component-card').forEach(card => {
+        // 키보드 이벤트 (탭 → Space/Enter)
+        card.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+
+            // 화살표 아이콘 예외 처리
+            if (e.target.closest('.arrow-icon')) return;
+
+            const projectId = card.getAttribute('data-project-id');
+            window.location.href = `/opensource/hub/${projectId}`;
+          }
+        });
+
+        // 기존 클릭 이벤트 (마우스)
+        card.addEventListener('click', (e) => {
+          if (e.target.closest('.arrow-icon')) {
+            return;  // 화살표는 별도 동작
+          }
+
+          const projectId = card.getAttribute('data-project-id');
+          window.location.href = `/opensource/hub/${projectId}`;
+        });
+      });
+
+      // 화살표 버튼 클릭 이벤트
+      document.addEventListener('click', function(e) {
+        const btn = e.target.closest('.arrow-icon');
+        if (btn) {
+          e.stopPropagation();
+          
+          const card = btn.closest('.component-card');
+          const projectId = card.getAttribute('data-project-id');
+          
+          window.location.href = `/opensource/hub/${projectId}`;
+        }
+      });
+      
+      // 페이지네이션 동적 생성
+      const paginationContainer = document.getElementById('pagination-container');
+      if (paginationContainer) {
+        const currentPage = 1;
+        const totalPages = 4;
+        
+        // 이전 버튼
+        const prevBtn = document.getElementById('pagination-prev');
+        if (prevBtn && currentPage > 1) {
+          prevBtn.addEventListener('click', function() {
+            window.location.href = buildFilterUrl(currentPage - 1);
+          });
+        }
+        
+        // 다음 버튼
+        const nextBtn = document.getElementById('pagination-next');
+        if (nextBtn && currentPage < totalPages) {
+          nextBtn.addEventListener('click', function() {
+            window.location.href = buildFilterUrl(currentPage + 1);
+          });
+        }
+        
+        // 페이지 링크 생성
+        const pageLinksContainer = document.getElementById('pagination-links');
+        if (pageLinksContainer && totalPages > 1) {
+          const startPage = Math.floor((currentPage - 1) / 5) * 5 + 1;
+          const endPage = Math.min(startPage + 4, totalPages);
+          
+          // 첫 페이지
+          if (startPage > 1) {
+            const firstLink = document.createElement('a');
+            firstLink.className = 'page-link';
+            firstLink.href = 'javascript:void(0)';
+            firstLink.textContent = '1';
+            firstLink.addEventListener('click', function() {
+              window.location.href = buildFilterUrl(1);
+            });
+            pageLinksContainer.appendChild(firstLink);
+            
+            // ... 표시
+            if (startPage > 2) {
+              const dot = document.createElement('span');
+              dot.className = 'page-link link-dot';
+              pageLinksContainer.appendChild(dot);
+            }
+          }
+          
+          // 현재 블록의 페이지들
+          for (let page = startPage; page <= endPage; page++) {
+            const pageLink = document.createElement('a');
+            pageLink.className = 'page-link' + (page === currentPage ? ' active' : '');
+            pageLink.href = 'javascript:void(0)';
+            pageLink.textContent = page;
+            pageLink.addEventListener('click', function() {
+              window.location.href = buildFilterUrl(page);
+            });
+            pageLinksContainer.appendChild(pageLink);
+          }
+          
+          // 마지막 페이지
+          if (startPage + 4 < totalPages) {
+            // ... 표시
+            if (startPage + 4 < totalPages - 1) {
+              const dot = document.createElement('span');
+              dot.className = 'page-link link-dot';
+              pageLinksContainer.appendChild(dot);
+            }
+            
+            const lastLink = document.createElement('a');
+            lastLink.className = 'page-link';
+            lastLink.href = 'javascript:void(0)';
+            lastLink.textContent = totalPages;
+            lastLink.addEventListener('click', function() {
+              window.location.href = buildFilterUrl(totalPages);
+            });
+            pageLinksContainer.appendChild(lastLink);
+          }
+        }
+      }
+    });
+  </script>
+</head>
+
+<body>
+  <div id="wrap">
+    
+  <!-- KRDS CSS 로드 -->
+  <link rel="stylesheet" href="/css/token/krds_tokens.css">
+  <link rel="stylesheet" href="/css/component/component.css">
+  <link rel="stylesheet" href="/css/pattern/output.css">
+
+  <!-- 스킵 네비게이션: 키보드 사용자를 위한 본문 바로가기 -->
+  <div id="krds-skip-link" class="sr-only-focusable">
+    <a href="#breadcrumb" aria-label="본문 콘텐츠로 바로가기">본문 바로가기</a>
+    <a href="#oss-main-menu" aria-label="메인 메뉴로 바로가기">메인 메뉴로 바로가기</a>
+  </div>
+
+  <div id="krds-masthead">
+    <div class="toggle-wrap">
+      <div class="toggle-head">
+        <div class="inner">
+          <span class="nuri-txt">이 누리집은 대한민국 공식 전자정부 누리집입니다.</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <header id="krds-header">
+    <!-- 헤더 컨텐츠 영역  -->
+    <div class="header-in">
+      <!-- 헤더 상단 기타메뉴 -->
+      <div class="header-container">
+        <div class="inner">
+          <div class="header-branding">
+            <h2 class="logo_top left">
+              <a href="/" id="mainLogo" onclick="refreshMenuAndGoHome(event)">
+                <span class="sr-only">오픈소스 포털</span>
+              </a>
+            </h2>
+            <div class="header-actions" style="padding-right: 10px;">
+              <button type="button" 
+                      class="btn-navi sch" 
+                      id="headerSearchBtn" 
+                      title="통합검색"
+                      aria-label="통합검색 실행">통합검색</button>
+              
+              
+              <button type="button" 
+                      class="btn-navi all" 
+                      aria-controls="mobile-nav"
+                      aria-label="모바일 메뉴 열기"
+                      aria-expanded="false">전체메뉴</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- //헤더 상단 기타메뉴 -->
+
+      <!-- 메인메뉴 : 데스크탑 -->
+      
+
+      <nav class="krds-main-menu" id="oss-main-menu">
+        <div class="inner"> 
+          <ul class="gnb-menu" aria-label="메인 메뉴"> 
+            <li>
+              
+              <button type="button" class="gnb-main-trigger" data-trigger="gnb" aria-expanded="false" aria-haspopup="true" aria-controls="gnb-main-menu-0">오픈 랩</button>
+              <div class="gnb-toggle-wrap" id="gnb-main-menu-0">
+                <div class="gnb-main-list" data-has-submenu="true">
+                  <div class="gnb-sub-list single-list between">
+                    <div class="gnb-sub-content">
+                      <h2 class="sub-title" style="border-bottom: 0.1rem solid #e9ecef;"><span>오픈 랩</span></h2>
+                      <ul>
+                        <li>
+                          <a href="/pages/2" class="gnb-sub-trigger is-link" data-trigger="gnb">오픈소스 개발자대회</a>
+                        </li>
+                        <li>
+                          <a href="/pages/3" class="gnb-sub-trigger is-link" data-trigger="gnb">컨트리뷰션 아카데미</a>
+                        </li>
+                        <li>
+                          <a href="/pages/14" class="gnb-sub-trigger is-link" data-trigger="gnb">라이선스 검증</a>
+                        </li>
+                        <li>
+                          <a href="/pages/4" class="gnb-sub-trigger is-link" data-trigger="gnb">오픈소스 커뮤니티</a>
+                        </li>
+                        <li>
+                          <a href="/pages/7" class="gnb-sub-trigger is-link" data-trigger="gnb">개발자랩</a>
+                        </li>
+                        <li>
+                          <a href="/pages/5" class="gnb-sub-trigger is-link" data-trigger="gnb">오픈업 센터</a>
+                        </li>
+                      </ul>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </li> 
+            <li>
+              <a href="/pages/8" class="gnb-main-trigger is-link" data-trigger="gnb">오픈소스 허브</a>
+              
+              
+            </li> 
+            <li>
+              
+              <button type="button" class="gnb-main-trigger" data-trigger="gnb" aria-expanded="false" aria-haspopup="true" aria-controls="gnb-main-menu-2">오픈 라운지</button>
+              <div class="gnb-toggle-wrap" id="gnb-main-menu-2">
+                <div class="gnb-main-list" data-has-submenu="true">
+                  <div class="gnb-sub-list single-list between">
+                    <div class="gnb-sub-content">
+                      <h2 class="sub-title" style="border-bottom: 0.1rem solid #e9ecef;"><span>오픈 라운지</span></h2>
+                      <ul>
+                        <li>
+                          <a href="/pages/10" class="gnb-sub-trigger is-link" data-trigger="gnb">공지사항</a>
+                        </li>
+                        <li>
+                          <a href="/pages/11" class="gnb-sub-trigger is-link" data-trigger="gnb">오픈소스 뉴스</a>
+                        </li>
+                        <li>
+                          <a href="/pages/12" class="gnb-sub-trigger is-link" data-trigger="gnb">자료실</a>
+                        </li>
+                        <li>
+                          <a href="/pages/13" class="gnb-sub-trigger is-link" data-trigger="gnb">문의하기</a>
+                        </li>
+                      </ul>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </li>
+          </ul>
+        </div>
+      </nav>
+
+      <!-- //메인메뉴 : 데스크탑 -->
+    </div>
+    <!-- //헤더 컨텐츠 영역  -->
+
+    <!-- 메인메뉴 : 모바일 -->
+    <div id="mobile-nav" class="krds-main-menu-mobile" style="display: none;">
+      <div class="gnb-wrap">
+        <!-- gnb-header -->
+        <div class="gnb-header" style="margin-top: 30px;">
+          <!-- gnb-utils --> 
+          <!-- //gnb-utils -->
+          <!-- gnb-login --> 
+          <!-- gnb-service-menu -->
+          <!-- 검색 -->
+          <div class="sch-input">
+            <input type="text" class="krds-input" placeholder="찾고자 하는 메뉴명을 입력해 주세요" title="찾고자 하는 메뉴명 입력">
+            <button type="button" class="krds-btn medium icon ico-search">
+              <span class="sr-only">검색</span>
+              <i class="svg-icon ico-sch"></i>
+            </button>
+          </div>
+          <!-- //검색 -->
+        </div>
+        <!-- //gnb-header -->
+
+        <!-- gnb-body -->
+        <div class="gnb-body">
+          <!-- gnb-menu -->
+          <div class="gnb-menu">
+            <div class="menu-wrap">
+              <ul role="tablist">
+                <li role="none">
+                  <a href="#mGnb-anchor1"
+                     class="gnb-main-trigger  active"
+                     role="tab"
+                     aria-selected="true" aria-controls="mGnb-anchor1" id="tab-0">오픈 랩</a>
+                </li>
+                <li role="none">
+                  <a href="#mGnb-anchor2"
+                     class="gnb-main-trigger"
+                     role="tab"
+                     aria-selected="false" aria-controls="mGnb-anchor2" id="tab-1">오픈소스 허브</a>
+                </li>
+                <li role="none">
+                  <a href="#mGnb-anchor3"
+                     class="gnb-main-trigger"
+                     role="tab"
+                     aria-selected="false" aria-controls="mGnb-anchor3" id="tab-2">오픈 라운지</a>
+                </li>
+              </ul>
+            </div>
+            <div class="submenu-wrap">
+              <div class="gnb-sub-list" role="tabpanel" id="mGnb-anchor1" aria-labelledby="tab-0">
+                <h2 class="sub-title">오픈 랩</h2>
+                <ul>
+                  
+                  <li>
+                    <a href="/pages/2" class="gnb-sub-trigger">오픈소스 개발자대회</a>
+                  </li>
+                  <li>
+                    <a href="/pages/3" class="gnb-sub-trigger">컨트리뷰션 아카데미</a>
+                  </li>
+                  <li>
+                    <a href="/pages/14" class="gnb-sub-trigger">라이선스 검증</a>
+                  </li>
+                  <li>
+                    <a href="/pages/4" class="gnb-sub-trigger">오픈소스 커뮤니티</a>
+                  </li>
+                  <li>
+                    <a href="/pages/7" class="gnb-sub-trigger">개발자랩</a>
+                  </li>
+                  <li>
+                    <a href="/pages/5" class="gnb-sub-trigger">오픈업 센터</a>
+                  </li>
+                </ul>
+              </div>
+              <div class="gnb-sub-list" role="tabpanel" id="mGnb-anchor2" aria-labelledby="tab-1">
+                <h2 class="sub-title">오픈소스 허브</h2>
+                <ul>
+                  <li>
+                    <a href="/pages/8" class="gnb-sub-trigger">오픈소스 허브</a>
+                  </li>
+                  
+                </ul>
+              </div>
+              <div class="gnb-sub-list" role="tabpanel" id="mGnb-anchor3" aria-labelledby="tab-2">
+                <h2 class="sub-title">오픈 라운지</h2>
+                <ul>
+                  
+                  <li>
+                    <a href="/pages/10" class="gnb-sub-trigger">공지사항</a>
+                  </li>
+                  <li>
+                    <a href="/pages/11" class="gnb-sub-trigger">오픈소스 뉴스</a>
+                  </li>
+                  <li>
+                    <a href="/pages/12" class="gnb-sub-trigger">자료실</a>
+                  </li>
+                  <li>
+                    <a href="/pages/13" class="gnb-sub-trigger">문의하기</a>
+                  </li>
+                </ul>
+              </div>
+            </div>
+          </div> 
+        </div>
+
+        <!-- gnb-close -->
+        <button type="button" class="krds-btn medium icon" id="close-nav">
+          <span class="sr-only">전체메뉴 닫기</span>
+          <i class="svg-icon ico-popup-close"></i>
+        </button>
+        <!-- //gnb-close -->
+      </div>
+    </div>
+
+    <!-- //메인메뉴 : 모바일 -->
+  </header>
+
+  <script>
+    // 메뉴 새로고침 함수 - 임시 비활성화
+    function refreshMenu() {
+      return fetch('/api/menu')
+        .then(res => res.json())
+        .then(data => renderMenu(data))
+        .catch(err => console.error('메뉴 새로고침 실패:', err));
+    }
+    
+    // 로고 클릭 시 메뉴 새로고침 후 홈으로 이동
+    function refreshMenuAndGoHome(event) {
+      event.preventDefault(); // 기본 링크 동작 방지
+      
+      // 로딩 상태 표시
+      const logo = event.currentTarget;
+      const originalContent = logo.innerHTML;
+      logo.innerHTML = '<span class="sr-only">메뉴 새로고침 중...</span>';
+      logo.style.opacity = '0.6';
+      logo.style.cursor = 'wait';
+      
+      // 메뉴 새로고침 후 홈으로 이동
+      refreshMenu()
+        .then(() => {
+          // 성공 시 홈으로 이동
+          window.location.href = '/';
+        })
+        .catch(error => {
+          console.error('메뉴 새로고침 실패:', error);
+          // 실패 시에도 홈으로 이동 (기존 동작)
+          window.location.href = '/';
+        })
+        .finally(() => {
+          // 로딩 상태 해제
+          logo.innerHTML = originalContent;
+          logo.style.opacity = '1';
+          logo.style.cursor = 'pointer';
+        });
+    }
+    
+    document.addEventListener('DOMContentLoaded', function() {
+      const refreshMenuBtn = document.getElementById('refreshMenuBtn');
+      
+      if (refreshMenuBtn) {
+        refreshMenuBtn.addEventListener('click', function() {
+          // 버튼 비활성화 및 로딩 상태 표시
+          refreshMenuBtn.disabled = true;
+          refreshMenuBtn.innerHTML = '<i class="svg-icon ico-loading" style="margin-right: 4px; animation: spin 1s linear infinite;"></i>새로고침 중...';
+          
+          // 메뉴 새로고침 API 호출
+          refreshMenu()
+            .then(() => {
+              // 성공 시 페이지 새로고침
+              window.location.reload();
+            })
+            .catch(error => {
+              alert('메뉴 새로고침 실패: ' + error.message);
+              // 버튼 원상복구
+              refreshMenuBtn.disabled = false;
+              refreshMenuBtn.innerHTML = '<i class="svg-icon ico-refresh" style="margin-right: 4px;"></i>메뉴 새로고침';
+            });
+        });
+      }
+    });
+    
+    // 로딩 애니메이션 CSS
+    const style = document.createElement('style');
+    style.textContent = `
+      @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+      }
+      .menu-refresh-area {
+        position: relative;
+      }
+      .menu-refresh-area button:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+    `;
+    document.head.appendChild(style);
+  </script>
+
+  <!-- 통합검색 모달 -->
+  <div id="popTotalSch" class="krds-modal">
+    <div class="modal-back"></div>
+    <div class="modal-dialog">
+      <div class="modal-content">
+        <button type="button" class="btn-close" aria-label="닫기">
+          <i class="svg-icon ico-popup-close"></i>
+        </button>
+        <div class="modal-conts">
+          <div class="pop-total-serch-wrap">
+            <!-- 검색 상단 영역 -->
+            <div class="search-total-top">
+              <h2 class="search-tit">통합검색</h2>
+              <div class="search-text">
+                <div class="sch-form-wrap">
+                  <div class="sch-input">
+                    <input type="text" id="totalSearchInput" class="krds-input" placeholder="검색어를 입력해주세요" title="검색어 입력">
+                    <button type="button" class="krds-btn medium icon" id="totalSearchBtn" title="검색">
+                      <span class="sr-only">검색</span>
+                      <i class="svg-icon ico-sch"></i>
+                    </button>
+                  </div>
+                  <a href="#" class="krds-btn text" id="advancedSearchLink">고급검색</a>
+                </div>
+              </div>
+            </div>
+            <!-- //검색 상단 영역 -->
+
+            <!-- 검색 필터 및 결과 영역 -->
+            <div class="sch-info-list">
+              <!-- 왼쪽: 검색 필터 -->
+              <div class="sch-info-item">
+                <h3 class="tit">검색 필터</h3>
+                <div class="filter-applied" id="filterApplied">
+                  <p class="filter-applied-text">적용된 필터가 없습니다.</p>
+                  <p class="filter-applied-text" style="display: none;">적용된 고급검색 조건 <span id="filterCount">0</span></p>
+                  <div class="filter-tags" id="filterTags" style="display: none; margin-top: 1rem; flex-wrap: wrap; gap: 0.5rem;"></div>
+                </div>
+                
+                <div class="filter-section" style="margin-top: 2rem;">
+                  <div class="filter-group">
+                    <h4 class="filter-group-title">검색대상</h4>
+                    <ul class="filter-list" style="list-style: none; padding: 0; margin: 0;">
+                      <li style="margin-bottom: 0.5rem;">
+                        <div class="krds-form-check">
+                          <input type="checkbox" name="searchTarget" value="menu" id="targetMenu">
+                          <label for="targetMenu">메뉴 <span class="count">(2)</span></label>
+                        </div>
+                      </li>
+                      <li style="margin-bottom: 0.5rem;">
+                        <div class="krds-form-check">
+                          <input type="checkbox" name="searchTarget" value="news" id="targetNews" checked>
+                          <label for="targetNews">뉴스 <span class="count">(2,301)</span></label>
+                        </div>
+                      </li>
+                      <li style="margin-bottom: 0.5rem;">
+                        <div class="krds-form-check">
+                          <input type="checkbox" name="searchTarget" value="faq" id="targetFaq" checked>
+                          <label for="targetFaq">자주 묻는 질문 <span class="count">(39)</span></label>
+                        </div>
+                      </li>
+                      <li style="margin-bottom: 0.5rem;">
+                        <div class="krds-form-check">
+                          <input type="checkbox" name="searchTarget" value="data" id="targetData" checked>
+                          <label for="targetData">자료 <span class="count">(18,201)</span></label>
+                        </div>
+                      </li>
+                      <li style="margin-bottom: 0.5rem;">
+                        <div class="krds-form-check">
+                          <input type="checkbox" name="searchTarget" value="policy" id="targetPolicy">
+                          <label for="targetPolicy">정책 <span class="count">(32)</span></label>
+                        </div>
+                      </li>
+                      <li style="margin-bottom: 0.5rem;">
+                        <div class="krds-form-check">
+                          <input type="checkbox" name="searchTarget" value="law" id="targetLaw" checked>
+                          <label for="targetLaw">법령 <span class="count">(392)</span></label>
+                        </div>
+                      </li>
+                    </ul>
+                  </div>
+
+                  <div class="filter-group" style="margin-top: 2rem;">
+                    <h4 class="filter-group-title">검색 기간</h4>
+                    <ul class="filter-list" style="list-style: none; padding: 0; margin: 0;">
+                      <li style="margin-bottom: 0.5rem;">
+                        <div class="krds-form-check">
+                          <input type="radio" name="searchPeriod" value="1month" id="period1month">
+                          <label for="period1month">1개월</label>
+                        </div>
+                      </li>
+                      <li style="margin-bottom: 0.5rem;">
+                        <div class="krds-form-check">
+                          <input type="radio" name="searchPeriod" value="3month" id="period3month" checked>
+                          <label for="period3month">3개월</label>
+                        </div>
+                      </li>
+                      <li style="margin-bottom: 0.5rem;">
+                        <div class="krds-form-check">
+                          <input type="radio" name="searchPeriod" value="6month" id="period6month">
+                          <label for="period6month">6개월</label>
+                        </div>
+                      </li>
+                      <li style="margin-bottom: 0.5rem;">
+                        <div class="krds-form-check">
+                          <input type="radio" name="searchPeriod" value="1year" id="period1year">
+                          <label for="period1year">1년</label>
+                        </div>
+                      </li>
+                      <li style="margin-bottom: 0.5rem;">
+                        <div class="krds-form-check">
+                          <input type="radio" name="searchPeriod" value="custom" id="periodCustom">
+                          <label for="periodCustom">기간 직접 선택</label>
+                        </div>
+                        <div class="date-range" id="dateRange" style="display: none; margin-top: 1rem; margin-left: 2rem;">
+                          <input type="date" id="startDate" class="krds-input" style="width: 45%;">
+                          <span style="margin: 0 0.5rem;">-</span>
+                          <input type="date" id="endDate" class="krds-input" style="width: 45%;">
+                        </div>
+                      </li>
+                    </ul>
+                  </div>
+
+                  <div class="filter-group" style="margin-top: 2rem;">
+                    <h4 class="filter-group-title">자료 유형</h4>
+                    <ul class="filter-list" style="list-style: none; padding: 0; margin: 0;">
+                      <li style="margin-bottom: 0.5rem;">
+                        <div class="krds-form-check">
+                          <input type="checkbox" name="dataType" value="pdf" id="typePdf" checked>
+                          <label for="typePdf">PDF</label>
+                        </div>
+                      </li>
+                      <li style="margin-bottom: 0.5rem;">
+                        <div class="krds-form-check">
+                          <input type="checkbox" name="dataType" value="hwp" id="typeHwp">
+                          <label for="typeHwp">HWP</label>
+                        </div>
+                      </li>
+                    </ul>
+                  </div>
+
+                  <div class="filter-actions" style="margin-top: 2rem; display: flex; gap: 0.5rem;">
+                    <button type="button" class="krds-btn medium" id="resetFilters">초기화</button>
+                    <button type="button" class="krds-btn medium primary" id="applyFilters">적용하기</button>
+                  </div>
+                </div>
+              </div>
+              <!-- //왼쪽: 검색 필터 -->
+
+              <!-- 오른쪽: 검색 결과 -->
+              <div class="sch-info-item">
+                <div class="search-results-header" style="margin-bottom: 1.5rem;">
+                  <p class="results-count">적용된 검색어 '<span id="searchKeywordDisplay">퇴직</span>' 검색 결과 <span id="totalResultsCount">22,459</span>개</p>
+                  <div class="results-options" style="display: flex; justify-content: space-between; align-items: center; margin-top: 1rem;">
+                    <div class="results-per-page">
+                      <label>목록 표시 개수</label>
+                      <select id="resultsPerPage" class="krds-select" style="margin-left: 0.5rem;">
+                        <option value="10" selected>10개</option>
+                        <option value="20">20개</option>
+                        <option value="30">30개</option>
+                      </select>
+                    </div>
+                    <div class="results-sort">
+                      <label>정렬기준</label>
+                      <select id="resultsSort" class="krds-select" style="margin-left: 0.5rem;">
+                        <option value="relevance" selected>관련도순</option>
+                        <option value="latest">최신순</option>
+                        <option value="popular">인기순</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="search-results" id="searchResults">
+                  <!-- 검색 결과 목록이 여기에 동적으로 추가됩니다 -->
+                  <div class="result-item" style="padding: 1.5rem 0; border-bottom: 1px solid #e9ecef;">
+                    <div class="result-type" style="color: #666; font-size: 0.875rem; margin-bottom: 0.5rem;">메뉴</div>
+                    <h3 class="result-title" style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem;">
+                      <a href="#" style="color: #333; text-decoration: none;">나의 퇴직금 계산해 보기</a>
+                    </h3>
+                    <p class="result-description" style="color: #666; font-size: 0.875rem; line-height: 1.6;">
+                      퇴직금은 근로자가 상당한 기간 근무하고 퇴직할 때 받는 퇴직급여 또는 일시금입니다. 본인 퇴직금을 미리 계산해 볼 수 있습니다.
+                    </p>
+                    <div class="result-meta" style="margin-top: 0.5rem; color: #999; font-size: 0.75rem;">2023.11.01</div>
+                  </div>
+
+                  <div class="result-item" style="padding: 1.5rem 0; border-bottom: 1px solid #e9ecef;">
+                    <div class="result-type" style="color: #666; font-size: 0.875rem; margin-bottom: 0.5rem;">뉴스·소식</div>
+                    <h3 class="result-title" style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem;">
+                      <a href="#" style="color: #333; text-decoration: none;">고용노동부, 정부혁신과 적극행정 우수사례를 확산하고, 일하는 방식 개선을 통해 정부혁신을 속도감 있게 추진</a>
+                    </h3>
+                    <p class="result-description" style="color: #666; font-size: 0.875rem; line-height: 1.6;">
+                      "외국인 근로자 퇴직금 자동한급제"를 최우수 사례로 선정하여, 외국인 근로자가 한국에 처음 입국할 때 미리 등록한 계좌로 퇴직금을 자동 지급하는 제도를 운영하고 있습니다.
+                    </p>
+                    <div class="result-meta" style="margin-top: 0.5rem; color: #999; font-size: 0.75rem;">2023.11.01 | 뉴스·소식 > 뉴스소식</div>
+                  </div>
+
+                  <div class="result-item" style="padding: 1.5rem 0; border-bottom: 1px solid #e9ecef;">
+                    <div class="result-type" style="color: #666; font-size: 0.875rem; margin-bottom: 0.5rem;">법령정보</div>
+                    <h3 class="result-title" style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem;">
+                      <a href="#" style="color: #333; text-decoration: none;">퇴직연금복지과, 퇴직연금 수수료 부과에 관한 고시제정안 행정예고</a>
+                    </h3>
+                    <p class="result-description" style="color: #666; font-size: 0.875rem; line-height: 1.6;">
+                      고용노동부 고시 제2023-453호, 퇴직연금 수수료 부과에 관한 고시 제정안 행정예고로, 행정절차법 제46조에 따라 의견을 수렴합니다.
+                    </p>
+                    <div class="result-meta" style="margin-top: 0.5rem; color: #999; font-size: 0.75rem;">2023.12.01 | 정보공개 > 법령정보 > 입법·행정예고</div>
+                  </div>
+                </div>
+
+                <!-- 페이지네이션 -->
+                <div class="pagination-area" style="margin-top: 2rem; display: flex; justify-content: center;">
+                  <nav class="pagination">
+                    <button type="button" class="krds-btn medium icon" id="prevPage" title="이전">
+                      <i class="svg-icon ico-angle left"></i>
+                    </button>
+                    <ul class="pagination-list" id="paginationList" style="display: flex; gap: 0.5rem; list-style: none; padding: 0; margin: 0;">
+                      <li><a href="#" class="krds-btn medium" data-page="1">1</a></li>
+                      <li><a href="#" class="krds-btn medium" data-page="2">2</a></li>
+                      <li><a href="#" class="krds-btn medium" data-page="3">3</a></li>
+                      <li><a href="#" class="krds-btn medium active" data-page="4">4</a></li>
+                      <li><a href="#" class="krds-btn medium" data-page="5">5</a></li>
+                      <li><a href="#" class="krds-btn medium" data-page="6">6</a></li>
+                      <li><a href="#" class="krds-btn medium" data-page="7">7</a></li>
+                      <li><a href="#" class="krds-btn medium" data-page="8">8</a></li>
+                      <li><a href="#" class="krds-btn medium" data-page="99">99</a></li>
+                    </ul>
+                    <button type="button" class="krds-btn medium icon" id="nextPage" title="다음">
+                      <i class="svg-icon ico-angle right"></i>
+                    </button>
+                  </nav>
+                </div>
+                <!-- //페이지네이션 -->
+              </div>
+              <!-- //오른쪽: 검색 결과 -->
+            </div>
+            <!-- //검색 필터 및 결과 영역 -->
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <!-- //통합검색 모달 -->
+
+  <script>
+    // 통합검색 모달 관련 스크립트
+    document.addEventListener('DOMContentLoaded', function() {
+      const headerSearchInput = document.getElementById('headerSearchInput');
+      const totalSearchInput = document.getElementById('totalSearchInput');
+      const totalSearchBtn = document.getElementById('totalSearchBtn');
+      const periodCustom = document.getElementById('periodCustom');
+      const dateRange = document.getElementById('dateRange');
+      const resetFiltersBtn = document.getElementById('resetFilters');
+      const applyFiltersBtn = document.getElementById('applyFilters');
+
+      // 헤더 검색 입력 필드에서 Enter 키 또는 통합검색 버튼 클릭 시 검색 페이지로 이동
+      if (headerSearchInput) {
+        headerSearchInput.addEventListener('keypress', function(e) {
+          if (e.key === 'Enter' || e.keyCode === 13) {
+            e.preventDefault();
+            const searchValue = this.value.trim();
+            if (searchValue) {
+              // 검색 페이지로 이동
+              window.location.href = '/pages/search?keyword=' + encodeURIComponent(searchValue);
+            }
+          }
+        });
+        
+        // keydown 이벤트도 추가 (더 확실한 감지)
+        headerSearchInput.addEventListener('keydown', function(e) {
+          if (e.key === 'Enter' || e.keyCode === 13) {
+            e.preventDefault();
+            const searchValue = this.value.trim();
+            if (searchValue) {
+              // 검색 페이지로 이동
+              window.location.href = '/pages/search?keyword=' + encodeURIComponent(searchValue);
+            }
+          }
+        });
+      }
+
+      // 통합검색 모달 내 검색 버튼 클릭
+      if (totalSearchBtn) {
+        totalSearchBtn.addEventListener('click', function() {
+          performSearch();
+        });
+      }
+
+      // 통합검색 모달 내 검색 입력 필드에서 Enter 키
+      if (totalSearchInput) {
+        totalSearchInput.addEventListener('keypress', function(e) {
+          if (e.key === 'Enter' || e.keyCode === 13) {
+            e.preventDefault();
+            performSearch();
+          }
+        });
+        
+        // keydown 이벤트도 추가 (더 확실한 감지)
+        totalSearchInput.addEventListener('keydown', function(e) {
+          if (e.key === 'Enter' || e.keyCode === 13) {
+            e.preventDefault();
+            performSearch();
+          }
+        });
+      }
+
+      // 검색 실행 함수 - 검색 페이지로 이동
+      function performSearch() {
+        const keyword = totalSearchInput.value.trim();
+        if (keyword) {
+          // 검색 페이지로 이동
+          window.location.href = '/pages/search?keyword=' + encodeURIComponent(keyword);
+        } else {
+          alert('검색어를 입력해주세요.');
+        }
+      }
+
+      // 기간 직접 선택 라디오 버튼 클릭 시 날짜 입력 필드 표시
+      if (periodCustom) {
+        periodCustom.addEventListener('change', function() {
+          if (this.checked) {
+            dateRange.style.display = 'flex';
+          } else {
+            dateRange.style.display = 'none';
+          }
+        });
+      }
+
+      // 필터 초기화
+      if (resetFiltersBtn) {
+        resetFiltersBtn.addEventListener('click', function() {
+          // 모든 체크박스와 라디오 버튼 초기화
+          document.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+            cb.checked = false;
+          });
+          document.querySelectorAll('input[type="radio"]').forEach(rb => {
+            rb.checked = false;
+          });
+          // 기본값으로 복원
+          document.getElementById('targetNews').checked = true;
+          document.getElementById('targetFaq').checked = true;
+          document.getElementById('targetData').checked = true;
+          document.getElementById('targetLaw').checked = true;
+          document.getElementById('period3month').checked = true;
+          document.getElementById('typePdf').checked = true;
+          dateRange.style.display = 'none';
+        });
+      }
+
+      // 필터 적용
+      if (applyFiltersBtn) {
+        applyFiltersBtn.addEventListener('click', function() {
+          // 필터 적용 로직
+          updateFilterTags();
+          performSearch();
+        });
+      }
+
+      // 필터 태그 업데이트
+      function updateFilterTags() {
+        const filterTags = document.getElementById('filterTags');
+        const filterCount = document.getElementById('filterCount');
+        const filterAppliedText = document.querySelector('.filter-applied-text');
+        const tags = [];
+
+        // 검색대상 태그
+        document.querySelectorAll('input[name="searchTarget"]:checked').forEach(cb => {
+          const label = cb.closest('label').querySelector('.label-text').textContent.split(' ')[0];
+          tags.push(label);
+        });
+
+        // 검색 기간 태그
+        const selectedPeriod = document.querySelector('input[name="searchPeriod"]:checked');
+        if (selectedPeriod) {
+          const periodLabel = selectedPeriod.closest('label').querySelector('.label-text').textContent;
+          tags.push(periodLabel);
+        }
+
+        // 자료 유형 태그
+        document.querySelectorAll('input[name="dataType"]:checked').forEach(cb => {
+          tags.push(cb.value.toUpperCase());
+        });
+
+        if (tags.length > 0) {
+          filterTags.innerHTML = tags.map(tag => 
+            `<span class="filter-tag" style="display: inline-block; padding: 0.25rem 0.5rem; background: #f0f0f0; border-radius: 0.25rem; font-size: 0.875rem;">${tag}</span>`
+          ).join('');
+          filterTags.style.display = 'flex';
+          filterCount.textContent = tags.length;
+          filterAppliedText.style.display = 'none';
+          document.querySelectorAll('.filter-applied-text')[1].style.display = 'block';
+        } else {
+          filterTags.style.display = 'none';
+          filterAppliedText.style.display = 'block';
+          document.querySelectorAll('.filter-applied-text')[1].style.display = 'none';
+        }
+      }
+
+      // 헤더 검색 버튼 클릭 시 검색 페이지로 이동
+      const headerSearchBtn = document.getElementById('headerSearchBtn');
+      if (headerSearchBtn) {
+        headerSearchBtn.addEventListener('click', function() {
+          const searchValue = headerSearchInput ? headerSearchInput.value.trim() : '';
+          if (searchValue) {
+            window.location.href = '/pages/search?keyword=' + encodeURIComponent(searchValue);
+          } else {
+            // 검색어가 없으면 검색 페이지로만 이동
+            window.location.href = '/pages/search';
+          }
+        });
+      }
+    });
+  </script>
+
+
+    <div id="container">
+      <div class="inner in-between">
+        <div class="openhub-content">
+          <div class="openhub-sidebar">
+            <h1 class="page-title">오픈소스 허브</h1>
+            <div class="filter-section">
+              <!-- 검색 -->
+              <div class="filter-group" style="display:flex; flex-direction: row; gap: 1rem;">
+                <div class="sch-input">
+                  <input type="text" id="search-wrd" class="krds-input" placeholder="프로젝트명" title="키워드 입력" 
+                         value="" name="searchKeyword">
+                  <button type="button" class="krds-btn medium icon ico-search btn-exec" id="btn-search" onclick="performSearch()">
+                    <span class="sr-only">검색</span>
+                    <i class="svg-icon ico-sch"></i>
+                  </button>
+                </div>
+                <button type="button" class="krds-btn" onclick="resetSearch()">초기화</button>
+              </div>
+
+              <!-- 국내외 여부 -->
+              <div class="filter-group">
+                <h3 class="filter-title">국내외 여부</h3>
+                <ul class="filter-list">
+                  <li class="filter-item">
+                    <button type="button" class="filter-btn active" 
+                            data-filter-type="domestic" data-filter-value=""
+                            aria-label="국내외 여부 전체 선택됨">전체</button>
+                  </li>
+                  <li class="filter-item">
+                    <button type="button" class="filter-btn"
+                            data-filter-type="domestic" data-filter-value="Y"
+                            aria-label="국내외 여부 국내 선택안함">국내</button>
+                  </li>
+                  <li class="filter-item">
+                    <button type="button" class="filter-btn"
+                            data-filter-type="domestic" data-filter-value="N"
+                            aria-label="국내외 여부 해외 선택안함">해외</button>
+                  </li>
+                </ul>
+              </div>
+
+              <!-- 라이선스 위험도 -->
+              <div class="filter-group" >
+                <h3 class="filter-title">라이선스 위험도</h3>
+                <ul class="filter-list">
+                  <li class="filter-item">
+                    <button type="button" class="filter-btn active"
+                            data-filter-type="riskLevel" data-filter-value=""
+                            aria-label="위험도 전체 선택됨">전체</button>
+                  </li>
+                  <li class="filter-item">
+                    <button type="button" class="filter-btn"
+                            data-filter-type="riskLevel" data-filter-value="1"
+                            aria-label="위험도 안전 선택안함">안전</button>
+                  </li>
+                  <li class="filter-item">
+                    <button type="button" class="filter-btn"
+                            data-filter-type="riskLevel" data-filter-value="2"
+                            aria-label="위험도 주의 선택안함">주의</button>
+                  </li>
+                  <li class="filter-item">
+                    <button type="button" class="filter-btn"
+                            data-filter-type="riskLevel" data-filter-value="3"
+                            aria-label="위험도 위험 선택안함">위험</button>
+                  </li>
+                </ul>
+              </div>
+              <!-- 사업분류 -->
+              <div class="filter-group">
+                <h3 class="filter-title">사업분류</h3>
+                <ul class="filter-list">
+                  <li class="filter-item">
+                    <button type="button" class="filter-btn"
+                            data-filter-type="source" data-filter-value=""
+                            data-filter-label="전체"
+                            aria-label="사업분류 전체 선택안함">전체</button>
+                  </li>
+                  <li class="filter-item">
+                    <button type="button" class="filter-btn" 
+                            data-filter-type="source"
+                            data-filter-value="854" data-filter-label="테크맵" aria-label="사업분류 테크맵 선택안함">테크맵</button>
+                  </li>
+                  <li class="filter-item">
+                    <button type="button" class="filter-btn active" 
+                            data-filter-type="source"
+                            data-filter-value="855" data-filter-label="개발자대회" aria-label="사업분류 개발자대회 선택됨">개발자대회</button>
+                  </li>
+                  <li class="filter-item">
+                    <button type="button" class="filter-btn" 
+                            data-filter-type="source"
+                            data-filter-value="856" data-filter-label="아카데미" aria-label="사업분류 아카데미 선택안함">아카데미</button>
+                  </li>
+                  <li class="filter-item">
+                    <button type="button" class="filter-btn" 
+                            data-filter-type="source"
+                            data-filter-value="857" data-filter-label="R&amp;D" aria-label="사업분류 R&amp;D 선택안함">R&amp;D</button>
+                  </li>
+                </ul>
+              </div>
+
+              <div class="filter-group">
+                <h3 class="filter-title">산업분류</h3>
+                <ul class="filter-list">
+                  <li class="filter-item">
+                    <button type="button" class="filter-btn active"
+                            data-filter-type="field" data-filter-value=""
+                            data-filter-label="전체"
+                            aria-label="산업분류 전체 선택됨">전체</button>
+                  </li>
+                  <li class="filter-item">
+                    <button type="button" class="filter-btn" 
+                            data-filter-type="field"
+                            data-filter-value="1160" data-filter-label="공통" aria-label="산업분류 공통 선택안함">공통</button>
+                  </li>
+                  <li class="filter-item">
+                    <button type="button" class="filter-btn" 
+                            data-filter-type="field"
+                            data-filter-value="858" data-filter-label="자동차" aria-label="산업분류 자동차 선택안함">자동차</button>
+                  </li>
+                  <li class="filter-item">
+                    <button type="button" class="filter-btn" 
+                            data-filter-type="field"
+                            data-filter-value="859" data-filter-label="인공지능" aria-label="산업분류 인공지능 선택안함">인공지능</button>
+                  </li>
+                </ul>
+              </div>
+
+              <div class="filter-group">
+                <h3 class="filter-title">기술분류</h3>
+                <ul class="filter-list">
+                  <li class="filter-item">
+                    <button type="button" class="filter-btn active"
+                            data-filter-type="tech" data-filter-value=""
+                            data-filter-label="전체"
+                            aria-label="기술분류 전체 선택됨">전체</button>
+                  </li>
+                  <li class="filter-item">
+                    <button type="button" class="filter-btn" 
+                            data-filter-type="tech"
+                            data-filter-value="1080" data-filter-label="Programming" aria-label="기술분류 Programming 선택안함">Programming</button>
+                  </li>
+                  <li class="filter-item">
+                    <button type="button" class="filter-btn" 
+                            data-filter-type="tech"
+                            data-filter-value="1081" data-filter-label="Database" aria-label="기술분류 Database 선택안함">Database</button>
+                  </li>
+                  <li class="filter-item">
+                    <button type="button" class="filter-btn" 
+                            data-filter-type="tech"
+                            data-filter-value="1082" data-filter-label="Cloud" aria-label="기술분류 Cloud 선택안함">Cloud</button>
+                  </li>
+                  <li class="filter-item">
+                    <button type="button" class="filter-btn" 
+                            data-filter-type="tech"
+                            data-filter-value="1083" data-filter-label="Web" aria-label="기술분류 Web 선택안함">Web</button>
+                  </li>
+                  <li class="filter-item">
+                    <button type="button" class="filter-btn" 
+                            data-filter-type="tech"
+                            data-filter-value="1084" data-filter-label="Embedded" aria-label="기술분류 Embedded 선택안함">Embedded</button>
+                  </li>
+                  <li class="filter-item">
+                    <button type="button" class="filter-btn" 
+                            data-filter-type="tech"
+                            data-filter-value="1085" data-filter-label="Frameworks" aria-label="기술분류 Frameworks 선택안함">Frameworks</button>
+                  </li>
+                  <li class="filter-item">
+                    <button type="button" class="filter-btn" 
+                            data-filter-type="tech"
+                            data-filter-value="1086" data-filter-label="Developer tools" aria-label="기술분류 Developer tools 선택안함">Developer tools</button>
+                  </li>
+                  <li class="filter-item">
+                    <button type="button" class="filter-btn" 
+                            data-filter-type="tech"
+                            data-filter-value="1087" data-filter-label="Development environments" aria-label="기술분류 Development environments 선택안함">Development environments</button>
+                  </li>
+                  <li class="filter-item">
+                    <button type="button" class="filter-btn" 
+                            data-filter-type="tech"
+                            data-filter-value="1088" data-filter-label="Operating system" aria-label="기술분류 Operating system 선택안함">Operating system</button>
+                  </li>
+                  <li class="filter-item">
+                    <button type="button" class="filter-btn" 
+                            data-filter-type="tech"
+                            data-filter-value="1089" data-filter-label="Collaborative work" aria-label="기술분류 Collaborative work 선택안함">Collaborative work</button>
+                  </li>
+                  <li class="filter-item">
+                    <button type="button" class="filter-btn" 
+                            data-filter-type="tech"
+                            data-filter-value="1090" data-filter-label="Communication tools" aria-label="기술분류 Communication tools 선택안함">Communication tools</button>
+                  </li>
+                </ul>
+              </div>
+            </div>
+          </div>
+          <div class="openhub-main">
+            <nav class="krds-breadcrumb-wrap" aria-label="현재 경로" id="breadcrumb" style="margin-bottom: 0;">
+              <ol class="breadcrumb">
+                <li class="home"><a href="/" class="txt">홈</a></li>
+                <li class="breadcrumb-item active" aria-current="page">오픈소스 허브</li>
+              </ol>
+            </nav>
+             
+            <div style="background: #EEF2F7; padding: 2rem; border-radius: 1rem;margin-bottom: 2rem;">
+              <!-- 기간 필터 -->
+              <div style="display: flex; flex-direction: row; align-items: center; gap: 1rem; margin-bottom: 1.5rem; flex-wrap: wrap;">
+                <span style="font-weight: 700; color: #2c3e50; min-width: 60px;">기간</span>
+                <button class="filter-btn active" id="btn-year-all"
+                        onclick="clearYearFilter()" aria-label="연도 전체 선택됨">전체</button>
+                <button class="filter-btn" id="btn-year-select"  
+                        onclick="openYearModal()" aria-label="연도 기간 선택안함">기간 선택</button>
+                <div style="flex: 1; display: flex; justify-content: flex-end;">
+                  <button class="filter-btn"  onclick="window.location.href='/openhub/register'">등록 신청하기</button>
+                </div>
+                
+                
+              </div>
+              <div style="margin-top: 1.5rem; display: flex; flex-direction: column; gap: 0.75rem;">
+                <span style="font-weight: 700; color: #2c3e50;">선택된 태그</span>
+                <div class="selected-tags">
+                  <span class="selected-tag" data-type="source" data-parent-id="855" data-parent-name="개발자대회">
+                    <span>#개발자대회-전체</span>
+                    <button type="button" class="tag-remove-btn" aria-label="태그 삭제">×</button>
+                  </span>
+                </div>
+                  </div>
+                </div>
+            
+            <!-- 기간 선택 모달 (키보드 접근성: Tab/Esc/Enter) -->
+            <div id="year-modal" role="dialog" aria-modal="true" aria-labelledby="year-modal-title" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; justify-content: center; align-items: center;">
+              <div style="background: white; padding: 2rem; border-radius: 12px; width: 400px; max-width: 90%;">
+                <h3 id="year-modal-title" style="margin: 0 0 1.5rem 0; font-size: 1.5rem; font-weight: 700;">기간 선택</h3>
+                
+                <div style="display: flex; flex-direction: column; gap: 1rem;">
+                  <div>
+                    <label style="display: block; margin-bottom: 0.5rem; font-weight: 600;">시작 연도</label>
+                    <input type="number" id="year-from" class="krds-input" placeholder="예: 2017" title="시작 연도 입력"
+                           min="2000" max="2100" 
+                           onkeypress="if(event.key === 'Enter') { document.getElementById('year-to').focus(); }"
+                           style="width: 100%; padding: 0.75rem; border: 1px solid #ddd; border-radius: 4px;">
+                </div>
+                  
+                  <div>
+                    <label style="display: block; margin-bottom: 0.5rem; font-weight: 600;">종료 연도</label>
+                    <input type="number" id="year-to" class="krds-input" placeholder="예: 2025" title="종료 연도 입력"
+                           min="2000" max="2100"
+                           onkeypress="if(event.key === 'Enter') { applyYearFilter(); }"
+                           style="width: 100%; padding: 0.75rem; border: 1px solid #ddd; border-radius: 4px;">
+                </div>
+                  </div>
+                
+                <div style="display: flex; gap: 1rem; margin-top: 2rem;">
+                  <button class="krds-btn" onclick="closeYearModal()" 
+                          style="flex: 1; padding: 0.75rem; background: #6c757d; color: white; border: none; border-radius: 4px; cursor: pointer;">취소</button>
+                  <button class="krds-btn" onclick="applyYearFilter()" 
+                          style="flex: 1; padding: 0.75rem; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer;">적용</button>
+                </div>
+                  </div>
+                </div>
+
+            <!-- 카테고리 다중 선택 모달 (키보드 접근성: Tab/Esc/Enter) role, aria-modal, aria-labelledby 속성 추가 -->
+            <div id="tag-modal" class="tag-modal" role="dialog" aria-modal="true" aria-labelledby="tag-modal-title">
+              <div class="tag-modal-content">
+                <div class="tag-modal-header">
+                  <h3 id="tag-modal-title">카테고리 선택</h3>
+                  <button type="button" class="tag-modal-close" onclick="closeTagModal()" aria-label="닫기">×</button>
+                </div>
+                <div class="tag-modal-body" id="tag-modal-body">
+                  <!-- tags injected -->
+                  </div>
+                <div class="tag-modal-footer">
+                  <button type="button" class="krds-btn ghost" onclick="closeTagModal()">취소</button>
+                  <button type="button" class="krds-btn" onclick="applyTagModal()">적용</button>
+                </div>
+              </div>
+                </div>
+            <!-- 결과 헤더 -->
+            <div class="result-header"> 
+              <div class="result-info">
+                <span class="result-count">
+                  
+                  총 <span style="color: #007bff; font-weight: 700;">39</span>건
+                </span>
+                  </div>
+                </div>
+
+            <!-- 컴포넌트 그리드 -->
+            <div class="component-grid">
+              <div class="component-card" tabindex="0" data-project-id="56958">
+                <div class="card-header">
+                  <div class="card-title">express-cargo</div>
+                </div>
+                <div style="height: 1px; background: #dee2e6; margin: 0.5rem 0;"></div>
+                <p class="card-description">2025년 오픈소스 개발자대회 동상(일반) 수상작 - 데코레이터 기반 Express 요청 데이터 처리 미들웨어 라이브러리</p>
+                <div class="card-tags">
+                  <div class="tags-container">
+                    <span><span class="tag">#국내</span></span>
+                    
+                    <span>
+                      <span class="tag">#개발자대회</span>
+                    </span>
+                    <span>
+                      <span class="tag">#공통</span>
+                    </span>
+                    <span>
+                      <span class="tag">#JavaScript</span><span class="tag">#TypeScript</span>
+                    </span>
+                  </div>
+                  <div style="display: flex; align-items: center; gap: 0.5rem;">
+                    <span style="font-size: 1.4rem; font-weight: 600; color: #007bff;">112 pts</span>
+                  </div>
+                </div>
+              </div>
+              <div class="component-card" tabindex="0" data-project-id="56961">
+                <div class="card-header">
+                  <div class="card-title">BrainTrace</div>
+                </div>
+                <div style="height: 1px; background: #dee2e6; margin: 0.5rem 0;"></div>
+                <p class="card-description">2025년 오픈소스 개발자대회 장려상(학생) 수상작 - GraphRAG 기술을 활용한 온디바이스 지식 관리 시스템</p>
+                <div class="card-tags">
+                  <div class="tags-container">
+                    <span><span class="tag">#국내</span></span>
+                    
+                    <span>
+                      <span class="tag">#개발자대회</span>
+                    </span>
+                    <span>
+                      <span class="tag">#공통</span>
+                    </span>
+                    <span>
+                      <span class="tag">#JavaScript</span><span class="tag">#Python</span>
+                    </span>
+                  </div>
+                  <div style="display: flex; align-items: center; gap: 0.5rem;">
+                    <span style="font-size: 1.4rem; font-weight: 600; color: #007bff;">117 pts</span>
+                  </div>
+                </div>
+              </div>
+              <div class="component-card" tabindex="0" data-project-id="56955">
+                <div class="card-header">
+                  <div class="card-title">Spring AI Playground</div>
+                </div>
+                <div style="height: 1px; background: #dee2e6; margin: 0.5rem 0;"></div>
+                <p class="card-description">2025년 오픈소스 개발자대회 동상(일반) 수상작 - (AI 애플리케이션 개발을 위한) MCP, Vector Database, RAG, LLM Chat을 테스트할 수 있는 AI Playground</p>
+                <div class="card-tags">
+                  <div class="tags-container">
+                    <span><span class="tag">#국내</span></span>
+                    
+                    <span>
+                      <span class="tag">#개발자대회</span>
+                    </span>
+                    <span>
+                      <span class="tag">#공통</span>
+                    </span>
+                    <span>
+                      <span class="tag">#Java</span><span class="tag">#JavaScript</span>
+                    </span>
+                  </div>
+                  <div style="display: flex; align-items: center; gap: 0.5rem;">
+                    <span style="font-size: 1.4rem; font-weight: 600; color: #007bff;">105 pts</span>
+                  </div>
+                </div>
+              </div>
+              <div class="component-card" tabindex="0" data-project-id="56957">
+                <div class="card-header">
+                  <div class="card-title">LangStar</div>
+                </div>
+                <div style="height: 1px; background: #dee2e6; margin: 0.5rem 0;"></div>
+                <p class="card-description">2025년 오픈소스 개발자대회 동상(일반) 수상작 - 누구나 손쉽게 Agentic한 언어 모델을 설계하고 실행할 수 있는 비주얼 개발 플랫폼</p>
+                <div class="card-tags">
+                  <div class="tags-container">
+                    <span><span class="tag">#국내</span></span>
+                    
+                    <span>
+                      <span class="tag">#개발자대회</span>
+                    </span>
+                    <span>
+                      <span class="tag">#공통</span>
+                    </span>
+                    <span>
+                      <span class="tag">#Python</span><span class="tag">#TypeScript</span>
+                    </span>
+                  </div>
+                  <div style="display: flex; align-items: center; gap: 0.5rem;">
+                    <span style="font-size: 1.4rem; font-weight: 600; color: #007bff;">74 pts</span>
+                  </div>
+                </div>
+              </div>
+              <div class="component-card" tabindex="0" data-project-id="56959">
+                <div class="card-header">
+                  <div class="card-title">investica</div>
+                </div>
+                <div style="height: 1px; background: #dee2e6; margin: 0.5rem 0;"></div>
+                <p class="card-description">2025년 오픈소스 개발자대회 동상(일반) 수상작 - 금융 정보 접근성 향상을 위한 AI 챗봇 서비스</p>
+                <div class="card-tags">
+                  <div class="tags-container">
+                    <span><span class="tag">#국내</span></span>
+                    
+                    <span>
+                      <span class="tag">#개발자대회</span>
+                    </span>
+                    <span>
+                      <span class="tag">#공통</span>
+                    </span>
+                    <span>
+                      <span class="tag">#JavaScript</span><span class="tag">#TypeScript</span>
+                    </span>
+                  </div>
+                  <div style="display: flex; align-items: center; gap: 0.5rem;">
+                    <span style="font-size: 1.4rem; font-weight: 600; color: #007bff;">50 pts</span>
+                  </div>
+                </div>
+              </div>
+              <div class="component-card" tabindex="0" data-project-id="56960">
+                <div class="card-header">
+                  <div class="card-title">teleport plugin slack access request</div>
+                </div>
+                <div style="height: 1px; background: #dee2e6; margin: 0.5rem 0;"></div>
+                <p class="card-description">2025년 오픈소스 개발자대회 동상(학생) 수상작 - Teleport의 Access Request 기능을 확장한 슬랙 ChatOps 플러그인</p>
+                <div class="card-tags">
+                  <div class="tags-container">
+                    <span><span class="tag">#국내</span></span>
+                    
+                    <span>
+                      <span class="tag">#개발자대회</span>
+                    </span>
+                    <span>
+                      <span class="tag">#공통</span>
+                    </span>
+                    <span>
+                      <span class="tag">#Go</span><span class="tag">#Kubernetes</span>
+                    </span>
+                  </div>
+                  <div style="display: flex; align-items: center; gap: 0.5rem;">
+                    <span style="font-size: 1.4rem; font-weight: 600; color: #007bff;">59 pts</span>
+                  </div>
+                </div>
+              </div>
+              <div class="component-card" tabindex="0" data-project-id="56953">
+                <div class="card-header">
+                  <div class="card-title">Colbrush</div>
+                </div>
+                <div style="height: 1px; background: #dee2e6; margin: 0.5rem 0;"></div>
+                <p class="card-description">2025년 오픈소스 개발자대회 동상(학생) 수상작 - 명령어 한 줄로 색각이상자를 위한 UI 테마를 자동 생성하는 React (오픈소스) 라이브러리</p>
+                <div class="card-tags">
+                  <div class="tags-container">
+                    <span><span class="tag">#국내</span></span>
+                    
+                    <span>
+                      <span class="tag">#개발자대회</span>
+                    </span>
+                    <span>
+                      <span class="tag">#공통</span>
+                    </span>
+                    <span>
+                      <span class="tag">#JavaScript</span><span class="tag">#TypeScript</span>
+                    </span>
+                  </div>
+                  <div style="display: flex; align-items: center; gap: 0.5rem;">
+                    <span style="font-size: 1.4rem; font-weight: 600; color: #007bff;">108 pts</span>
+                  </div>
+                </div>
+              </div>
+              <div class="component-card" tabindex="0" data-project-id="56954">
+                <div class="card-header">
+                  <div class="card-title">RAGIT</div>
+                </div>
+                <div style="height: 1px; background: #dee2e6; margin: 0.5rem 0;"></div>
+                <p class="card-description">2025년 오픈소스 개발자대회 동상(학생) 수상작 - GitHub 레포지토리 자동 수집·전처리·인덱싱·증분 동기화 RAG 자동화 플랫폼</p>
+                <div class="card-tags">
+                  <div class="tags-container">
+                    <span><span class="tag">#국내</span></span>
+                    
+                    <span>
+                      <span class="tag">#개발자대회</span>
+                    </span>
+                    <span>
+                      <span class="tag">#공통</span>
+                    </span>
+                    <span>
+                      <span class="tag">#Python</span><span class="tag">#Redis</span>
+                    </span>
+                  </div>
+                  <div style="display: flex; align-items: center; gap: 0.5rem;">
+                    <span style="font-size: 1.4rem; font-weight: 600; color: #007bff;">104 pts</span>
+                  </div>
+                </div>
+              </div>
+              <div class="component-card" tabindex="0" data-project-id="56956">
+                <div class="card-header">
+                  <div class="card-title">OpenData MCP</div>
+                </div>
+                <div style="height: 1px; background: #dee2e6; margin: 0.5rem 0;"></div>
+                <p class="card-description">2025년 오픈소스 개발자대회 동상(일반) 수상작 - 공공데이터포털(OpenAPI)을 더 쉽게 탐색하고 호출할 수 있도록 돕는 MCP 서버</p>
+                <div class="card-tags">
+                  <div class="tags-container">
+                    <span><span class="tag">#국내</span></span>
+                    
+                    <span>
+                      <span class="tag">#개발자대회</span>
+                    </span>
+                    <span>
+                      <span class="tag">#공통</span>
+                    </span>
+                    <span>
+                      <span class="tag">#TypeScript</span>
+                    </span>
+                  </div>
+                  <div style="display: flex; align-items: center; gap: 0.5rem;">
+                    <span style="font-size: 1.4rem; font-weight: 600; color: #007bff;">76 pts</span>
+                  </div>
+                </div>
+              </div>
+              <div class="component-card" tabindex="0" data-project-id="56962">
+                <div class="card-header">
+                  <div class="card-title">SAGE</div>
+                </div>
+                <div style="height: 1px; background: #dee2e6; margin: 0.5rem 0;"></div>
+                <p class="card-description">2025년 오픈소스 개발자대회 장려상(일반) 수상작 - AI 에이전트 간 통신 메시지의 해킹·위조를 막아주는 보안 기반 기술</p>
+                <div class="card-tags">
+                  <div class="tags-container">
+                    <span><span class="tag">#국내</span></span>
+                    
+                    <span>
+                      <span class="tag">#개발자대회</span>
+                    </span>
+                    <span>
+                      <span class="tag">#공통</span>
+                    </span>
+                    <span>
+                      <span class="tag">#Go</span><span class="tag">#JavaScript</span>
+                    </span>
+                  </div>
+                  <div style="display: flex; align-items: center; gap: 0.5rem;">
+                    <span style="font-size: 1.4rem; font-weight: 600; color: #007bff;">85 pts</span>
+                  </div>
+                </div>
+              </div>
+                </div>
+            
+            <!-- 데이터가 없을 때 -->
+            
+
+            <!-- 페이지네이션 -->
+            <div class="krds-pagination" id="pagination-container">
+              <a class="page-navi prev disabled" 
+                 id="pagination-prev"
+                 href="javascript:void(0)">이전</a>
+              <div class="page-links" id="pagination-links">
+                <!-- 페이지 링크는 JavaScript로 동적 생성 -->
+              </div>
+              <a class="page-navi next" 
+                 id="pagination-next"
+                 href="javascript:void(0)">다음</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <footer id="krds-footer">
+            <style>
+                #krds-footer a.krds-btn.small.text.privacy {
+                    color: #2a6bd3 !important;
+                    font-weight: 700 !important;
+                }
+            </style>
+            <!-- foot-quick -->
+            <div class="foot-quick">
+                <div class="inner">
+                    <a href="https://www.msit.go.kr" class="link" target="_blank" aria-label="과학기술정보통신부 페이지 새 창 열기">과학기술정보통신부</a>
+                    <a href="https://www.nipa.kr" class="link" target="_blank" aria-label="NIPA 정보통신산업진흥원 페이지 새 창 열기">NIPA 정보통신산업진흥원</a>
+                    <a href="https://www.kossa.kr" class="link" target="_blank" aria-label="KOSSA 한국오픈소스협회 페이지 새 창 열기">KOSSA 한국오픈소스협회</a>
+                </div>
+            </div>
+            <!-- //foot-quick -->
+            <!-- inner -->
+            <div class="inner">
+                <div class="f-logo" style="width: 21rem; height: 5.5rem;" >
+                    <span class="sr-only">오픈소스 포털</span>
+                </div>
+                <div class="f-cnt">
+                    <div class="f-info">
+                        <p class="info-addr">(06657) 서울시 서초구 서초대로 40길 83 우제빌딩 2층 </p>
+                        <ul class="info-cs">
+                            <li>
+                                <strong class="key-info">라이선스 문의 <span>02-6241-6509</span></strong>
+                            </li>
+                            <li>
+                                <strong class="key-info">사이트 문의 <span>043-931-5373</span></strong>
+                            </li>
+                            <li>
+                                <strong class="key-info">시스템 문의 <span>02-6952-2980</span></strong>
+                            </li>
+                        </ul>
+                    </div>
+
+                    <div class="f-link">
+                        <div class="link-go">
+                            <a href="/pages/18" class="krds-btn text" aria-label="사이트맵 페이지"><strong>사이트맵</strong> <i class="svg-icon ico-angle right"></i></a>
+                            <a href="/pages/19" class="krds-btn text" aria-label="찾아오시는 길 페이지"><strong>찾아오시는 길</strong> <i class="svg-icon ico-angle right"></i></a>
+                            <a href="/pages/22" class="krds-btn text" aria-label="활성화 점수 상세보기 페이지"  ><strong>활성화 점수 상세보기</strong> <i class="svg-icon ico-angle right"></i></a>
+                        </div>
+                        <div class="link-sns">
+                            <a href="https://www.youtube.com/c/OpenUP_OSS" class="krds-btn xlarge icon border" target="_blank" aria-label="유튜브 페이지 새 창 열기">
+                                <span class="sr-only">유튜브</span>
+                                <i class="svg-icon ico-youtube" aria-hidden="true"></i>
+                            </a>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="f-btm">
+                    <div class="f-btm-text">
+                        <div class="f-menu" style="display: inline-flex;flex-direction: column;">
+                            <div>
+                                <a href="/pages/17" class="krds-btn small text" aria-label="이용안내 페이지">이용안내</a>
+                                <a href="/pages/16" class="krds-btn small text" aria-label="이메일무단수신거부 페이지">이메일무단수신거부</a>
+                                <a href="/pages/21" class="krds-btn small text privacy" aria-label="개인정보처리방침 페이지">개인정보처리방침</a>
+                            </div>
+                            <div>
+                                <span class="krds-btn small text" style="cursor: default;">COPYRIGHT© 2017 OSS.KR. ALL RIGHTS RESERVED.</span>
+                            </div>
+                        </div>
+                        <div style="display: flex">
+                            <img src="/img/component/icon/f-logo1.png" alt="정보통신산업진흥원 로고" class="f-logo1" style="width: 13.7rem; height: 3.5rem; object-fit: contain; display: block; background: none;">
+                            <!-- <p class="f-logo2 "></p> -->
+                            <a href="https://www.nipa.kr/home/3-8-3/" target="_blank" aria-label="청탁금지법위반 및 부패신고 페이지 새 창 열기 - 정보통신산업진흥원과 함께하는 청렴한 세상">
+                                <img src="/img/component/icon/f-logo3.png" alt="정보통신산업진흥원과 함께하는 청렴한 세상" class="f-logo3" style="width: 13.7rem; height: 3.5rem; object-fit: contain; display: block; background: none;">
+                            </a>
+                            <a href="https://www.wa.or.kr/board/list.asp?search=total&SearchString=oss.kr&BoardID=0006" target="_blank" aria-label="한국정보접근성인증평가원 새 창 열기">
+                                <img src="/img/component/icon/2026_wa.png" alt="(사)한국장애인단체총연합회한국정보접근성인증평가원웹접근성
+                                     우수사이트인증마크(WA인증마크)"  class="f-logo2" style="width: 13.7rem;object-fit: contain; display: block; background: none;">
+                            </a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+    </footer>
+  </div>
+
+  <style>
+    /* 오픈소스 포털 메인 스타일 */
+    .openhub-content {
+      display: flex;
+      gap: 3rem;
+      width: 100%;
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 3rem 1.5rem;
+      box-sizing: border-box;
+      align-items: flex-start;
+    }
+
+    /* 브레드크럼 */
+    .breadcrumb {
+      margin-bottom: 2rem;
+    }
+
+    .breadcrumb-list {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+
+    .breadcrumb-item {
+      color: #666;
+    }
+
+    .breadcrumb-item:not(:last-child)::after {
+      content: ">";
+      margin-left: 0.5rem;
+      color: #ccc;
+    }
+
+    .breadcrumb-link {
+      color: #666;
+      text-decoration: none;
+    }
+
+    .breadcrumb-link:hover {
+      color: #333;
+    }
+
+    .breadcrumb-item.active {
+      color: #333;
+      font-weight: 500;
+    }
+
+    /* 사이드바 */
+    .openhub-sidebar {
+      width: 360px;
+      flex-shrink: 0;
+      background: #f8f9fa;
+      padding: 2.5rem;
+      border-radius: 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+
+    .filter-section {
+      background: transparent;
+      border-radius: 0;
+      padding: 0;
+    }
+
+    .filter-group {
+      margin-bottom: 3rem;
+    }
+
+    .filter-group:last-child {
+      margin-bottom: 0;
+    }
+
+    .filter-title {
+      font-weight: 700 !important;
+      margin: 0 0 1.5rem 0;
+      color: #2c3e50;
+    }
+
+    .search-container {
+      display: flex;
+      gap: 1rem;
+      margin-bottom: 0;
+      align-items: center;
+    }
+
+    .search-input {
+      flex: 1;
+      padding: 1.25rem 1.5rem;
+      border: 2px solid #e9ecef;
+      border-radius: 8px;
+      background: white;
+      transition: all 0.3s ease;
+    }
+
+    .search-input:focus {
+      outline: none;
+      border-color: #007bff;
+      box-shadow: 0 0 0 3px rgba(0, 123, 255, 0.1);
+    }
+
+    .search-btn {
+      padding: 1.25rem 1.5rem;
+      background: #007bff;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      min-width: 60px;
+    }
+
+    .search-btn:hover {
+      background: #0056b3;
+      transform: translateY(-1px);
+    }
+
+    .search-reset-btn {
+      padding: 1rem 1.5rem;
+      background: #6c757d;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      white-space: nowrap;
+      margin-top: 1rem;
+      align-self: flex-start;
+    }
+
+    .search-reset-btn:hover {
+      background: #545b62;
+      transform: translateY(-1px);
+    }
+
+    .filter-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+    }
+
+    .filter-item {
+      margin-bottom: 0;
+    }
+
+    .filter-btn {
+      padding: 0.2rem 1rem;
+      background: white; 
+      border-radius: 8px;
+      text-align: center;
+      cursor: pointer; 
+      font-weight: 500 !important;
+      transition: all 0.3s ease;
+      white-space: nowrap;
+      color: #767676;
+      border: 2px solid #bdbdbd;
+    }
+
+    .filter-btn:hover {
+      background: #f8f9fa;
+      border-color: #007bff;
+      color: #007bff;
+      transform: translateY(-1px);
+    }
+
+    .filter-btn.active {
+      background: #000000 !important;
+      color: white !important;
+      border-color: #000000 !important;
+    }
+
+    .more-btn {
+      color: #007bff;
+      font-weight: 600;
+      background: #e3f2fd;
+      border-color: #007bff;
+    }
+
+    .more-btn:hover {
+      background: #bbdefb;
+      border-color: #1976d2;
+      color: #1976d2;
+    }
+
+    /* 메인 콘텐츠 */
+    .openhub-main {
+      flex: 1;
+      min-width: 0;
+      padding: 1rem 0 4rem;
+    }
+
+    .result-header {
+      margin-bottom: 2rem;
+    }
+
+    .page-title {
+      font-weight: 700 !important;
+      margin: 0 0 1rem 0;
+      color: #333;
+    }
+
+    .result-count {
+      color: #000000;
+      font-weight: 600;
+    }
+
+    /* 컴포넌트 그리드 */
+    .component-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+      gap: 2rem;
+      margin-bottom: 3rem;
+    }
+
+    .component-card {
+      background: white;
+      border: 1px solid #e9ecef;
+      border-radius: 12px;
+      padding: 2rem;
+      transition: all 0.2s;
+      cursor: pointer;
+      width: 100%;
+      max-width: 100%;
+      box-sizing: border-box;
+      overflow: hidden;
+    }
+
+    .component-card:hover {
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+      border-color: #007bff;
+    }
+
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: 0.75rem;
+    }
+
+    .card-title {
+      font-weight: 600;
+      margin: 0;
+      color: #333;
+      line-height: 1.4;
+      flex: 1;
+      min-width: 0;
+      margin-right: 0.5rem;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-size: 1.8rem;
+    }
+
+    .card-description {
+      height: 45px;
+      color: #666;
+      line-height: 1.5;
+      margin: 0 0 1rem 0;
+      display: -webkit-box;
+      line-clamp: 2;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+      .card-tags {
+        height: 61px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+      }
+
+      .tags-container {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        align-items: center;
+      }
+      
+      /* 중첩된 span 내부의 태그들도 간격 적용 */
+      .tags-container > span {
+        display: contents;
+      }
+      
+      .tag {
+        word-break: break-word;
+        white-space: normal;
+        margin: 0;
+        display: inline-block;
+      }
+
+    .arrow-icon {
+        background: #f8f9fa;
+        border: 1px solid #e9ecef;
+        color: #6c757d;
+        cursor: pointer;
+        padding: 0.5rem;
+        border-radius: 50%;
+        transition: all 0.2s;
+        width: 40px;
+        height: 40px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+      }
+
+    .arrow-icon:hover {
+        background: #e9ecef;
+        border-color: #dee2e6;
+      }
+
+    .tag {
+      background: #f8f9fa;
+      color: #6c757d;
+      padding: 0.4rem 0.8rem;
+      border-radius: 16px;
+      font-weight: 400;
+      font-size: 1.2rem;
+      border: 1px solid #e9ecef;
+      margin: 0;
+      display: inline-block;
+    }
+
+    .selected-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+    }
+
+    .selected-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.4rem 0.9rem;
+      border-radius: 999px;
+      background: #000000;
+      color: #ffffff;
+      font-size: 1.4rem;
+      font-weight: 500;
+    }
+
+    .tag-remove-btn {
+      background: transparent;
+      border: none;
+      color: #ffffff;
+      cursor: pointer;
+      font-size: 1.8rem;
+      line-height: 1;
+      width: 17px;
+    }
+
+    .tag-remove-btn:hover {
+      color: #adb5bd;
+    }
+
+    body.modal-open {
+      overflow: hidden;
+    }
+
+    .tag-modal {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.5);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 1100;
+      padding: 1.5rem;
+    }
+
+    .tag-modal-content {
+      background: #ffffff;
+      border-radius: 12px;
+      width: 520px;
+      max-width: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+      padding: 2rem;
+      box-shadow: 0 18px 40px rgba(15, 23, 42, 0.18);
+    }
+
+    .tag-modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .tag-modal-header h3 {
+      margin: 0;
+      font-size: 1.8rem;
+      font-weight: 700;
+      color: #212529;
+    }
+
+    .tag-modal-close {
+      background: transparent;
+      border: none;
+      font-size: 2rem;
+      color: #6c757d;
+      cursor: pointer;
+      line-height: 1;
+    }
+
+    .tag-modal-close:hover {
+      color: #343a40;
+    }
+
+    .tag-modal-body {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+    }
+
+    .modal-tag-btn {
+      padding: 0.6rem 1.2rem;
+      border-radius: 999px;
+      border: 1px solid #ced4da;
+      background: #ffffff;
+      color: #495057;
+      cursor: pointer;
+      font-size: 1.3rem;
+      font-weight: 500;
+      transition: all 0.2s ease;
+    }
+
+    .modal-tag-btn:hover {
+      border-color: #007bff;
+      color: #007bff;
+    }
+
+    .modal-tag-btn.active {
+      background: #000000;
+      border-color: #000000;
+      color: #ffffff;
+    }
+
+    .tag-modal-footer {
+      display: flex;
+      justify-content: flex-end;
+      gap: 1rem;
+    }
+
+    .krds-btn.ghost {
+      background: #f1f3f5;
+      color: #495057;
+    }
+
+    /* 페이지네이션 */
+    .pagination-container {
+      display: flex;
+      justify-content: center;
+      margin-top: 3rem;
+    }
+
+    .pagination {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .pagination-btn {
+      padding: 0.5rem 1rem;
+      background: white;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .pagination-btn:hover:not(:disabled) {
+      background: #f8f9fa;
+      border-color: #007bff;
+    }
+
+    .pagination-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .krds-pagination {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 0.5rem;
+      margin-top: 2rem;
+    }
+
+    .page-navi {
+      padding: 0.5rem 1rem;
+      text-decoration: none;
+      color: #333;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      transition: all 0.2s;
+    }
+
+    .page-navi:hover:not(.disabled) {
+      background: #f8f9fa;
+      border-color: #007bff;
+      color: #007bff;
+    }
+
+    .page-navi.disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      pointer-events: none;
+    }
+
+    .page-links {
+      display: flex;
+      gap: 0.25rem;
+    }
+
+    .page-link {
+      padding: 0.5rem 0.75rem;
+      text-decoration: none;
+      color: #333;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      min-width: 40px;
+      text-align: center;
+      transition: all 0.2s;
+    }
+
+    .page-link:hover:not(.link-dot):not(.active) {
+      background: #f8f9fa;
+      border-color: #007bff;
+      color: #007bff;
+    }
+
+    .page-link.active {
+      background: #007bff;
+      color: white;
+      border-color: #007bff;
+      cursor: default;
+    }
+
+    .page-link.link-dot {
+      border: none;
+      cursor: default;
+      pointer-events: none;
+    }
+
+    .page-link.link-dot::before {
+      content: "...";
+    }
+
+    /* 반응형 디자인 */
+    @media (max-width: 1024px) {
+      .openhub-content {
+        flex-direction: column;
+        padding: 2rem 1.25rem;
+      }
+
+      .openhub-sidebar {
+        width: 100%;
+      }
+
+      .openhub-main {
+        width: 100%;
+        padding: 2rem 0 3rem;
+      }
+    }
+
+    @media (max-width: 768px) {
+      /* 모바일에서 전체 컨테이너 overflow 처리 */
+      body {
+        overflow-x: hidden;
+        width: 100%;
+        max-width: 100vw;
+      }
+      
+      .openhub-content {
+        width: 100% !important;
+        max-width: 100% !important;
+        padding: 2rem 1rem !important;
+        overflow-x: hidden;
+      }
+      
+      .openhub-main {
+        width: 100% !important;
+        max-width: 100% !important;
+        overflow-x: hidden;
+      }
+      
+      .component-grid {
+        grid-template-columns: 1fr;
+        gap: 1rem;
+        width: 100%;
+        max-width: 100%;
+        overflow-x: hidden;
+      }
+      
+      .component-card {
+        width: 100% !important;
+        max-width: 100% !important;
+        padding: 1.5rem !important;
+        box-sizing: border-box !important;
+        overflow: hidden !important;
+      }
+
+      .pagination {
+        flex-wrap: wrap;
+        justify-content: center;
+      }
+      
+      /* 모바일에서 카드 제목 말줄임 처리 강화 */
+      .card-title {
+        min-width: 0 !important;
+        max-width: 100% !important;
+        width: 100% !important;
+        white-space: nowrap !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+        word-break: break-word !important;
+      }
+      
+      .card-header {
+        min-width: 0 !important;
+        width: 100% !important;
+        max-width: 100% !important;
+        overflow: hidden !important;
+      }
+      
+      .card-description {
+        word-break: break-word !important;
+        overflow-wrap: break-word !important;
+      }
+      
+      .tags-container {
+        min-width: 0 !important;
+        max-width: 100% !important;
+        overflow: hidden !important;
+        gap: 0.5rem !important;
+      }
+      
+      .tags-container > span {
+        display: contents !important;
+      }
+      
+      .tag {
+        word-break: break-word !important;
+        white-space: normal !important;
+        max-width: 100% !important;
+        margin: 0 !important;
+        display: inline-block !important;
+      }
+      
+      .card-tags {
+        flex-wrap: wrap !important;
+        gap: 0.5rem !important;
+        overflow: hidden !important;
+      }
+    }
+  </style>
+</body>
+
+</html>

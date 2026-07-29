@@ -1,3 +1,33 @@
+### 7/26 — 서버 테스트 + HWPX 파서 버그 수정 + 인프라 개선
+
+- **dev 머지 내용 확인 및 신규 모델 점검**
+  - `ideation_conversation_session` 모델/레포지토리 신규 추가 확인
+  - `main.py` startup에 `ensure_indexes()` 정상 등록 확인
+  - `notice_cache_repository.py` 인덱스 미등록 발견
+
+- **notice_cache 컬렉션 MongoDB 인덱스 추가 (PR #169)**
+  - `notice_cache_repository.py`: `ensure_indexes()` 메서드 추가 (`cache_key + analysis_kind` unique 인덱스)
+  - `backend/app/main.py`: 서버 시작 시 자동 호출 등록
+
+- **HWPX 파서 표 구조 파싱 버그 수정 (PR #169 포함)**
+  - 증상: hwpx 파일의 평가 기준 배점이 "배점 미공개"로 나오는 문제
+  - 원인: `_local_tag()` 함수가 `{ns}tag` 형식만 처리하고 `hp:tbl` 같은 prefix 형식을 처리 못해서 표가 `tbl`로 인식되지 않음 → 셀 텍스트가 구분자 없이 뭉개져 저장됨 (`1515`, `3020` 등)
+  - 해결: `_local_tag()`에 `:` prefix 제거 로직 추가 → `hp:tbl` → `tbl` 정상 인식
+  - 결과: 6개 항목 105점 만점 배점 정상 출력 확인
+  - `notice_cache` 15건 삭제로 캐시 초기화 후 재확인
+
+- **NCP 서버 테스트 진행 (아이디어 발굴 모드)**
+  - URL 크롤링 정상 (NIA 공모전 페이지)
+  - HWP 첨부파일 3개 업로드 + RAG 색인 완료 (붙임1: 14청크, 붙임2: 20청크, 붙임3: 21청크)
+  - 수상작 유사 사례 4건 분석 정상
+  - AI 아이디어 회의 (LangGraph) 정상 — 라운드 4, 후보 아이디어 2개 생성
+  - 아바타 영상 미연동 (재인님 Colab 필요)
+
+- **JWT 토큰 만료 시간 연장**
+  - 장시간 작업 시 세션 만료로 로그인 화면 튕기는 문제
+  - `JWT_EXPIRE_MINUTES` 60분 → 720분(12시간)으로 연장
+  - 발표 당일(7/31) 1440분으로 추가 조정 예정
+
 ### 7/23 — Playwright 브라우저 설치 + DOCX 페이지 수 버그 수정 + run_meeting() 연동 확인
 
 - **NCP 서버 Playwright 브라우저 바이너리 설치**
