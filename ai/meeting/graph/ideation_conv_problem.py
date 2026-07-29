@@ -1315,7 +1315,7 @@ def make_planning_validation_node(
 
     def node(state: IdeationConvState) -> dict:
         retrieved = call_evidence_lookup(
-            evidence_lookup, "dev_expert", _contest_query(state), runtime_scope=_runtime_scope_for(state)
+            evidence_lookup, "planning_expert", _contest_query(state), runtime_scope=_runtime_scope_for(state)
         )
         provisional_idea = state.get("provisional_idea") or {}
         external_query = _external_evidence_query(state, [provisional_idea])

@@ -938,6 +938,27 @@ def test_idea_validation_uses_role_specific_external_evidence():
     assert update["external_evidence_meta"]["used_public_api_search"] is True
 
 
+def test_idea_validation_retrieval_persona_matches_grounding_persona():
+    """용준/Claude(2026-07-29, 요청: persona_id 불일치 버그 수정) — 실측(웹 UI): 기획위원
+    검증 턴인데 RAG 검색(evidence_lookup)이 "dev_expert" role로 호출되고 있었다(바로 아래
+    ground_claims는 "planning_expert"로 호출돼 서로 어긋남) — make_technical_validation_node
+    코드를 복붙하면서 planning 쪽 persona_id를 안 고친 버그. 검색 role이 실제 화자와
+    일치해야 criteria/target 쿼터(ai/rag/orchestration/ideation_evidence_service.py::
+    _DOCUMENT_ROLE_QUOTAS)가 그 위원에게 맞게 적용된다."""
+    calls: list[str] = []
+
+    def evidence_lookup(persona_id: str, query: str, **_kwargs) -> list[dict]:
+        calls.append(persona_id)
+        return []
+
+    _run_idea_validation(_validation_payload(), evidence_lookup=evidence_lookup)
+
+    assert calls == ["planning_expert", "dev_expert"], (
+        "기획 검증 노드는 planning_expert로, 개발 검증 노드는 dev_expert로 순서대로 "
+        f"검색을 호출해야 하는데 실제로는 {calls}였습니다"
+    )
+
+
 def test_idea_validation_links_claims_to_retrieved_evidence_when_ground_claims_provided():
     """용준/Claude(2026-07-28, 요청: "위원들이 RAG를 근거로 회의를 진행" + 화면 "근거 보기"
     복구) — ground_claims가 주어지면 planning/technical claims가 실제 검색 근거(ref="E1")와
