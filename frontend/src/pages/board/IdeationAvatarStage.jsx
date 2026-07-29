@@ -516,7 +516,7 @@ function streamOneLine({
 // playQueue(이미 텍스트가 확정된 항목 배열)를 순서대로(호출부가 정한 순서 그대로)
 // 스트리밍 재생한다. 부모가 "다음 화자 누구/무슨 텍스트"를 이미 다 정해서 넘겨주므로
 // 이 컴포넌트는 순차 소비 + 화면 전환 타이밍만 담당한다.
-export default function IdeationAvatarStage({ playQueue, onConsumed, onRevealed }) {
+export default function IdeationAvatarStage({ playQueue, onConsumed, onRevealed, layout = 'pyramid' }) {
   const videoRefs = useRef({})
   // 재인/Claude(2026-07-25, 요청: "버퍼링 걸리는 구간을 제대로 잡게 모든 거에 로그"):
   // 컴포넌트가 처음 마운트된 시점을 공통 기준점으로 잡아서, 서로 다른 화자의
@@ -726,7 +726,15 @@ export default function IdeationAvatarStage({ playQueue, onConsumed, onRevealed 
           </span>
         </div>
       )}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: AVATAR_GRID_GAP }}>
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: layout === 'row' ? 'repeat(3, minmax(0, 1fr))' : 'repeat(2, minmax(0, 1fr))',
+          gap: AVATAR_GRID_GAP,
+          width: layout === 'row' ? 'min(100%, 676px)' : '100%',
+          margin: layout === 'row' ? '0 auto' : 0,
+        }}
+      >
         {TILE_ORDER.map((speakerId) => (
           <AvatarTileFrame
             key={speakerId}
@@ -734,7 +742,7 @@ export default function IdeationAvatarStage({ playQueue, onConsumed, onRevealed 
             videoRefs={videoRefs}
             speaking={!!speakingMap[speakerId]}
             statusText={statusMap[speakerId]}
-            style={ROLE_GRID_STYLE[speakerId]}
+            style={layout === 'row' ? undefined : ROLE_GRID_STYLE[speakerId]}
           />
         ))}
       </div>

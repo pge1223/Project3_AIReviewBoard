@@ -309,13 +309,17 @@ export default function WorkbenchScreen({ projectId, onNext, onBack }) {
     <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 64px)' }}>
       {/* pge/Claude(2026-07-28, 요청: "이전 화면 버튼 없는 곳은 생성, 위치도 통일") —
           다른 마법사 화면들과 같은 rb-back-button 스타일·위치(좌상단, 배지와 한 줄). */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12, flexShrink: 0 }}>
+      <div className="rb-page-eyebrow-row" style={{ flexShrink: 0 }}>
         {onBack && (
           <button type="button" className="rb-back-button" onClick={onBack} aria-label="이전 화면으로 이동">
             {'←'}
           </button>
         )}
-        <div className="badge coral mono">AI 피드백</div>
+        <div className="rb-page-eyebrow">AI REVIEW BOARD</div>
+      </div>
+      <div className="rb-page-title-row" style={{ flexShrink: 0 }}>
+        <h2 style={{ fontSize: 24, fontWeight: 750 }}>AI 피드백</h2>
+        <span className="badge coral mono">기획서 원문</span>
       </div>
       <div style={{ display: 'flex', gap: 20, flex: 1, minHeight: 0 }}>
       <style>{`
@@ -353,7 +357,6 @@ export default function WorkbenchScreen({ projectId, onNext, onBack }) {
         className="card glass"
         style={{ flex: 2, minWidth: 0, overflowY: 'auto', position: 'relative', padding: '28px 0' }}
       >
-        <div className="badge coral mono" style={{ marginBottom: 14, marginLeft: 28 }}>기획서 원문</div>
         {docError && <p style={{ color: 'var(--coral)', fontSize: 13, marginLeft: 28 }}>{docError}</p>}
         {matchingError && <p style={{ color: 'var(--coral)', fontSize: 13, marginLeft: 28 }}>인용 조회 실패: {matchingError}</p>}
         {!docError && pdfUrl === null && <p style={{ color: 'var(--text-2)', fontSize: 13, marginLeft: 28 }}>불러오는 중...</p>}
