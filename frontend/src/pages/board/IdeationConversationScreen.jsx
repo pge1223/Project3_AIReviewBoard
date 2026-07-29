@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from 'react'
-import { AlertCircle, ArrowRight, CheckCircle2, ChevronDown, ChevronUp, Circle, ClipboardList, ExternalLink, History, Lightbulb, ListChecks, Newspaper, RefreshCw, Send, Sparkles, Users } from 'lucide-react'
+import { AlertCircle, ArrowRight, CheckCircle2, ChevronDown, ChevronUp, Circle, ClipboardList, ExternalLink, History, Lightbulb, ListChecks, LoaderCircle, Newspaper, RefreshCw, Send, Sparkles, Users, X } from 'lucide-react'
 import {
   cancelIdeationConversation,
   continueIdeationExpertTurnStream,
@@ -137,6 +137,7 @@ function StreamingCursorStyle() {
   return (
     <style>{`
       @keyframes rb-ideation-cursor-blink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
+      @keyframes rb-ideation-spin { to { transform:rotate(360deg); } }
       .rb-ideation-cursor { display: inline-block; width: 2px; margin-left: 1px; background: currentColor; animation: rb-ideation-cursor-blink 1s step-start infinite; }
       .rb-root .badge.blue{ background: rgba(59,130,246,0.12); color: #2f6fd6; }
       .rb-ideation-layout .badge{ font-size:12.5px; font-weight:600; padding:4px 10px; }
@@ -163,23 +164,56 @@ function StreamingCursorStyle() {
          독립된 열로 나란히 배치한다(3열: 회의 대화 / 참여 위원 / 기획 캔버스). */
       .rb-ideation-layout{
         --text-2:#6f697d;
-        display:grid; grid-template-columns:minmax(0,1fr) 480px 340px;
-        gap:20px; align-items:start; max-width:1680px;
+        display:grid;
+        width:100%; min-height:calc(100vh - 64px);
+        grid-template-columns:minmax(460px, 1fr) minmax(500px, 1fr);
+        gap:32px; align-items:stretch; max-width:1680px;
       }
-      .rb-ideation-side{ position:sticky; top:24px; margin-top:40px; display:flex; flex-direction:column; gap:12px; }
-      .rb-ideation-canvas-col{ position:sticky; top:24px; margin-top:40px; display:flex; flex-direction:column; gap:12px; }
+      .rb-ideation-main-contents{ min-width:0; display:flex; flex-direction:column; }
+      .rb-idea-header{ min-width:0; }
+      .rb-idea-topic{ margin:0 0 14px !important; }
+      .rb-idea-chat-panel{ min-width:0; display:flex; flex-direction:column; }
+      .rb-idea-chat-panel .rb-idea-chat-scroll{
+        position:relative; flex:none; min-height:220px; max-height:78vh !important;
+        resize:vertical !important; overflow:auto !important; flex-shrink:0;
+      }
+      .rb-idea-finalize{ min-width:0; margin-top:24px; }
+      .rb-idea-right{
+        min-width:0; min-height:0; height:calc(100vh - 64px);
+        display:grid; grid-template-rows:minmax(0, 1fr) minmax(0, 1fr);
+        gap:16px;
+      }
+      .rb-ideation-side{ position:static; margin:0; min-width:0; min-height:0; display:flex; flex-direction:column; overflow:auto; }
+      .rb-avatar-card{ padding:0 !important; border:none !important; background:transparent !important; box-shadow:none !important; backdrop-filter:none !important; }
+      .rb-ideation-canvas-col{
+        position:static; margin:0; display:flex; flex-direction:column; gap:12px;
+        min-height:0; height:100%; overflow-y:auto; padding-right:6px;
+        scrollbar-width:thin; scrollbar-color:rgba(124,92,234,.35) transparent;
+      }
       .rb-ideation-meta{ display:flex; flex-wrap:wrap; gap:10px; margin-bottom:14px; }
       .rb-ideation-meta-item{ flex:1 1 120px; border-radius:12px; padding:10px 12px; }
       .rb-ideation-meta-label{ display:flex; align-items:center; gap:5px; margin-bottom:3px; }
       .rb-ideation-meta-value{ font-weight:700; color:var(--text-0); }
-      @media (max-width: 1500px){
-        .rb-ideation-layout{ grid-template-columns: minmax(0,1fr) 460px; }
-        .rb-ideation-canvas-col{ position:static; grid-column: 1 / -1; margin-top:0; }
+      .rb-canvas-tab-shell{ height:100%; min-height:0; display:flex; flex-direction:column; overflow:hidden !important; }
+      .rb-canvas-tab-scroll{
+        flex:1; min-height:0; overflow-y:auto; overscroll-behavior:contain;
+        scrollbar-width:thin; scrollbar-color:rgba(124,92,234,.35) transparent;
+      }
+      .rb-chat-resize-handle{
+        position:static; align-self:flex-end; flex-shrink:0; width:22px; height:22px;
+        margin:auto -8px -8px 0; cursor:ns-resize; touch-action:none;
+        display:flex; align-items:flex-end; justify-content:flex-end;
+        color:var(--text-2); user-select:none; z-index:4;
       }
       @media (max-width: 1180px){
-        .rb-ideation-layout{ grid-template-columns: minmax(0,1fr); }
-        .rb-ideation-side{ position:static; margin-top:0; }
-        .rb-ideation-canvas-col{ grid-column: auto; margin-top:0; }
+        .rb-ideation-layout{
+          grid-template-columns:minmax(0,1fr);
+          min-height:0;
+        }
+        .rb-idea-right{ height:auto; grid-template-rows:auto minmax(380px, 560px); }
+        .rb-ideation-side{ overflow:visible; }
+        .rb-ideation-canvas-col{ max-height:560px; }
+        .rb-idea-chat-panel .rb-idea-chat-scroll{ min-height:420px; }
       }
       .rb-ideation-candidate-card{ transition: transform .18s ease, box-shadow .18s ease; }
       .rb-ideation-candidate-card--interactive:hover{ transform: translateY(-4px); box-shadow: 0 10px 24px rgba(124,92,234,0.18); }
@@ -904,11 +938,12 @@ function ProblemAreaSelectionBlock({ problemAreas, externalEvidence, onSend, dis
   return (
     <div style={{ marginTop: 4 }}>
       <div style={{ fontSize: 13.5, color: 'var(--text-2)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-        탐색할 문제 영역
+        해결할 문제 선택
       </div>
       <div className="rb-ideation-notice">
-        공모전 분석 결과를 바탕으로 해결할 가치가 있는 문제 영역을 찾았습니다. 먼저 탐색하고
-        싶은 문제를 선택해 주세요. 이 선택은 최종 아이디어 확정이 아닙니다.
+        공고문과 최근 이슈를 바탕으로, 이번 공모전에서 해결할 수 있는 문제 후보를 찾았습니다.
+        각 후보를 살펴보고 '누가 어떤 상황에서 어떤 불편을 겪는지'를 기준으로 논의할 문제를
+        선택해 주세요. 해결 방법과 아이디어는 다음 단계에서 구체화합니다.
       </div>
       <ExternalEvidenceStrip items={externalEvidence} />
       <div style={{ marginTop: 10 }}>
@@ -1290,6 +1325,7 @@ export function IdeationScreen({
   ideationConv,
   setIdeationConv,
   onFinalized,
+  onGoFormDraft,
   onBack,
   saving = false,
   saveError = '',
@@ -1303,12 +1339,18 @@ export function IdeationScreen({
   // (스트리밍/비스트리밍/폴백)이라 매 지점마다 따로 리셋하지 않아도 항상 정확하다.
   const [pendingActionCode, setPendingActionCode] = useState(null)
   const [finalizing, setFinalizing] = useState(false)
+  const [showFinalizedModal, setShowFinalizedModal] = useState(false)
+  const [stayInMeetingAfterFinalize, setStayInMeetingAfterFinalize] = useState(false)
+  const [previewProposal, setPreviewProposal] = useState(null)
+  const [generatingModalDraft, setGeneratingModalDraft] = useState(false)
+  const [modalDraftError, setModalDraftError] = useState(null)
   // 용준/Claude(2026-07-28, 요청: "다시 시도"가 전체 회의를 처음부터 다시 실행하지 않게)
   // — phase="failed"일 때 ErrorBanner의 "다시 시도" 버튼이 이 상태를 쓴다(handleRestart와
   // 별개 — 전체 재시작이 아니라 failed_node만 재실행).
   const [retryingFailedNode, setRetryingFailedNode] = useState(false)
   const [error, setError] = useState(null)
   const [draft, setDraft] = useState('')
+  const [chatHeight, setChatHeight] = useState(null)
   // 용준/Claude(2026-07-21, 요청: 실시간 스트리밍) — 지금 스트리밍 중인(아직 canonical이
   // 아닌) 메시지만 별도로 들고 있는다. 서버가 최종 state 이벤트를 보내면 이 값은 통째로
   // createEmptyStreamState()로 비우고 ideationConv(canonical)만 그린다 — 그래서 스트리밍
@@ -1396,6 +1438,7 @@ export function IdeationScreen({
 
   const startedRef = useRef(false)
   const chatScrollRef = useRef(null)
+  const chatResizeDragRef = useRef(null)
   // 사용자가 채팅 맨 아래를 보고 있을 때만 새 메시지를 따라간다. 과거 메시지를 읽으려고
   // 위로 스크롤하면 자동 이동을 멈추고, 다시 아래로 내리면 자동 추적을 재개한다.
   const shouldFollowChatRef = useRef(true)
@@ -1417,6 +1460,10 @@ export function IdeationScreen({
   // 1번 참고). 남은 유력 용의점은 이 rAF 루프 effect가 (StrictMode 이중 호출 등으로) 두 번
   // 동시에 도는 경우다 — 이 ref로 같은 컴포넌트 인스턴스에서 루프가 항상 하나만 돌게 막는다.
   const rafLoopActiveRef = useRef(false)
+  // 회의 대화 메시지가 처음 채워질 때(마운트 직후 fetch 완료 시점)는 auto-follow
+  // effect가 곧바로 맨 아래로 스크롤해버려 마운트 시 scrollTop = 0 초기화를 덮어썼다.
+  // 이 ref로 "메시지가 처음 채워진 순간"을 구분해 그때만 맨 위 고정을 유지한다.
+  const initialMessagesLoadedRef = useRef(false)
 
   useEffect(() => {
     return () => {
@@ -1424,6 +1471,13 @@ export function IdeationScreen({
       streamAbortRef.current?.abort()
       pendingFinalRef.current = null
     }
+  }, [])
+
+  // 버그 수정: 최초 렌더 시 스크롤 컨테이너가 맨 아래에서 시작하던 문제 —
+  // 마운트 시점에 명시적으로 맨 위로 초기화한다.
+  useEffect(() => {
+    const container = chatScrollRef.current
+    if (container) container.scrollTop = 0
   }, [])
 
   // 실제 LLM 델타가 도착하는 즉시 content(수신 텍스트)는 이미 갱신돼 있다 — 이 루프는
@@ -1666,7 +1720,17 @@ export function IdeationScreen({
 
   useEffect(() => {
     const container = chatScrollRef.current
-    if (!container || !shouldFollowChatRef.current) return
+    if (!container) return
+
+    const messageCount = ideationConv?.messages?.length || 0
+    if (messageCount > 0 && !initialMessagesLoadedRef.current) {
+      // 메시지가 처음 채워지는 시점 — 맨 아래로 따라가지 않고 맨 위에 고정한 채로 시작한다.
+      initialMessagesLoadedRef.current = true
+      container.scrollTop = 0
+      return
+    }
+
+    if (!shouldFollowChatRef.current) return
 
     // scrollIntoView()는 채팅 박스의 모든 스크롤 가능한 조상(바깥 페이지 포함)을 함께
     // 움직인다. 컨테이너의 scrollTop만 바꿔 새 위원 발언이 와도 페이지 위치는 고정한다.
@@ -1693,6 +1757,29 @@ export function IdeationScreen({
     const container = event.currentTarget
     const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight
     shouldFollowChatRef.current = distanceFromBottom <= 72
+  }
+
+  function handleChatResizePointerDown(event) {
+    const container = chatScrollRef.current
+    if (!container) return
+    event.preventDefault()
+    event.currentTarget.setPointerCapture?.(event.pointerId)
+    chatResizeDragRef.current = {
+      startY: event.clientY,
+      startHeight: container.getBoundingClientRect().height,
+    }
+  }
+
+  function handleChatResizePointerMove(event) {
+    const drag = chatResizeDragRef.current
+    if (!drag) return
+    const maxHeight = window.innerHeight * 0.78
+    setChatHeight(Math.max(220, Math.min(maxHeight, drag.startHeight + event.clientY - drag.startY)))
+  }
+
+  function handleChatResizePointerUp(event) {
+    chatResizeDragRef.current = null
+    event.currentTarget.releasePointerCapture?.(event.pointerId)
   }
 
   // 재인/Claude(2026-07-23): canonical 메시지(ideationConv.messages)에 새로 추가된
@@ -2091,18 +2178,43 @@ export function IdeationScreen({
 
   async function handleFinalize() {
     if (!canFinalize) return
-    setFinalizing(true)
     setError(null)
+    const currentIdea = ideationConv.idea_canvas || ideationConv.selected_idea || ideationConv.provisional_idea || {}
+    setPreviewProposal({
+      idea_name: currentIdea.title || currentIdea.idea_name || ideationConv.selected_idea?.title || '확정 예정 아이디어',
+      problem_definition: currentIdea.problem || currentIdea.problem_definition,
+      target_user: currentIdea.target_user,
+      core_user_value: currentIdea.core_value || currentIdea.core_user_value,
+      key_features: currentIdea.key_features || currentIdea.features,
+      required_data: currentIdea.required_data,
+      tech_direction: currentIdea.tech_direction || currentIdea.technical_approach,
+      mvp_scope: currentIdea.mvp_scope,
+      differentiation: currentIdea.differentiation,
+      risks_and_mitigations: currentIdea.risks_and_mitigations || currentIdea.risks,
+      success_metrics: currentIdea.success_metrics,
+      expert_final_opinions: ideationConv.consensus,
+      unverified_assumptions: ideationConv.unresolved_issues,
+      final_recommendation: currentIdea.contest_fit || currentIdea.final_recommendation,
+    })
+    setShowFinalizedModal(true)
+  }
+
+  async function handleModalGoToFormDraft() {
+    if (!ideationConv?.session_id || generatingModalDraft) return
+    setGeneratingModalDraft(true)
+    setModalDraftError(null)
     try {
-      const data = await finalizeIdeationConversation(ideationConv.session_id)
-      setIdeationConv(data)
-      if (data.phase === 'finalized') {
-        await onFinalized(data)
-      }
+      setFinalizing(true)
+      const finalizedData = await finalizeIdeationConversation(ideationConv.session_id)
+      setIdeationConv(finalizedData)
+      const draftData = await generateApplicationFormDraft(finalizedData.session_id)
+      setIdeationConv(draftData)
+      await onGoFormDraft?.(draftData)
     } catch (err) {
-      setError(classifyIdeationConvError(err))
+      setModalDraftError(classifyIdeationConvError(err))
     } finally {
       setFinalizing(false)
+      setGeneratingModalDraft(false)
     }
   }
 
@@ -2142,7 +2254,14 @@ export function IdeationScreen({
 
   // 이미 확정까지 끝난 세션으로 이 화면에 돌아온 경우(사이드바 재진입) — 다시 채팅하지
   // 않고 바로 결과로 넘어갈 수 있게만 안내한다.
-  if (ideationConv?.phase === 'finalized') {
+  // 신청서 초안을 생성하는 동안 finalize 응답이 먼저 도착해도 기존 주제 확정
+  // 결과 화면으로 분기하지 않는다. 모달의 로딩 상태를 유지한 뒤 초안 생성이
+  // 완료되면 부모가 곧바로 form_draft 단계로 이동한다.
+  if (
+    ideationConv?.phase === 'finalized'
+    && !stayInMeetingAfterFinalize
+    && !generatingModalDraft
+  ) {
     return (
       <div style={{ maxWidth: 860 }}>
         <div className="badge green mono" style={{ marginBottom: 10 }}>주제 확정 완료</div>
@@ -2188,27 +2307,128 @@ export function IdeationScreen({
           onConfirm={handleConfirmFormSelection}
         />
       )}
-      <div>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
+      {showFinalizedModal && previewProposal && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="finalized-idea-title"
+          style={{
+            position: 'fixed', inset: 0, zIndex: 100,
+            display: 'grid', placeItems: 'center', padding: 24,
+            background: 'rgba(28,26,46,.42)', backdropFilter: 'blur(5px)',
+          }}
+        >
+          <div
+            className="card glass"
+            aria-busy={generatingModalDraft}
+            style={{
+              position: 'relative', width: 'min(820px, 94vw)', maxHeight: '88vh',
+              overflowY: 'auto', padding: '30px 32px 26px', background: '#fff',
+              boxShadow: '0 24px 70px rgba(28,26,46,.24)',
+            }}
+          >
+            <button
+              type="button"
+              className="btn-ghost"
+              aria-label="주제 확정 결과 닫기"
+              onClick={() => setShowFinalizedModal(false)}
+              disabled={generatingModalDraft}
+              style={{
+                position: 'absolute', top: 16, right: 16, width: 38, height: 38,
+                display: 'grid', placeItems: 'center', padding: 0, borderRadius: 10,
+              }}
+            >
+              <X size={19} />
+            </button>
+
+            <div className="badge green mono" style={{ marginBottom: 12 }}>주제 확정 완료</div>
+            <h2
+              id="finalized-idea-title"
+              style={{ margin: '0 48px 24px 0', fontSize: 28, fontWeight: 800, lineHeight: 1.35 }}
+            >
+              {previewProposal.idea_name || '확정된 아이디어 주제'}
+            </h2>
+
+            <div style={{ borderTop: '1px solid var(--glass-border)' }}>
+              {PROPOSAL_ROWS.map(([key, label]) => (
+                <div
+                  key={key}
+                  style={{
+                    display: 'grid', gridTemplateColumns: '160px 1fr', gap: 18,
+                    padding: '13px 0', borderBottom: '1px solid var(--glass-border)',
+                  }}
+                >
+                  <div style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--text-2)' }}>{label}</div>
+                  <div style={{ fontSize: 14.5, lineHeight: 1.65 }}>
+                    {proposalValueDisplay(previewProposal[key])}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {modalDraftError && (
+              <p style={{ color: 'var(--coral)', fontSize: 14, textAlign: 'center', margin: '16px 0 0' }}>
+                {modalDraftError.message}
+              </p>
+            )}
+            {generatingModalDraft && (
+              <div
+                role="status"
+                style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 9,
+                  marginTop: 18, padding: '12px 14px', borderRadius: 11,
+                  color: 'var(--purple)', background: 'var(--purple-dim)',
+                  fontSize: 14.5, fontWeight: 700,
+                }}
+              >
+                <LoaderCircle size={18} style={{ animation: 'rb-ideation-spin .9s linear infinite' }} />
+                신청서 초안 생성 중입니다. 잠시만 기다려 주세요.
+              </div>
+            )}
+            <div style={{ display: 'flex', justifyContent: 'center', gap: 10, marginTop: 24, flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                className="btn-ghost"
+                onClick={() => setShowFinalizedModal(false)}
+                disabled={generatingModalDraft}
+              >
+                닫기
+              </button>
+              <button
+                type="button"
+                className="btn-primary"
+                onClick={handleModalGoToFormDraft}
+                disabled={generatingModalDraft}
+              >
+                {generatingModalDraft ? '신청서 초안 작성 중...' : '신청서 초안 작성하러 가기'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      <div className="rb-ideation-main-contents">
+        <section className="rb-idea-header">
+        <div className="rb-page-eyebrow-row">
           {onBack && (
             <button type="button" className="rb-back-button" onClick={onBack} disabled={busy} aria-label="이전 화면으로 이동">
               {'←'}
             </button>
           )}
+          <div className="rb-page-eyebrow">AI REVIEW BOARD</div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 2 }}>
           <h2 style={{ fontSize: 27, fontWeight: 700, color: 'var(--text-0)', letterSpacing: '-0.02em' }}>AI 아이디어 회의</h2>
-          {ideationConv && (
-            <span className="badge amber mono">
-              {statusLabelFor({ phase, starting, sending, finalizing, interrupting })}
-            </span>
-          )}
+          <span className="badge amber mono">
+            {statusLabelFor({ phase, starting, sending, finalizing, interrupting })}
+          </span>
         </div>
         <div style={{ fontSize: 16, fontWeight: 500, color: '#625d72', marginBottom: 14, lineHeight: 1.5 }}>
           공모전 분석 결과를 바탕으로 진행자, 기획 의원, 개발 의원이 함께 아이디어를 논의하고 있습니다.
         </div>
+        </section>
         {ideationConv?.competition_name && (
           <div
+            className="rb-idea-topic"
             style={{
               display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16,
               padding: '12px 16px', borderRadius: 10,
@@ -2230,25 +2450,17 @@ export function IdeationScreen({
           </div>
         )}
 
-        <ErrorBanner
-          error={phaseFailure || error}
-          onRetry={phaseFailure ? handleRetryFailedNode : handleRestart}
-          retrying={retryingFailedNode}
-        />
+        {(phaseFailure || error) && <div className="rb-idea-error">
+          <ErrorBanner
+            error={phaseFailure || error}
+            onRetry={phaseFailure ? handleRetryFailedNode : handleRestart}
+            retrying={retryingFailedNode}
+          />
+        </div>}
 
         {/* 용준/Claude(2026-07-25, 요청: "회의 대화 영역 상단에 가로형 상태 요약 카드") —
             round/idea_candidates.length/phase는 전부 ideationConv에 이미 있는 실제 값이다. */}
-        {metaItems.length > 0 && (
-          <div className="rb-ideation-meta">
-            {metaItems.map(({ icon: Icon, label, value }) => (
-              <div key={label} className="card glass rb-ideation-meta-item">
-                <div className="rb-ideation-meta-label"><Icon size={11} /> {label}</div>
-                <div className="rb-ideation-meta-value">{value}</div>
-              </div>
-            ))}
-          </div>
-        )}
-
+        <section className="rb-idea-chat-panel">
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
           <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text-0)' }}>회의 대화</div>
           {ideationConv && phase !== 'finalized' && phase !== 'failed' && (
@@ -2260,13 +2472,13 @@ export function IdeationScreen({
         </div>
         <div
           ref={chatScrollRef}
-          className="card glass"
+          className="card glass rb-idea-chat-scroll"
           onScroll={handleChatScroll}
           aria-busy={showMeetingPreparing}
           style={{
-            height: 'min(520px, 55vh)',
+            height: chatHeight ? `${chatHeight}px` : '60vh',
             minHeight: 240,
-            maxHeight: '80vh',
+            maxHeight: '78vh',
             resize: 'vertical',
             overflow: 'auto',
             display: 'flex',
@@ -2449,6 +2661,18 @@ export function IdeationScreen({
               pendingActionCode={pendingActionCode}
             />
           )}
+          <span
+            className="rb-chat-resize-handle"
+            role="separator"
+            aria-label="대화창 높이 조절"
+            aria-orientation="horizontal"
+            onPointerDown={handleChatResizePointerDown}
+            onPointerMove={handleChatResizePointerMove}
+            onPointerUp={handleChatResizePointerUp}
+            onPointerCancel={handleChatResizePointerUp}
+          >
+            ↘
+          </span>
         </div>
 
         {ideationConv && phase !== 'finalized' && (
@@ -2489,38 +2713,14 @@ export function IdeationScreen({
             </button>
           </div>
         )}
+        </section>
 
-        {/* 선택한 아이디어 안내는 채팅 입력창 아래에 표시한다. selected_idea는 백엔드가
-            확정한 값이며, 선택 취소 API나 phase 되돌리기 동작은 제공하지 않는다. */}
-        {ideationConv?.selected_idea?.title && (
-          <div
-            style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
-              marginTop: 12, padding: '13px 16px', borderRadius: 12,
-              background: 'var(--bg-1)', border: '1px solid var(--glass-border)',
-            }}
-          >
-            <div>
-              <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-2)' }}>선택한 아이디어</div>
-              <div style={{ marginTop: 2, fontSize: 17, fontWeight: 600, color: 'var(--text-0)' }}>
-                {ideationConv.selected_idea.title}
-              </div>
-              <div style={{ marginTop: 3, fontSize: 14.5, fontWeight: 500, color: 'var(--text-2)', lineHeight: 1.65 }}>
-                현재 이 아이디어를 중심으로 회의 중입니다.
-              </div>
-            </div>
-            <CheckCircle2 size={21} color="var(--text-2)" style={{ flexShrink: 0 }} />
-          </div>
-        )}
-
+        <section className="rb-idea-finalize">
         {/* 요청: "주제 확정하기" 버튼을 선택한 아이디어 카드 옆(바로 아래)으로 이동 —
             handleFinalize/canFinalize 로직은 그대로고, 위치만 rb-ideation-canvas-col에서
             이 카드 바로 아래로 옮겼다. */}
-        {ideationConv?.selected_idea?.title && (
+        {ideationConv && (
           <>
-            <div style={{ fontSize: 14.5, fontWeight: 500, color: '#514a61', marginTop: 12, marginBottom: 8, lineHeight: 1.65 }}>
-              지금까지 논의된 내용을 바탕으로 최종 주제를 확정하고 다음 단계로 이동합니다.
-            </div>
             <button
               type="button"
               className="btn-primary"
@@ -2531,9 +2731,7 @@ export function IdeationScreen({
               <Sparkles size={14} />
               {finalizing
                 ? '초안 생성 중...'
-                : canFinalize
-                  ? '주제 확정 단계로 이동하기 →'
-                  : '회의를 바탕으로 주제 확정하기 →'}
+                : '주제 확정하기 →'}
             </button>
             {!canFinalize && ideationConv && phase !== 'finalized' && phase !== 'failed' && (
               <p style={{ fontSize: 14.5, fontWeight: 600, color: '#514a61', marginTop: 9, lineHeight: 1.55 }}>
@@ -2562,6 +2760,7 @@ export function IdeationScreen({
             </button>
           </div>
         )}
+        </section>
       </div>
 
       {/* 용준/Claude(2026-07-25, 요청: "오른쪽 영역은 참여 AI 휴먼 전용 공간으로 사용") —
@@ -2571,12 +2770,9 @@ export function IdeationScreen({
           용준/Claude(2026-07-26, 요청: "아이디어 기획 캔버스는 참여 위원 오른쪽에") —
           캔버스/합의사항/CTA는 이 열 아래에 이어붙이지 않고 별도의 세 번째 열
           (rb-ideation-canvas-col)로 분리했다. */}
+      <div className="rb-idea-right">
       <div className="rb-ideation-side">
-        <div className="card glass">
-          <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text-0)', marginBottom: 3 }}>참여 위원</div>
-          <div style={{ fontSize: 14.5, fontWeight: 500, color: '#625d72', lineHeight: 1.65, marginBottom: 12 }}>
-            진행자 · 기획 의원 · 개발 의원이 실시간으로 함께 회의해요.
-          </div>
+        <div className="card glass rb-avatar-card">
           {/* 재인/Claude(2026-07-26, dev #166 병합): 용준님이 만든 이 레이아웃(참여 위원
               카드 안에 아바타 배치)은 그대로 두되, prop만 새 구조로 교체했다. 예전
               onNeedNextSpeaker(페이싱 타이머가 "다음 화자 불러줘"를 알리던 방식)는
@@ -2587,6 +2783,7 @@ export function IdeationScreen({
             <IdeationAvatarStage
               playQueue={avatarPlayQueue}
               onRevealed={() => setAvatarRevealedCount((n) => n + 1)}
+              layout="row"
             />
           ) : (
             // 가은/Claude(2026-07-26): VITE_IDEATION_AVATAR_ENABLED=false일 때는
@@ -2600,12 +2797,6 @@ export function IdeationScreen({
       </div>
 
       <div className="rb-ideation-canvas-col">
-        <MergeAnalysisPanel
-          mergeAnalysis={ideationConv?.merge_analysis}
-          sourceCandidates={ideationConv?.source_candidates}
-          userSelectionMessage={ideationConv?.user_selection_message}
-        />
-
         {/* 가은/Claude(2026-07-27, 요청: "AI 아이디어 회의 페이지에 신청서 작성항목 패널
             없애줘") — 회의 중 오른쪽 패널에 노출하던 ApplicationFormPanel을 제거했다.
             신청서 초안은 이제 주제 확정 후 별도 페이지(ApplicationFormDraftScreen,
@@ -2628,7 +2819,7 @@ export function IdeationScreen({
         {ideationConv && (() => {
           const hasEvolution = (ideationConv.idea_evolution?.length || 0) > 0
           return (
-            <div className="card glass" style={{ marginBottom: 12, overflow: 'hidden' }}>
+            <div className="card glass rb-canvas-tab-shell" style={{ marginBottom: 12 }}>
               {/* pge/Claude(2026-07-28, 요청: "회의 시작 전엔 탭 자체가 안 뜨더라 — 내용은
                   안 떠도 되는데 탭 두 개는 항상 고정") — 탭 줄 자체는 hasEvolution과 무관하게
                   항상 렌더링한다. idea_evolution 데이터가 아직 없을 때만 "변화 과정" 탭의
@@ -2669,47 +2860,29 @@ export function IdeationScreen({
                   )
                 })}
               </div>
-              {canvasColumnTab === 'evolution' ? (
-                hasEvolution ? (
-                  <IdeaEvolutionTimeline
-                    idea_evolution={ideationConv.idea_evolution}
-                    solution_directions={ideationConv.solution_directions}
-                    problem_areas={ideationConv.problem_areas}
-                    bare
-                  />
+              <div className="rb-canvas-tab-scroll">
+                {canvasColumnTab === 'evolution' ? (
+                  hasEvolution ? (
+                    <IdeaEvolutionTimeline
+                      idea_evolution={ideationConv.idea_evolution}
+                      solution_directions={ideationConv.solution_directions}
+                      problem_areas={ideationConv.problem_areas}
+                      bare
+                    />
+                  ) : (
+                    <div style={{ padding: 18, fontSize: 13.5, color: 'var(--text-2)' }}>
+                      아직 표시할 변화 이력이 없어요. 회의가 진행되면 여기에 쌓여요.
+                    </div>
+                  )
                 ) : (
-                  <div style={{ padding: 18, fontSize: 13.5, color: 'var(--text-2)' }}>
-                    아직 표시할 변화 이력이 없어요. 회의가 진행되면 여기에 쌓여요.
-                  </div>
-                )
-              ) : (
-                <IdeaCanvasPanel ideationConv={ideationConv} analysis={announcementAnalysis} bare />
-              )}
+                  <IdeaCanvasPanel ideationConv={ideationConv} analysis={announcementAnalysis} bare />
+                )}
+              </div>
             </div>
           )
         })()}
 
-        {ideationConv && (ideationConv.consensus?.length > 0 || ideationConv.unresolved_issues?.length > 0) && (
-          <div className="card glass" style={{ marginBottom: 12, padding: 14 }}>
-            {ideationConv.consensus?.length > 0 && (
-              <div style={{ marginBottom: 10 }}>
-                <div style={{ fontSize: 15, fontWeight: 700, color: '#514a61', marginBottom: 4 }}>합의 사항</div>
-                <ul style={{ margin: 0, paddingLeft: 18, fontSize: 15.5, fontWeight: 500, color: 'var(--text-0)', lineHeight: 1.7 }}>
-                  {ideationConv.consensus.map((c, i) => <li key={i}>{humanizeExpertIdentifiers(c)}</li>)}
-                </ul>
-              </div>
-            )}
-            {ideationConv.unresolved_issues?.length > 0 && (
-              <div>
-                <div style={{ fontSize: 15, fontWeight: 700, color: '#514a61', marginBottom: 4 }}>미해결 쟁점</div>
-                <ul style={{ margin: 0, paddingLeft: 18, fontSize: 15.5, fontWeight: 500, color: 'var(--text-0)', lineHeight: 1.7 }}>
-                  {ideationConv.unresolved_issues.map((u, i) => <li key={i}>{humanizeExpertIdentifiers(u)}</li>)}
-                </ul>
-              </div>
-            )}
-          </div>
-        )}
-
+      </div>
       </div>
     </div>
   )
@@ -2877,14 +3050,15 @@ export function IdeationResultScreen({ ideationConv, setIdeationConv, onBack, on
   if (ideationConv?.phase === 'awaiting_concept_confirmation') {
     return (
       <div style={{ maxWidth: 780 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12 }}>
+        <div className="rb-page-eyebrow-row">
           {onBack && (
             <button type="button" className="rb-back-button" onClick={onBack} aria-label="이전 화면으로 이동">
               {'←'}
             </button>
           )}
-          <div className="badge purple mono">주제 확정 대기 · 전문가 검증 완료</div>
+          <div className="rb-page-eyebrow">AI REVIEW BOARD</div>
         </div>
+        <div className="badge purple mono" style={{ marginBottom: 12 }}>주제 확정 대기 · 전문가 검증 완료</div>
         {confirmError && <p style={{ color: 'var(--coral)', fontSize: 14.5, marginBottom: 12 }}>{confirmError.message}</p>}
         <ConceptConfirmationSummary
           provisionalIdea={ideationConv?.provisional_idea}
@@ -2900,8 +3074,10 @@ export function IdeationResultScreen({ ideationConv, setIdeationConv, onBack, on
   if (!ideationConv || ideationConv.phase !== 'finalized' || !ideationConv.idea_proposal) {
     return (
       <div style={{ maxWidth: 760 }}>
-        <div className="badge amber mono" style={{ marginBottom: 12 }}>아직 확정되지 않음</div>
-        <h2 style={{ fontSize: 21, fontWeight: 700, marginBottom: 16 }}>주제 발전 회의를 먼저 완료해 주세요</h2>
+        <div className="rb-page-title-row">
+          <h2 style={{ fontSize: 21, fontWeight: 700 }}>주제 발전 회의를 먼저 완료해 주세요</h2>
+          <span className="badge amber mono">아직 확정되지 않음</span>
+        </div>
         <p style={{ fontSize: 14.5, color: 'var(--text-2)' }}>
           "주제 아이디어 회의" 단계에서 후보를 선택하고 전문가 질문에 답한 뒤, 확정 버튼을 눌러야 결과가 만들어져요.
         </p>
@@ -2913,17 +3089,21 @@ export function IdeationResultScreen({ ideationConv, setIdeationConv, onBack, on
 
   return (
     <div style={{ maxWidth: 780 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12 }}>
+      <div className="rb-page-eyebrow-row">
         {onBack && (
           <button type="button" className="rb-back-button" onClick={onBack} aria-label="이전 화면으로 이동">
             {'←'}
           </button>
         )}
-        <div className="badge green mono">주제 확정 · 기획서 작성 출발점</div>
+        <div className="rb-page-eyebrow">AI REVIEW BOARD</div>
       </div>
-      <h2 style={{ fontSize: 23, fontWeight: 700, marginBottom: 20 }}>{proposal.idea_name || '확정된 주제'}</h2>
-
       <div className="card glass">
+        <div className="rb-page-title-row" style={{ paddingBottom: 18, borderBottom: '1px solid var(--glass-border)' }}>
+          <h2 style={{ fontSize: 27, fontWeight: 800 }}>
+            {proposal.idea_name || '확정된 아이디어 주제'}
+          </h2>
+          <span className="badge green mono">주제 확정 · 기획서 작성 출발점</span>
+        </div>
         {PROPOSAL_ROWS.map(([key, label], i) => (
           <div key={key} style={{ display: 'grid', gridTemplateColumns: '150px 1fr', gap: 16, padding: '14px 0', borderTop: i > 0 ? '1px solid var(--glass-border)' : 'none' }}>
             <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--text-2)' }}>{label}</div>
@@ -2956,22 +3136,25 @@ export function IdeationResultScreen({ ideationConv, setIdeationConv, onBack, on
 // 하나 띄워주자") — IdeationResultScreen의 "신청서 초안 만들기" 버튼으로만 진입한다(goNext).
 // 필드 렌더링 자체는 새로 만들지 않고 기존 ApplicationFormPanel(회의 화면 오른쪽 패널에서
 // 이미 쓰던 컴포넌트)을 그대로 재사용한다 — items/draft 스키마가 동일하기 때문.
-export function ApplicationFormDraftScreen({ ideationConv, onBack, onGoMain }) {
+export function ApplicationFormDraftScreen({ ideationConv, onBack, onGoMain, onGoFeedback }) {
   const items = ideationConv?.application_form_items || []
   const draft = ideationConv?.application_form_draft || []
 
   if (!ideationConv || items.length === 0) {
     return (
       <div style={{ maxWidth: 760 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12 }}>
+        <div className="rb-page-eyebrow-row">
           {onBack && (
             <button type="button" className="rb-back-button" onClick={onBack} aria-label="이전 화면으로 이동">
               {'←'}
             </button>
           )}
-          <div className="badge amber mono">신청서 항목 없음</div>
+          <div className="rb-page-eyebrow">AI REVIEW BOARD</div>
         </div>
-        <h2 style={{ fontSize: 21, fontWeight: 700, marginBottom: 16 }}>이 세션에는 선택된 신청서 항목이 없어요</h2>
+        <div className="rb-page-title-row">
+          <h2 style={{ fontSize: 21, fontWeight: 700 }}>이 세션에는 선택된 신청서 항목이 없어요</h2>
+          <span className="badge amber mono">신청서 항목 없음</span>
+        </div>
         <p style={{ fontSize: 14.5, color: 'var(--text-2)' }}>
           회의를 시작하기 전 신청서 양식 항목을 선택해야 초안을 만들 수 있어요.
         </p>
@@ -2991,17 +3174,20 @@ export function ApplicationFormDraftScreen({ ideationConv, onBack, onGoMain }) {
 
   return (
     <div style={{ maxWidth: 780 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12 }}>
+      <div className="rb-page-eyebrow-row">
         {onBack && (
           <button type="button" className="rb-back-button" onClick={onBack} aria-label="이전 화면으로 이동">
             {'←'}
           </button>
         )}
-        <div className="badge green mono">신청서 초안</div>
+        <div className="rb-page-eyebrow">AI REVIEW BOARD</div>
       </div>
-      <h2 style={{ fontSize: 23, fontWeight: 700, marginBottom: 8 }}>
-        {ideationConv.idea_proposal?.idea_name || '신청서 초안'}
-      </h2>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, flexWrap: 'wrap' }}>
+        <h2 style={{ fontSize: 23, fontWeight: 700, margin: 0 }}>
+          {ideationConv.idea_proposal?.idea_name || '확정된 아이디어'}
+        </h2>
+        <span className="badge green mono">신청서 초안</span>
+      </div>
       <p style={{ fontSize: 14, color: 'var(--text-2)', marginBottom: 16, lineHeight: 1.6 }}>
         회의에서 확정한 아이디어를 근거로 채운 초안입니다. 제출 전 내용을 꼭 검토해 주세요.
         {unfinishedCount > 0 && ` (아직 채워지지 않은 항목 ${unfinishedCount}개)`}
@@ -3023,11 +3209,18 @@ export function ApplicationFormDraftScreen({ ideationConv, onBack, onGoMain }) {
       {/* pge/Claude(2026-07-29, 요청: "패널 오른쪽 아래에 메인으로 돌아가기 버튼, 새 분석
           시작으로") — 신청서 초안까지 끝난 뒤 이 세션을 마무리하고 EntryScreen("새 분석
           시작")으로 완전히 새로 시작할 수 있는 출구. */}
-      {onGoMain && (
-        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 24 }}>
-          <button type="button" className="btn-primary" onClick={onGoMain}>
-            메인으로 돌아가기
-          </button>
+      {(onGoMain || onGoFeedback) && (
+        <div style={{ display: 'flex', justifyContent: 'center', gap: 10, marginTop: 24, flexWrap: 'wrap' }}>
+          {onGoMain && (
+            <button type="button" className="btn-ghost" onClick={onGoMain}>
+              메인으로 가기
+            </button>
+          )}
+          {onGoFeedback && (
+            <button type="button" className="btn-primary" onClick={onGoFeedback}>
+              피드백 받으러 가기
+            </button>
+          )}
         </div>
       )}
     </div>

@@ -77,14 +77,12 @@ const STAGE_DESCRIPTIONS = {
 };
 
 const FLOW_BY_MODE = {
-  // 가은/Claude(2026-07-27, 요청: "주제 확정하고 신청서 초안 버튼") — form_draft는
-  // ideation_result의 "신청서 초안 만들기" 버튼으로만 진입한다(goNext).
-  pre: ["entry", "analysis", "ideation", "ideation_result", "form_draft"],
+  pre: ["entry", "analysis", "ideation", "form_draft"],
   // 가은/Claude(2026-07-21): 실측 요청 — "작성 후(문서 피드백)"로 들어오면 공모전 분석
   // 화면 없이 바로 기획서 업로드·분석으로 간다. 공모전 분석은 주제를 정하기 전(작성 전)
   // 에나 필요한 단계라서다. entry에서 등록한 공고문(criteria)은 화면만 안 거칠 뿐,
   // 색인은 그대로 되어 피드백 때 심사기준 근거로 쓰인다.
-  post: ["entry", "upload", "workbench", "report"],
+  post: ["entry", "analysis", "upload", "workbench", "report"],
 };
 
 // 가은/Claude(2026-07-21): "작성 전" 흐름에서 확정한 아이디어 프로젝트를 표시하는 마커.
@@ -171,10 +169,29 @@ function Shell({ children, active, mode, onNavigate, showNav }) {
         .rb-root .badge.green{ background:var(--green-dim); color:var(--green); }
         .rb-root .badge.amber{ background:var(--amber-dim); color:var(--amber); }
         .rb-root .badge.grey{ background:var(--bg-2); color:var(--text-2); }
-        .rb-root .btn-primary{ background:linear-gradient(135deg, var(--purple), #8b6ef0); color:#0b0a16; font-weight:600; border:none; border-radius:12px; padding:11px 20px; cursor:pointer; font-size:16px; box-shadow:0 4px 0 #5a3fc4, 0 6px 14px rgba(124,92,234,0.35); transform:translateY(0); transition:transform .12s ease, box-shadow .12s ease; }
-        .rb-root .btn-primary:hover:not(:disabled){ box-shadow:0 5px 0 #5a3fc4, 0 8px 18px rgba(124,92,234,0.4); transform:translateY(-1px); }
-        .rb-root .btn-primary:active:not(:disabled){ box-shadow:0 1px 0 #5a3fc4, 0 2px 6px rgba(124,92,234,0.3); transform:translateY(3px); }
-        .rb-root .btn-primary:disabled{ opacity:0.4; cursor:not-allowed; box-shadow:none; }
+        .rb-root .btn-primary{
+          min-height:50px; padding:13px 24px; border:none; border-radius:13px;
+          background:linear-gradient(135deg, var(--purple), #8b6ef0); color:#fff;
+          font-size:16px; font-weight:700; cursor:pointer;
+          box-shadow:0 7px 18px rgba(124,92,234,0.30);
+          transform:translateY(0);
+          transition:background .18s ease, transform .18s ease, box-shadow .18s ease;
+        }
+        .rb-root .btn-primary:hover:not(:disabled){
+          background:linear-gradient(135deg, #704fe0, #8063e8);
+          box-shadow:0 9px 22px rgba(124,92,234,0.38);
+          transform:translateY(-1px);
+        }
+        .rb-root .btn-primary:active:not(:disabled){
+          box-shadow:0 4px 12px rgba(124,92,234,0.28);
+          transform:translateY(1px);
+        }
+        .rb-root .btn-primary:disabled{
+          color:rgba(255,255,255,.82);
+          background:linear-gradient(135deg, rgba(124,92,234,.58), rgba(139,110,240,.58));
+          opacity:1; cursor:not-allowed;
+          box-shadow:0 5px 14px rgba(124,92,234,.16);
+        }
         .rb-root .btn-ghost{ background:transparent; border:1px solid var(--glass-border); color:var(--text-1); border-radius:12px; padding:10px 18px; cursor:pointer; font-size:16px; }
         .rb-root .btn-ghost:hover{ background:var(--bg-2); }
         .rb-root .card{ border-radius:16px; padding:20px; }
@@ -190,6 +207,10 @@ function Shell({ children, active, mode, onNavigate, showNav }) {
         .rb-root .rb-inline-projects{ display:inline-flex; align-items:center; gap:6px; padding:8px 12px; font-size:16px; font-family:inherit; font-weight:500; letter-spacing:0; }
         .rb-root .rb-back-button{ width:26px; height:26px; display:inline-flex; align-items:center; justify-content:center; border:none; background:transparent; color:#000; border-radius:8px; cursor:pointer; font-size:13px; font-weight:500; line-height:1; padding:0; flex-shrink:0; }
         .rb-root .rb-back-button:hover{ background:var(--bg-2); color:var(--text-0); }
+        .rb-root .rb-page-eyebrow-row{ display:flex; align-items:center; gap:6px; margin-bottom:6px; min-height:26px; }
+        .rb-root .rb-page-eyebrow{ color:var(--purple); font-size:16px; font-weight:700; letter-spacing:.03em; line-height:1.2; }
+        .rb-root .rb-page-title-row{ display:flex; align-items:center; gap:10px; margin-bottom:16px; flex-wrap:wrap; }
+        .rb-root .rb-page-title-row h1, .rb-root .rb-page-title-row h2{ margin:0; }
         .rb-root .rb-typing-cursor{ display:inline-block; margin-left:1px; animation: rb-blink 0.9s steps(1) infinite; }
         @keyframes rb-blink{ 0%,49%{ opacity:1; } 50%,100%{ opacity:0; } }
         @media (max-width: 780px){
@@ -280,7 +301,7 @@ function Shell({ children, active, mode, onNavigate, showNav }) {
  */
 const MODE_META = {
   pre: {
-    title: "아이디어가 없어요",
+    title: "아이디어 회의하기",
     badge: "아이디어 발굴",
     description: "공모전을 분석하고 아이디어를 발굴하며 전문가 회의를 진행해요.",
     outcomes: ["공모전 핵심 분석", "평가 기준 및 배점 정리", "아이디어 후보와 전문가 회의"],
@@ -288,7 +309,7 @@ const MODE_META = {
     accent: "purple",
   },
   post: {
-    title: "작성한 문서가 있어요",
+    title: "문서 검토하기",
     badge: "문서 피드백",
     description: "기획서나 제안서를 평가하고 개선 우선순위를 확인해요.",
     outcomes: ["항목별 평가 및 점수", "개선 우선순위 제안", "피드백 및 수정 가이드"],
@@ -326,15 +347,15 @@ function ModeCard({ meta, selected, onSelect }) {
       tabIndex={0}
       onClick={onSelect}
       onKeyDown={handleKeyDown}
-      className={`card glass es-mode-card ${selected ? "es-mode-card-selected" : ""}`}
+      className={`card glass es-mode-card ${selected ? `es-mode-card-selected selected-${meta.accent}` : ""}`}
     >
       <div className="es-mode-card-top">
-        <Icon size={20} color={`var(--${meta.accent})`} />
-        {selected ? <CheckCircle2 size={18} color="var(--purple)" /> : <Circle size={16} color="var(--glass-border)" />}
+        <Icon size={20} color={selected ? "#fff" : `var(--${meta.accent})`} />
+        {selected ? <CheckCircle2 size={18} color="#fff" /> : <Circle size={16} color="var(--glass-border)" />}
       </div>
       <span className={`badge ${meta.accent} mono`} style={{ marginTop: 10, width: "fit-content" }}>{meta.badge}</span>
       <div style={{ fontWeight: 700, fontSize: 16, margin: "10px 0 6px" }}>{meta.title}</div>
-      <div style={{ fontSize: 14.5, color: "var(--text-2)", lineHeight: 1.6, marginBottom: 12 }}>{meta.description}</div>
+      <div className="es-mode-description" style={{ fontSize: 14.5, color: "var(--text-2)", lineHeight: 1.6, marginBottom: 12 }}>{meta.description}</div>
       <ul className="es-mode-outcomes">
         {meta.outcomes.map((o) => <li key={o}>{o}</li>)}
       </ul>
@@ -342,8 +363,9 @@ function ModeCard({ meta, selected, onSelect }) {
   );
 }
 
-function EntryScreen({ onEnter, onModeSelect, loading, error, projectId, ensureProject, documents, setDocuments }) {
-  const [mode, setMode] = useState(null);
+function EntryScreen({ onEnter, onModeSelect, loading, error, projectId, ensureProject, documents, setDocuments, initialMode = null, initialStep = 'material' }) {
+  const [mode, setMode] = useState(initialMode);
+  const [entryStep, setEntryStep] = useState(initialStep);
   const [dismissedAlerts, setDismissedAlerts] = useState([]);
 
   // 가은/Claude(2026-07-21): 실측 요청 — 여기서 모드 카드를 고른 시점과 "분석 시작"을
@@ -490,7 +512,8 @@ function EntryScreen({ onEnter, onModeSelect, loading, error, projectId, ensureP
   const hasReadyCriteriaDoc = documents.some((doc) => doc.status === 'done' || doc.status === 'warning');
   const isIndexingCriteriaDoc = documents.some((doc) => doc.status === 'embedding');
   const isMaterialProcessing = isIndexingCriteriaDoc || criteriaLoading;
-  const canStart = !!mode && hasReadyCriteriaDoc && !isIndexingCriteriaDoc && !criteriaLoading;
+  const canContinue = hasReadyCriteriaDoc && !isIndexingCriteriaDoc && !criteriaLoading;
+  const canStart = !!mode && canContinue;
   const guide = !mode
     ? '분석 방식을 먼저 선택해 주세요.'
     : isMaterialProcessing
@@ -520,12 +543,12 @@ function EntryScreen({ onEnter, onModeSelect, loading, error, projectId, ensureP
   return (
     <div style={{ maxWidth: 1500, margin: "0 auto" }}>
       <style>{`
-        .es-header-row{ display:flex; justify-content:space-between; align-items:flex-start; gap:16px; margin-bottom:28px; flex-wrap:wrap; }
+        .es-header-row{ max-width:960px; display:flex; justify-content:space-between; align-items:flex-start; gap:16px; margin:0 auto 28px; flex-wrap:wrap; }
         .es-eyebrow{ font-size:16px; font-weight:700; color:var(--purple); letter-spacing:.03em; margin-bottom:6px; }
         .es-title{ font-size:34px; font-weight:700; margin:0 0 6px; }
         .es-subtitle{ font-size:17px; color:var(--text-2); margin:0; }
 
-        .es-layout{ display:grid; grid-template-columns:220px minmax(0,1fr) 320px; gap:28px; align-items:start; }
+        .es-layout{ max-width:960px; margin:0 auto; }
         @media (max-width:1180px){
           .es-layout{ grid-template-columns:minmax(0,1fr); }
           .es-progress-list{ flex-direction:row; overflow-x:auto; gap:20px; }
@@ -552,11 +575,22 @@ function EntryScreen({ onEnter, onModeSelect, loading, error, projectId, ensureP
         .es-mode-card:hover{ border-color:var(--purple); }
         .es-mode-card:focus-visible{ outline:2px solid var(--purple); outline-offset:2px; }
         .es-mode-card-selected{
-          border:2px solid var(--purple);
-          background:var(--purple-dim);
+          color:#fff;
           transform:translateY(-4px);
-          box-shadow:0 12px 24px -8px rgba(124,92,234,0.38), 0 4px 10px rgba(28,26,46,0.10);
         }
+        .es-mode-card-selected.selected-purple{
+          border:2px solid var(--purple);
+          background:linear-gradient(145deg, var(--purple), #6847dc);
+          box-shadow:0 12px 24px -8px rgba(124,92,234,0.48), 0 4px 10px rgba(28,26,46,0.10);
+        }
+        .es-mode-card-selected.selected-coral{
+          border:2px solid var(--coral);
+          background:linear-gradient(145deg, var(--coral), #c94e2d);
+          box-shadow:0 12px 24px -8px rgba(224,96,61,0.42), 0 4px 10px rgba(28,26,46,0.10);
+        }
+        .es-mode-card-selected .badge{ background:rgba(255,255,255,.2); color:#fff; }
+        .es-mode-card-selected .es-mode-description,
+        .es-mode-card-selected .es-mode-outcomes{ color:rgba(255,255,255,.88) !important; }
         .es-mode-card-top{ display:flex; justify-content:space-between; align-items:flex-start; }
         .es-mode-outcomes{ margin:0; padding-left:16px; font-size:14.5px; color:var(--text-1); line-height:1.8; }
 
@@ -564,6 +598,33 @@ function EntryScreen({ onEnter, onModeSelect, loading, error, projectId, ensureP
         .es-tabs{ display:flex; gap:4px; background:var(--bg-2); border-radius:999px; padding:4px; margin-bottom:14px; width:fit-content; }
         .es-tab{ padding:7px 16px; border-radius:999px; border:none; cursor:pointer; font-size:15px; font-weight:600; font-family:inherit; background:transparent; color:var(--text-2); }
         .es-tab.active{ background:var(--bg-1); color:var(--purple); box-shadow:0 1px 4px rgba(28,26,46,0.1); }
+        .es-url-actions{ display:flex; gap:10px; }
+        .es-next-button{
+          display:flex; align-items:center; justify-content:center; gap:8px; white-space:nowrap;
+          padding:10px 18px; border-radius:12px; border:1px solid var(--purple);
+          background:linear-gradient(135deg, var(--purple), #8b6ef0); color:#fff; font-size:15px; font-weight:700;
+          box-shadow:0 7px 18px rgba(124,92,234,.30);
+          cursor:pointer; transition:background .18s ease, border-color .18s ease, box-shadow .18s ease, transform .18s ease;
+        }
+        .es-next-button:hover:not(:disabled){
+          background:linear-gradient(135deg, #704fe0, #8063e8); border-color:#704fe0;
+          box-shadow:0 9px 22px rgba(124,92,234,.38); transform:translateY(-1px);
+        }
+        .es-next-button:disabled{
+          color:rgba(255,255,255,.82); background:linear-gradient(135deg, rgba(124,92,234,.58), rgba(139,110,240,.58));
+          border-color:rgba(124,92,234,.25); box-shadow:0 5px 14px rgba(124,92,234,.16); cursor:not-allowed;
+        }
+        .es-file-actions{ display:flex; align-items:center; gap:10px; flex-shrink:0; }
+        .es-mode-start-button{
+          min-width:270px; min-height:58px; padding:14px 30px; font-size:18px;
+          border-radius:14px;
+        }
+        @media (max-width:720px){
+          .es-url-actions{ flex-wrap:wrap; }
+          .es-url-actions input{ flex-basis:100% !important; }
+          .es-file-drop{ flex-wrap:wrap; gap:14px; }
+          .es-file-actions{ width:100%; justify-content:flex-end; flex-wrap:wrap; }
+        }
 
         .es-doc-row{ display:flex; justify-content:space-between; align-items:center; padding:12px 0; gap:12px; }
         .es-doc-row + .es-doc-row{ border-top:1px solid var(--glass-border); }
@@ -587,19 +648,37 @@ function EntryScreen({ onEnter, onModeSelect, loading, error, projectId, ensureP
 
       <div className="es-header-row">
         <div>
+          <div className="rb-page-eyebrow-row">
+            {entryStep === 'mode' && (
+              <button
+                type="button"
+                className="rb-back-button"
+                onClick={() => setEntryStep('material')}
+                aria-label="공모전 자료 등록 화면으로 돌아가기"
+              >
+                {'←'}
+              </button>
+            )}
           {/* 용준/Claude(2026-07-26, 요청: "AI REVIEW BOARD 글꼴이 픽셀/도트 게임 폰트처럼
               보여서 완성도가 떨어짐") — .mono가 var(--mono)(JetBrains Mono, 고정폭)를
               적용해서 작은 크기+letter-spacing과 합쳐지면 도트 폰트처럼 보였다. 이
               로고성 라벨만 .mono를 빼서 기본 본문 폰트(Pretendard)를 쓰게 하고, 다른
               곳(배지·타임스탬프 등)의 .mono는 그대로 둔다. */}
-          <div className="es-eyebrow">AI REVIEW BOARD</div>
-          <h1 className="es-title">새 분석 시작</h1>
-          <p className="es-subtitle">현재 준비 상태에 맞는 분석 방식을 선택하고 필요한 자료를 등록해 주세요.</p>
+            <div className="es-eyebrow" style={{ marginBottom: 0 }}>AI REVIEW BOARD</div>
+          </div>
+          <h1 className="es-title">
+            {entryStep === 'material' ? '사용자가 준비하는 공모전은 무엇인가요?' : '어떤 도움을 받고 싶으신가요?'}
+          </h1>
+          <p className="es-subtitle">
+            {entryStep === 'material'
+              ? '참여하려는 공모전을 등록해보세요!'
+              : '현재 준비 상태에 맞는 검토 방식을 선택해 주세요.'}
+          </p>
         </div>
       </div>
 
       <div className="es-layout">
-        <div className="es-progress-list">
+        {false && <div className="es-progress-list">
           {ENTRY_PROGRESS_STEPS.map((step, i) => (
             <div key={step.key} className={`es-progress-step ${i === 0 ? "active" : "upcoming"}`}>
               <div className="es-progress-dot">{i + 1}</div>
@@ -609,33 +688,22 @@ function EntryScreen({ onEnter, onModeSelect, loading, error, projectId, ensureP
               </div>
             </div>
           ))}
-        </div>
+        </div>}
 
         <div style={{ minWidth: 0 }}>
-          <div role="radiogroup" aria-label="분석 방식 선택" className="es-mode-grid">
+          {entryStep === 'mode' && <div role="radiogroup" aria-label="분석 방식 선택" className="es-mode-grid">
             {['pre', 'post'].map((key) => (
               <ModeCard key={key} meta={MODE_META[key]} selected={mode === key} onSelect={() => selectMode(key)} />
             ))}
-          </div>
+          </div>}
 
-          <div className={`card glass es-material-section ${!mode ? "disabled" : ""}`}>
-            {!mode ? (
-              <div style={{ fontSize: 15, color: "var(--text-2)" }}>분석 방식을 먼저 선택해 주세요.</div>
-            ) : (
-              <>
+          {entryStep === 'material' && <div className="card glass es-material-section">
                 <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
                   <Link2 size={14} color="var(--text-2)" /> 공모전 자료 등록
-                  <span className="badge purple mono" style={{ marginLeft: 6 }}>필수 입력</span>
                 </div>
                 <div style={{ fontSize: 14.5, color: "var(--text-2)", marginBottom: 14 }}>
                   공고문, 평가 기준, 신청서 양식 등 공모전 관련 자료를 등록해 주세요.
                 </div>
-
-                {mode === 'post' && (
-                  <div style={{ fontSize: 14, color: "var(--text-1)", background: "var(--bg-2)", borderRadius: 10, padding: "10px 12px", marginBottom: 14, lineHeight: 1.6 }}>
-                    평가받을 기획서·제안서·사업계획서 같은 문서는 다음 단계(기획서 업로드)에서 따로 등록해요. 여기서는 공모전 공고문·평가기준·신청서 양식만 등록하면 돼요.
-                  </div>
-                )}
 
                 <div className="es-tabs" role="tablist" aria-label="자료 등록 방식">
                   {[['url', 'URL로 가져오기'], ['file', '파일 업로드']].map(([key, label]) => (
@@ -660,7 +728,7 @@ function EntryScreen({ onEnter, onModeSelect, loading, error, projectId, ensureP
                 </div>
 
                 {criteriaTab === 'url' ? (
-                  <div style={{ display: "flex", gap: 10 }}>
+                  <div className="es-url-actions">
                     <input
                       value={criteriaUrl}
                       onChange={(e) => setCriteriaUrl(e.target.value)}
@@ -672,9 +740,18 @@ function EntryScreen({ onEnter, onModeSelect, loading, error, projectId, ensureP
                     <button type="button" className="btn-ghost" onClick={handleFetchCriteriaUrl} disabled={criteriaLoading || !criteriaUrl.trim()}>
                       {criteriaLoading ? '가져오는 중...' : '가져오기'}
                     </button>
+                    <button
+                      type="button"
+                      className="es-next-button"
+                      disabled={!canContinue}
+                      onClick={() => setEntryStep('mode')}
+                    >
+                      검토 방식 선택하기 <ArrowRight size={15} />
+                    </button>
                   </div>
                 ) : (
                   <div
+                    className="es-file-drop"
                     style={{
                       border: `1.5px dashed ${isCriteriaDragging ? 'var(--purple)' : 'var(--glass-border)'}`,
                       borderRadius: 12, padding: '18px 16px', display: 'flex', alignItems: 'center',
@@ -689,7 +766,17 @@ function EntryScreen({ onEnter, onModeSelect, loading, error, projectId, ensureP
                         <div style={{ fontSize: 14.5, color: 'var(--text-2)' }}>PDF, DOCX, PPTX, HWP, HWPX · 파일당 최대 50MB · 여러 개 선택 가능</div>
                       </div>
                     </div>
-                    <button type="button" className="btn-ghost" onClick={() => criteriaFileInputRef.current?.click()}>파일 선택</button>
+                    <div className="es-file-actions">
+                      <button type="button" className="btn-ghost" onClick={() => criteriaFileInputRef.current?.click()}>파일 선택</button>
+                      <button
+                        type="button"
+                        className="es-next-button"
+                        disabled={!canContinue}
+                        onClick={() => setEntryStep('mode')}
+                      >
+                        검토 방식 선택하기 <ArrowRight size={15} />
+                      </button>
+                    </div>
                     <input
                       ref={criteriaFileInputRef}
                       type="file"
@@ -773,14 +860,28 @@ function EntryScreen({ onEnter, onModeSelect, loading, error, projectId, ensureP
                     ))}
                   </div>
                 )}
-              </>
-            )}
-          </div>
+          </div>}
 
           {error && <p style={{ color: "var(--coral)", fontSize: 14.5 }}>{error}</p>}
+
+          {entryStep === 'mode' && (
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginTop: 28 }}>
+              <button
+                type="button"
+                className="es-next-button es-mode-start-button"
+                disabled={!canStart || loading}
+                onClick={() => onEnter(mode)}
+              >
+                {loading ? '시작하고 있습니다...' : '시작하기'} <ArrowRight size={15} />
+              </button>
+              {!mode && !loading && (
+                <p style={{ fontSize: 14, color: 'var(--text-2)', marginTop: 10 }}>검토 방식을 선택해 주세요.</p>
+              )}
+            </div>
+          )}
         </div>
 
-        <aside className="es-side">
+        {false && <aside className="es-side">
           <div className="card glass">
             <div className="es-side-title">현재 분석 설정</div>
 
@@ -841,7 +942,7 @@ function EntryScreen({ onEnter, onModeSelect, loading, error, projectId, ensureP
               )}
             </div>
           </div>
-        </aside>
+        </aside>}
       </div>
     </div>
   );
@@ -1649,10 +1750,11 @@ function AnalysisScreen({ mode, onNext, onBack, projectId }) {
         .cas-next-btn{ width:100%; display:flex; align-items:center; justify-content:center; gap:8px; }
       `}</style>
 
-      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+      <div className="rb-page-eyebrow-row">
         <button type="button" className="rb-back-button" onClick={onBack} aria-label="이전 화면으로 이동">
           {'←'}
         </button>
+        <div className="rb-page-eyebrow">AI REVIEW BOARD</div>
       </div>
       <div className="cas-title-row">
         <h1 className="cas-title">
@@ -2015,15 +2117,18 @@ function UploadAndAnalyzeScreen({ projectId, onFeedbackReady, onBack, initialDoc
 
   return (
     <div style={{ maxWidth: 720 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12 }}>
+      <div className="rb-page-eyebrow-row">
         <button type="button" className="rb-back-button" onClick={onBack} aria-label="이전 화면으로 이동">
           {'←'}
         </button>
-        <div className="badge coral mono">기획서 업로드 · 분석</div>
+        <div className="rb-page-eyebrow">AI REVIEW BOARD</div>
       </div>
-      <h2 style={{ margin: '0 0 20px', fontSize: 22, fontWeight: 700 }}>
-        {analyzing ? '평가 대상 문서를 분석중이에요' : '평가 대상 문서를 업로드하세요'}
-      </h2>
+      <div className="rb-page-title-row">
+        <h2 style={{ fontSize: 22, fontWeight: 700 }}>
+          {analyzing ? '평가 대상 문서를 분석중이에요' : '평가 대상 문서를 업로드하세요'}
+        </h2>
+        <span className="badge coral mono">기획서 업로드 · 분석</span>
+      </div>
 
       {/* pge/Claude(2026-07-28, 요청: "업로드 파일 화면 없애지 말고 그 아래로 [진행률
           카드를] 옮겨줘") — 분석이 시작되면(analyzing) 드롭존과 "분석 시작" 버튼만
@@ -2157,6 +2262,7 @@ export default function ReviewBoardPrototype() {
   const [targetDocuments, setTargetDocuments] = useState(null);
   const [entryLoading, setEntryLoading] = useState(false);
   const [entryError, setEntryError] = useState('');
+  const [entryStartStep, setEntryStartStep] = useState(null);
   const [ideaSaving, setIdeaSaving] = useState(false);
   const [ideaSaveError, setIdeaSaveError] = useState('');
   // 가은/Claude(2026-07-20): 실측 버그 — URL로 실제 공고문을 수집해도 "공모전 분석"
@@ -2205,7 +2311,14 @@ export default function ReviewBoardPrototype() {
     setTargetDocuments(null);
     setCriteriaDocuments([]);
     setIdeationConv(null);
+    setEntryStartStep(null);
     setStage("entry");
+  };
+
+  const goToFeedbackSelection = () => {
+    setMode(null);
+    setEntryStartStep('mode');
+    setStage('entry');
   };
 
   // 가은/Claude(2026-07-20): projectId가 아직 없으면(공고 URL/파일을 하나도 안 넣고
@@ -2226,10 +2339,10 @@ export default function ReviewBoardPrototype() {
     return project.id;
   }
 
-  async function handleConfirmIdeaProject(finalizedConversation = ideationConv) {
+  async function handleConfirmIdeaProject(finalizedConversation = ideationConv, destination = 'result') {
     if (ideaSaving) return;
     if (ideaProjectSavedRef.current) {
-      goNext();
+      setStage(destination === 'form_draft' ? 'form_draft' : 'ideation_result');
       return;
     }
 
@@ -2252,7 +2365,7 @@ export default function ReviewBoardPrototype() {
       ideaProjectSavedRef.current = true;
       projectIdRef.current = project.id;
       setProjectId(project.id);
-      goNext();
+      setStage(destination === 'form_draft' ? 'form_draft' : 'ideation_result');
     } catch (err) {
       setIdeaSaveError(err.message);
     } finally {
@@ -2269,8 +2382,7 @@ export default function ReviewBoardPrototype() {
     setEntryLoading(true);
     try {
       await ensureProject();
-      // 작성 후(문서 피드백)는 공모전 분석을 거치지 않고 바로 기획서 업로드·분석으로.
-      setStage(m === "post" ? "upload" : "analysis");
+      setStage("analysis");
     } catch (err) {
       setEntryError(err.message);
     } finally {
@@ -2373,6 +2485,8 @@ export default function ReviewBoardPrototype() {
           ensureProject={ensureProject}
           documents={criteriaDocuments}
           setDocuments={setCriteriaDocuments}
+          initialMode={mode}
+          initialStep={entryStartStep || (mode ? 'mode' : 'material')}
         />
       )}
       {stage === "analysis" && (
@@ -2385,6 +2499,7 @@ export default function ReviewBoardPrototype() {
           ideationConv={ideationConv}
           setIdeationConv={setIdeationConv}
           onFinalized={handleConfirmIdeaProject}
+          onGoFormDraft={(data) => handleConfirmIdeaProject(data, 'form_draft')}
           onBack={goPrev}
           saving={ideaSaving}
           saveError={ideaSaveError}
@@ -2399,7 +2514,14 @@ export default function ReviewBoardPrototype() {
           onReturnToConversation={() => setStage('ideation')}
         />
       )}
-      {stage === "form_draft" && <ApplicationFormDraftScreen ideationConv={ideationConv} onBack={goPrev} onGoMain={goToMain} />}
+      {stage === "form_draft" && (
+        <ApplicationFormDraftScreen
+          ideationConv={ideationConv}
+          onBack={goPrev}
+          onGoMain={goToMain}
+          onGoFeedback={goToFeedbackSelection}
+        />
+      )}
       {stage === "upload" && (
         <UploadAndAnalyzeScreen projectId={projectId} onFeedbackReady={handleFeedbackReady} onBack={goPrev} initialDocuments={targetDocuments} />
       )}
