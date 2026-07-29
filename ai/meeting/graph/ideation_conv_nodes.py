@@ -317,6 +317,21 @@ _VAGUE_ENDING_PATTERN = re.compile(
     r"논의가\s*필요합니다)[.!]?\s*$"
 )
 
+# 용준/Claude(2026-07-29, 요청: 실측 버그 수정 — 사용자 화면에 "근거 자료에는 '<결격사유>
+# ...'라고 되어 있습니다"처럼 파싱 기호가 섞인 문서 원문이 그대로 노출됐다) — spoken_text는
+# 항상 자연어 요약이어야 하고, 문서 청크를 그대로 인용하거나 그 인용을 여는 상투 문구로
+# 시작해서는 안 된다. 첫 두 패턴은 "근거 자료에는"류 인용 도입부, 세 번째는 파싱 산출물에
+# 흔한 기호(꺾쇠·가운데점·글머리표·따옴표로 감싼 긴 구간)를 잡는다.
+_RAW_EVIDENCE_QUOTE_OPENING_RE = re.compile(r"^\s*(?:근거\s*자료에는|자료에는|근거에는)\b")
+_RAW_EVIDENCE_PARSING_ARTIFACT_RE = re.compile(r"[<>○※]")
+
+
+def _spoken_text_has_raw_evidence_artifact(spoken_text: str) -> bool:
+    text = spoken_text or ""
+    return bool(
+        _RAW_EVIDENCE_QUOTE_OPENING_RE.search(text) or _RAW_EVIDENCE_PARSING_ARTIFACT_RE.search(text)
+    )
+
 
 def _has_vague_ending(spoken_text: str) -> bool:
     return bool(_VAGUE_ENDING_PATTERN.search((spoken_text or "").strip()))
@@ -599,21 +614,6 @@ def _evidence_unavailable_discussion_response(
     }
 
 
-def _quote_josa(quote: str) -> str:
-    """용준/Claude(2026-07-27, 실측 버그 수정: "시민"라고 → "시민"이라고) — quote의 마지막
-    글자가 받침 있는 음절이면 "이라고", 받침 없으면(모음으로 끝나거나 한글이 아니면)
-    "라고"를 반환한다. 한글 완성형 코드 범위(가~힣)의 (코드값 - 0xAC00) % 28 == 0 이면
-    받침이 없다는 유니코드 조합 규칙을 그대로 이용한다."""
-    trimmed = quote.strip()
-    if not trimmed:
-        return "라고"
-    last_char = trimmed[-1]
-    code = ord(last_char)
-    if 0xAC00 <= code <= 0xD7A3 and (code - 0xAC00) % 28 != 0:
-        return "이라고"
-    return "라고"
-
-
 def _evidence_anchor_response(raw: dict, retrieved: list[dict], persona_id: str) -> dict | None:
     """LLM 응답이 근거를 하나도 연결하지 못했을 때 선택 근거 자체로 안전한 발언을 만든다.
 
@@ -650,7 +650,13 @@ def _evidence_anchor_response(raw: dict, retrieved: list[dict], persona_id: str)
     issue_title = raw.get("active_issue_title") or "현재 쟁점"
     role_label = _EXPERT_ROLE_LABELS.get(persona_id, "위원")
     judgment = f"{role_label} 관점에서, {issue_title}에서는 이 근거가 요구하거나 설명하는 내용을 구체화해야 합니다."
-    spoken_text = f'근거 자료에는 “{quote}”{_quote_josa(quote)} 제시되어 있습니다. {judgment}'
+    # 용준/Claude(2026-07-29, 요청: 실측 버그 수정 — 사용자에게 보이는 spoken_text에 파싱
+    # 기호가 섞인 원문 청크(quote)를 그대로 인용문으로 붙이면 "근거 자료에는 '<결격사유>...'
+    # 라고 되어 있습니다" 같은 비정상 발언이 나간다). quote는 내부 claim(아래 claims[0].text,
+    # 화면에 노출되지 않음)에만 남기고, 사용자 화면 문장(spoken_text)은 원문을 인용하지 않는
+    # 자연어 요약 한 문장으로만 구성한다 — 이 함수의 원래 제약("새 문서 사실을 지어내지
+    # 않는다")은 quote를 claims에 그대로 두는 것으로 유지된다.
+    spoken_text = f"{judgment} 세부 내용은 문서 근거를 확인해 정리했습니다."
     return {
         **raw,
         "judgment": judgment,
@@ -1411,6 +1417,11 @@ def _discussion_retry_note(reason: str) -> str:
             "\"명확한 목표 설정이 필요합니다\"처럼 구체적 명사·조건 없이도 항상 성립하는 상투어 문장을 "
             "빼고, 실제 동의·반론·수정안(구체적 대상·조건·수치)을 spoken_text에 직접 쓰세요."
         ),
+        "spoken_text_raw_evidence_artifact": (
+            "spoken_text에서 \"근거 자료에는 ~라고 되어 있습니다\" 같은 인용 도입부와 문서 원문을 그대로 "
+            "복사하지 마세요. retrieved_evidence의 내용을 1~2문장의 자연어 요약으로 바꿔 말하고, "
+            "꺾쇠(<, >)·※·○ 같은 파싱 기호를 spoken_text에 남기지 마세요."
+        ),
     }.get(reason, "검증 실패 사유를 수정하되 기존 JSON 스키마와 현재 쟁점을 그대로 유지하세요.")
     return (
         "\n\n[구조화 응답 재시도]\n"
@@ -1534,6 +1545,8 @@ def _validate_discussion_response(
         return "missing_or_empty_field:spoken_text"
     if len(raw.get("spoken_text", "")) > _MAX_SPOKEN_TEXT_CHARS:
         return "spoken_text_too_long"
+    if _spoken_text_has_raw_evidence_artifact(raw.get("spoken_text", "")):
+        return "spoken_text_raw_evidence_artifact"
     if current_speaker_id:
         speaker_problem = validate_spoken_text_speaker_reference(
             current_speaker_id, responding_to_speaker_id, raw.get("spoken_text", "")
@@ -2015,6 +2028,21 @@ def resolve_effective_issue(state: IdeationConvState, persona_id: str | None = N
     if issue_id:
         title = _active_issue_title(state) or issue_id
         return {"issue_id": issue_id, "title": title, "source": "active_issue_id"}
+
+    # 용준/Claude(2026-07-29, 요청: expert_analysis_query 단일 응답 규칙 — 실측 버그: "MVP
+    # 기술 위험을 데이터/개인정보/음성 기능에 한정해서" 물었는데 canonical 9개 평가축
+    # 로테이션(_TOPIC_TITLE_KO)이 관련 없는 "로드맵"으로 쟁점을 드리프트시켰다) —
+    # expert_analysis_query는 사용자가 이번 턴에서 명시한 범위 자체가 유일한 쟁점이다.
+    # active_issue_id가 아직 없다고 해서 canonical 주제 로테이션이나 unresolved_issues
+    # 누적 문구로 새 쟁점을 여는 대신, 이번 사용자 질문 원문을 그대로 쟁점/검색어로 쓴다.
+    if state.get("request_type") == "expert_analysis_query":
+        current_user_input = (state.get("current_user_input") or "").strip()
+        if current_user_input:
+            return {
+                "issue_id": _slugify_issue_title(current_user_input),
+                "title": current_user_input,
+                "source": "current_user_input",
+            }
 
     if state.get("unresolved_issues"):
         title = " ".join(state["unresolved_issues"])
@@ -2549,6 +2577,8 @@ def _validate_expert_delegation_response(raw: dict, stage: str = "initial") -> s
         return "missing_or_empty_field:spoken_text"
     if len(raw.get("spoken_text", "")) > _MAX_SPOKEN_TEXT_CHARS:
         return "spoken_text_too_long"
+    if _spoken_text_has_raw_evidence_artifact(raw.get("spoken_text", "")):
+        return "spoken_text_raw_evidence_artifact"
     if stage == "revision":
         if _blank(raw.get("responding_to")) or _blank(raw.get("revision")):
             return "missing_or_empty_field:responding_to_or_revision"
@@ -2600,6 +2630,8 @@ def _validate_expert_delegation_review_response(raw: dict) -> str | None:
         return "missing_or_empty_field:spoken_text"
     if len(raw.get("spoken_text", "")) > _MAX_SPOKEN_TEXT_CHARS:
         return "spoken_text_too_long"
+    if _spoken_text_has_raw_evidence_artifact(raw.get("spoken_text", "")):
+        return "spoken_text_raw_evidence_artifact"
     agreement = (raw.get("agreement") or "").strip()
     concern = (raw.get("concern") or "").strip()
     if not agreement and not concern:
@@ -4474,14 +4506,33 @@ def make_conv_discussion_node(
             )
         candidate_issue_id = generated_issue_id_raw or _fallback_issue_id(state)
         candidate_issue_title = generated_issue_title_raw or candidate_issue_id
-        issue_dedup = resolve_issue_duplicate(
-            candidate_issue_id=candidate_issue_id,
-            candidate_issue_title=candidate_issue_title,
-            current_active_issue_id=state.get("active_issue_id"),
-            open_issues=state.get("open_issues") or [],
-            resolved_issues=state.get("resolved_issues") or [],
-            resolved_topics=state.get("resolved_topics") or [],
-        )
+        # 용준/Claude(2026-07-29, 실측 버그 수정: "MVP 기술 위험을 데이터/개인정보/음성
+        # 기능에 한정해서" 물은 단일 응답 요청이 canonical 9개 평가축 로테이션을 거쳐
+        # 관련 없는 "로드맵" 쟁점으로 드리프트했다) — expert_analysis_query는 회의 라운드가
+        # 아니라 사용자가 이번 턴에 명시한 범위 하나로 끝나는 단일 응답이다
+        # (ai/meeting/graph/ideation_conv_run.py::_SINGLE_TURN_REQUEST_TYPES와 query_type_notice
+        # 안내문이 이미 "다음 쟁점으로 이동하지 말라"고 전제한다). resolve_issue_duplicate의
+        # 중복 판정/다음 공식 주제 로테이션은 여러 라운드짜리 일반 토론 전용 로직이므로 이
+        # 요청 유형에는 아예 적용하지 않고, 이번 턴이 제안한 쟁점을 그대로 쓴다.
+        if state.get("request_type") == "expert_analysis_query" and not state.get("active_issue_id"):
+            issue_dedup = {
+                "issue_id": candidate_issue_id,
+                "issue_title": candidate_issue_title,
+                "canonical_family": resolve_canonical_issue_family(candidate_issue_title, issue_id=candidate_issue_id),
+                "duplicate": False,
+                "duplicate_of_issue_id": None,
+                "duplicate_source": None,
+                "rotated": False,
+            }
+        else:
+            issue_dedup = resolve_issue_duplicate(
+                candidate_issue_id=candidate_issue_id,
+                candidate_issue_title=candidate_issue_title,
+                current_active_issue_id=state.get("active_issue_id"),
+                open_issues=state.get("open_issues") or [],
+                resolved_issues=state.get("resolved_issues") or [],
+                resolved_topics=state.get("resolved_topics") or [],
+            )
         if issue_dedup["duplicate"]:
             trace_event(
                 "IDEATION_ISSUE_DUPLICATE_SUPPRESSED",
@@ -4504,7 +4555,16 @@ def make_conv_discussion_node(
                     skipped_duplicate_count=1,
                 )
         active_issue_id = issue_dedup["issue_id"]
-        active_issue_title = issue_dedup["issue_title"]
+        # 용준/Claude(2026-07-29, 실측 버그 수정: 사용자 화면에 "'None'은 문서 근거만으로
+        # 확정할 수 없어..."가 그대로 노출됐다) — resolve_issue_duplicate()는 로테이션할
+        # 다음 공식 쟁점이 더 없으면(9개 canonical topic 모두 소진) issue_title=None을
+        # 의도적으로 반환한다(그 함수 docstring 참고 — 호출부가 "활성 쟁점 없음"을 처리하라는
+        # 계약). active_issue_id=None은 아래 여러 분기(예: 5105/5125행)가 이미 명시적으로
+        # 처리하지만, active_issue_title은 그런 가드 없이 곧바로 f"'{active_issue_title}'..."
+        # 형태로 사용자 발언 문자열에 그대로 삽입되므로(아래 autonomous_assumption_note),
+        # 여기서 한 번만 안전한 기본값으로 치환해 어떤 다운스트림 문자열에도 파이썬 None이
+        # 노출되지 않게 한다.
+        active_issue_title = issue_dedup["issue_title"] or "핵심 검토 사항"
         active_issue_family = issue_dedup["canonical_family"]
         new_information = _as_string_list(raw.get("new_information"))
         proposal = raw.get("proposal") or None
@@ -5152,11 +5212,16 @@ def make_conv_discussion_node(
         # "unconfirmed" 키 자체가 없으면(구버전 응답 등) 기존 unresolved_issues를 그대로
         # 둔다 — 키가 있는데 배열이 아니면(타입 오류) 안전하게 빈 배열로 정규화한다.
         resolved_unresolved_issues = unconfirmed if "unconfirmed" in raw else state["unresolved_issues"]
-        if autonomous_assumption_note and autonomous_assumption_note not in resolved_unresolved_issues:
-            # 용준/Claude(2026-07-23, 요청: expert_judgment 처리 시 가정·한계를 명확히 남김) —
-            # 사용자에게 묻지 않고 전문가 판단으로 진행했다는 사실과 그 가정을 회의록에
-            # 남긴다(요청 6번: "전문가 판단에는 가정, 한계, 추가 검증 사항을 명확히 남깁니다").
-            resolved_unresolved_issues = resolved_unresolved_issues + [autonomous_assumption_note]
+        # 용준/Claude(2026-07-29, 실측 버그 수정: 여러 턴에 걸쳐 "~다음 쟁점 판단으로
+        # 넘기겠습니다" 문구가 겹겹이 이어붙어 반복 노출됨) — autonomous_assumption_note는
+        # 전문가 발언 1건짜리 "가정을 남긴다" 서술문(문장)인데, resolve_effective_issue()
+        # (위 2032행)는 active_issue_id가 비어 있을 때 state["unresolved_issues"]를 "짧은
+        # 쟁점 제목 목록"으로 가정하고 전부 공백으로 이어붙여 다음 쟁점의 title/검색어로
+        # 재사용한다. 이 리스트에 문장을 계속 추가하면 턴이 지날수록 이어붙인 문자열이
+        # 기하급수적으로 길어지고, 그 문자열이 다시 다음 턴의 "근거를 찾지 못했다" 안내문
+        # 앞에 그대로 삽입돼 스스로를 반복 인용하는 것처럼 보인다. 이 가정은 이미 아래
+        # message["structured"]["assumptions"]와 IDEATION_AUTONOMOUS_RESOLUTION trace
+        # 로그에 남으므로, 쟁점 제목 목록에는 더 이상 추가하지 않는다.
         update: dict[str, Any] = {
             "messages": [message],
             "consensus": new_consensus,
