@@ -48,6 +48,7 @@ from ai.rag.chunking.chunker import chunk_document
 from ai.rag.chunking.schemas import ChunkSourceContext, SourceType
 from ai.rag.domain.schemas import IndexingContext
 from ai.rag.domain.config import DEFAULT_COLLECTION_NAME
+from ai.rag.domain.document_types import normalize_document_type
 from ai.rag.embedding.kure_embedder import KUREEmbedder
 from ai.rag.embedding.schemas import EmbeddingConfig
 from ai.rag.retrieval.chroma_store import ChromaVectorStore
@@ -59,7 +60,7 @@ import chromadb
 from app.common.exceptions import BadRequestException, InternalServerException
 from app.repositories.project_repository import ProjectRepository
 from app.repositories.contest_work_repository import ContestWorkRepository
-from app.config import settings
+from app.config import resolve_chroma_persist_dir, settings
 from app.models.document import DocumentModel
 from app.models.notice_cache import NoticeAnalysisCacheModel
 from app.repositories.document_repository import DocumentRepository
@@ -133,15 +134,7 @@ def _canonical_chroma_persist_dir() -> str:
     중 발견 — Windows는 SQLite 파일 잠금이 POSIX와 달리 mandatory라, 서로 모르는 두
     엔진이 같은 물리 파일에 동시 접근하면 즉시 에러 대신 무기한 대기로 이어질 수 있다).
     이 함수로 절대경로로 정규화해 항상 같은 identifier를 쓰도록 강제한다."""
-    configured_path = Path(settings.CHROMA_PERSIST_DIR).expanduser()
-    if not configured_path.is_absolute():
-        # The backend is normally launched with ``backend/`` as its working
-        # directory, while scripts and tests commonly run from the repository
-        # root. Resolving a relative setting against CWD therefore creates two
-        # different Chroma databases (``backend/chroma_db`` and
-        # ``chroma_db``). Keep one stable location regardless of launch CWD.
-        configured_path = _REPOSITORY_ROOT / configured_path
-    return str(configured_path.resolve())
+    return resolve_chroma_persist_dir(settings.CHROMA_PERSIST_DIR)
 
 
 def _get_indexing_service() -> RAGIndexingService:
@@ -190,7 +183,7 @@ def _get_chroma_client() -> chromadb.ClientAPI:
 
 def _parse_chunk_and_index(
     document_id: str, project_id: str, file_path: str, filename: str, document_role: str = "target"
-) -> tuple[int, str, dict]:
+) -> tuple[int, str, dict, Optional[str]]:
     """RAG-001~003: 파싱 -> 청킹 -> 임베딩 -> Chroma 저장까지 동기적으로 실행하고
     (색인된 청크 수, 원문 전체 텍스트, 변환 metadata)를 반환한다. CPU-bound라 호출부에서
     threadpool로 감싸 실행해야 한다.
@@ -223,6 +216,10 @@ def _parse_chunk_and_index(
             conversion_metadata = build_conversion_metadata(conversion_result).model_dump(mode="json")
 
         extraction = extract_document(processing_path)
+        parsed_text = "\n\n".join(block.content for block in extraction.blocks)
+        classified_document_type = (
+            _classify_criteria_document(parsed_text) if document_role == "criteria" else None
+        )
         chunk_context = ChunkSourceContext(
             document_id=document_id,
             source_type=SourceType.FILE_UPLOAD,
@@ -235,16 +232,29 @@ def _parse_chunk_and_index(
             document_id=document_id,
             document_title=filename,
             document_role=document_role,
+            document_type=(
+                normalize_document_type(
+                    classified_document_type,
+                    document_name=filename,
+                    text=parsed_text,
+                )
+                if document_role == "criteria"
+                else None
+            ),
         )
         summary = _get_indexing_service().index_chunking_result_with_summary(chunking_result, indexing_context)
-        parsed_text = "\n\n".join(block.content for block in extraction.blocks)
-        return summary.stored_count, parsed_text, conversion_metadata
+        return summary.stored_count, parsed_text, conversion_metadata, classified_document_type
     finally:
         cleanup_converted_file(conversion_result)
 
 
 def _chunk_and_index_webpage(
-    document_id: str, project_id: str, url: str, title: str, cleaned: CleanedWebContent
+    document_id: str,
+    project_id: str,
+    url: str,
+    title: str,
+    cleaned: CleanedWebContent,
+    document_type: Optional[str] = None,
 ) -> int:
     """가은/Claude(2026-07-15, "다 이어버리자" — 용준 확인 필요): fetch-url이 정제까지만
     하고 멈추던 걸 파일 업로드와 똑같이 청킹/색인까지 잇는다. chunk_document()가 원래부터
@@ -263,6 +273,7 @@ def _chunk_and_index_webpage(
         document_id=document_id,
         document_title=title,
         document_role="criteria",
+        document_type=document_type,
     )
     summary = _get_indexing_service().index_chunking_result_with_summary(chunking_result, indexing_context)
     return summary.stored_count
@@ -297,10 +308,25 @@ async def _index_webpage_background(
     logger.info("[fetch-url] 색인(백그라운드) 시작 document_id=%s url=%s", document_id, url)
     patch: dict = {}
     try:
+        classified_document_type = await run_in_threadpool(_classify_criteria_document, parsed_text)
+        canonical_document_type = normalize_document_type(
+            classified_document_type,
+            document_name=title,
+            text=parsed_text,
+        )
         stored_count = await asyncio.wait_for(
-            run_in_threadpool(_chunk_and_index_webpage, document_id, project_id, url, title, cleaned),
+            run_in_threadpool(
+                _chunk_and_index_webpage,
+                document_id,
+                project_id,
+                url,
+                title,
+                cleaned,
+                canonical_document_type,
+            ),
             timeout=_WEBPAGE_INDEXING_TIMEOUT_SECONDS,
         )
+        patch["document_type"] = classified_document_type
         patch["status"] = "indexed" if stored_count > 0 else "indexed_empty"
         logger.info(
             "[fetch-url] === 색인(백그라운드) 완료 === document_id=%s elapsed=%.1fs stored_count=%d",
@@ -328,9 +354,9 @@ async def _index_webpage_background(
     else:
         patch["indexing_error"] = None
 
-    # fetch-url 문서는 항상 criteria 문서이므로, 색인 성패와 무관하게 성격 분류를
-    # 시도한다. 분류 실패는 None으로 남을 뿐 색인 상태를 덮어쓰지 않는다.
-    patch["document_type"] = await run_in_threadpool(_classify_criteria_document, parsed_text)
+    # 분류는 Chroma metadata에 함께 저장되도록 색인 전에 수행한다.
+    # 분류/색인 실패 시에도 Mongo 필드는 명시적으로 None으로 유지한다.
+    patch.setdefault("document_type", None)
     await document_repo.update_fields(document_id, patch)
 
 
@@ -469,7 +495,7 @@ async def _index_file_background(
     _index_started = time.time()
     logger.info("[upload] 색인(백그라운드) 시작 document_id=%s filename=%s", document_id, filename)
     try:
-        stored_count, parsed_text, conversion_metadata = await asyncio.wait_for(
+        stored_count, parsed_text, conversion_metadata, classified_document_type = await asyncio.wait_for(
             run_in_threadpool(_parse_chunk_and_index, document_id, project_id, file_path, filename, document_role),
             timeout=_FILE_INDEXING_TIMEOUT_SECONDS,
         )
@@ -483,7 +509,7 @@ async def _index_file_background(
         # 평가기준/신청서양식/기타)를 매긴다 — target(기획서)은 분류 대상이 아니다.
         # 실패해도 document_type=None으로 남을 뿐 색인 완료 자체는 막지 않는다.
         if document_role == "criteria":
-            patch["document_type"] = await run_in_threadpool(_classify_criteria_document, parsed_text)
+            patch["document_type"] = classified_document_type
         await document_repo.update_fields(document_id, patch)
         logger.info(
             "[upload] === 색인(백그라운드) 완료 === document_id=%s elapsed=%.1fs stored_count=%d",

@@ -161,6 +161,7 @@ def test_recall_at_k_single_gold_document_hit():
     results = run_retrieval_eval([_case(query="q1", gold=("doc-a",))], role_retrieval_service=service, top_k=5)
     assert results[0].recall_at_k == 1.0
     assert results[0].hit_at_k == 1.0
+    assert results[0].reciprocal_rank == 1.0
     assert results[0].retrieved_document_ids == ["doc-a", "doc-b"]
 
 
@@ -186,6 +187,26 @@ def test_recall_at_k_dedupes_multiple_chunks_of_same_document():
     )
     results = run_retrieval_eval([_case(query="q1", gold=("doc-a",))], role_retrieval_service=service, top_k=5)
     assert results[0].retrieved_document_ids == ["doc-a", "doc-b"]
+
+
+def test_reciprocal_rank_uses_first_relevant_document_rank():
+    service = FakeRoleAwareRetrievalService(
+        {
+            "q1": _response(
+                "q1",
+                "p1",
+                "planning",
+                [_result("doc-x", "c1", 0.9), _result("doc-a", "c2", 0.8)],
+            )
+        }
+    )
+    results = run_retrieval_eval(
+        [_case(query="q1", gold=("doc-a",), human_verified=True)],
+        role_retrieval_service=service,
+        top_k=5,
+    )
+    assert results[0].reciprocal_rank == 0.5
+    assert aggregate_retrieval(results, k=5).mrr_macro == 0.5
 
 
 def test_expect_no_evidence_case_excluded_from_recall_and_tracks_empty_result():

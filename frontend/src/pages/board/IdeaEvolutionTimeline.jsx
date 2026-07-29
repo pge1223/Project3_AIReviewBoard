@@ -92,17 +92,21 @@ function TimelineEntry({ record, solutionDirections, problemAreas, isLast }) {
   )
 }
 
+// pge/Claude(2026-07-28, 요청: "탭이랑 패널이 붙어있어야 해") — IdeaCanvasPanel과 같은
+// 이유로 bare 옵션을 추가한다(그 파일 주석 참고).
 export default function IdeaEvolutionTimeline({
   idea_evolution: ideaEvolution,
   solution_directions: solutionDirections,
   problem_areas: problemAreas,
+  bare = false,
 }) {
   const records = ideaEvolution || []
   if (records.length === 0) return null
 
   return (
-    <div className="card glass" style={{ padding: 14 }}>
-      <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-0)', marginBottom: 10 }}>아이디어 변화 과정</div>
+    <div className={bare ? undefined : 'card glass'} style={{ padding: 14 }}>
+      {/* pge/Claude(2026-07-28, 요청: "탭에 로고 박고 패널 안 타이틀은 지워줘") — 제목 줄은
+          이제 탭 버튼(IdeationConversationScreen.jsx)이 보여주므로 중복 제거. */}
       <div style={{ display: 'flex', flexDirection: 'column' }}>
         {records.map((record, i) => (
           <TimelineEntry

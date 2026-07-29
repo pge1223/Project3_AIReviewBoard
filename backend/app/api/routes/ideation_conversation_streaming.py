@@ -35,9 +35,10 @@ from graph import (
     EXPERT_DELEGATION_STREAM_FIELDS,
     EXPERT_DELEGATION_TRAILER,
     FACILITATOR_SUMMARY_STREAM_FIELDS,
+    QUESTION_STREAM_FIELDS,
+    VALIDATION_STREAM_FIELDS,
     IdeationCancelled,
     JSONFieldStreamer,
-    QUESTION_STREAM_FIELDS,
     sanitize_preview,
     stream_delta_trace_enabled,
     trace_event,
@@ -70,6 +71,13 @@ _DELEGATION_REVIEW_MARKER = "[위임 검토 규칙]"
 _DELEGATION_FACILITATOR_MARKER = "[위임 정리 규칙]"
 _PLANNING_ROLE_MARKER = "당신은 AI Review Board의 기획 전문가입니다"
 _DEV_ROLE_MARKER = "당신은 AI Review Board의 개발 전문가입니다"
+# 용준/Claude(2026-07-28, 요청: "위원들이 순서대로 대화하는 것처럼 보여야 한다") —
+# idea_validation이 기획/개발 순차 노드로 분리되며 각자 자기 발언(message 필드)을
+# 실시간으로 스트리밍한다. 이 마커는 ideation_conv_idea_validation_planning.txt/
+# _technical.txt 두 프롬프트에만 있다(예전 결합 프롬프트 ideation_conv_idea_validation.txt
+# 에도 남아있지만 더 이상 어떤 노드도 그 프롬프트를 빌드하지 않는다 — 하위 호환용으로만
+# 파일이 남아있다).
+_VALIDATION_MARKER = "[검증 규칙]"
 
 # 사용자에게 보이는 메시지를 만들지 않는 호출들 — 델타를 흘리지 않고 진행 상태 문구만
 # 보낸다. 순서대로 검사하며 먼저 매칭되는 것을 쓴다.
@@ -82,7 +90,6 @@ _PHASE_ONLY_LABELS: tuple[tuple[str, str], ...] = (
     ("[문제 정의 규칙]", "선택하신 문제를 구체화하고 있습니다"),
     ("[발산 규칙]", "서로 다른 해결 방향을 만들고 있습니다"),
     ("[반론·결합 규칙]", "기획·개발 위원이 해결 방향을 검토하고 있습니다"),
-    ("[검증 규칙]", "선택하신 방향을 검증하고 있습니다"),
     ("[후보 생성 규칙]", "아이디어 후보를 만들고 있습니다"),
     ("[검토 규칙]", "후보의 실현 가능성을 검토하고 있습니다"),
     ("[캔버스 갱신 규칙]", "기획 캔버스를 정리하고 있습니다"),
@@ -112,6 +119,8 @@ def _stream_plan_for(prompt: str) -> tuple[str, tuple, Callable[[str], str | Non
         return "question", QUESTION_STREAM_FIELDS, lambda _field: None
     if _DISCUSSION_MARKER in prompt:
         return "discussion", DISCUSSION_STREAM_FIELDS, lambda _field: None
+    if _VALIDATION_MARKER in prompt:
+        return "validation", VALIDATION_STREAM_FIELDS, lambda _field: None
     if _FACILITATOR_SUMMARY_MARKER in prompt:
         return "facilitator_summary", FACILITATOR_SUMMARY_STREAM_FIELDS, lambda _field: None
     if _DELEGATION_REVIEW_MARKER in prompt:

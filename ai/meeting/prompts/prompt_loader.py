@@ -299,6 +299,11 @@ IDEATION_CONV_PROBLEM_DEFINITION_TEMPLATE = "ideation_conv_problem_definition.tx
 IDEATION_CONV_IDEA_DIVERGENCE_TEMPLATE = "ideation_conv_idea_divergence.txt"
 IDEATION_CONV_CONFLICT_MERGE_TEMPLATE = "ideation_conv_conflict_merge.txt"
 IDEATION_CONV_IDEA_VALIDATION_TEMPLATE = "ideation_conv_idea_validation.txt"
+# 용준/Claude(2026-07-28, 요청: "위원들이 순서대로 대화하는 것처럼 보여야 한다") — 위
+# 결합 템플릿(기획+개발 동시 1회 호출)을 대체하는 분리 템플릿 2종. 위 상수는 다른 참조가
+# 없어지면 정리 커밋에서 제거한다(하위 호환을 위해 즉시 삭제하지 않음).
+IDEATION_CONV_IDEA_VALIDATION_PLANNING_TEMPLATE = "ideation_conv_idea_validation_planning.txt"
+IDEATION_CONV_IDEA_VALIDATION_TECHNICAL_TEMPLATE = "ideation_conv_idea_validation_technical.txt"
 
 _CANDIDATE_NOVELTY_PLANNING_RULES = """
 
@@ -988,6 +993,56 @@ def build_ideation_conv_idea_validation_prompt(
         "<<PLANNING_EXTERNAL_EVIDENCE_JSON>>": _as_text(planning_external_evidence or []),
         "<<TECHNICAL_EXTERNAL_EVIDENCE_JSON>>": _as_text(technical_external_evidence or []),
         "<<PROVISIONAL_IDEA_JSON>>": _as_text(provisional_idea),
+    }
+    for token, value in replacements.items():
+        template = template.replace(token, value)
+    return template
+
+
+def build_ideation_conv_idea_validation_planning_prompt(
+    notice_and_criteria: Any,
+    retrieved_evidence: Any,
+    provisional_idea: Any,
+    *,
+    external_research: Any = None,
+) -> str:
+    """용준/Claude(2026-07-28, 요청: "위원들이 순서대로 대화하는 것처럼 보여야 한다") —
+    잠정 후보(provisional_idea)를 기획 관점에서만 검증하는 프롬프트. 개발 전문가 검증
+    (build_ideation_conv_idea_validation_technical_prompt)이 이 결과를 이어받는다."""
+    card = get_persona_card("planning_expert")
+    template = _read_text(IDEATION_CONV_IDEA_VALIDATION_PLANNING_TEMPLATE)
+    replacements = {
+        "<<PERSONA_BLOCK>>": render_persona_block(card),
+        "<<NOTICE_AND_CRITERIA_JSON>>": _as_text(notice_and_criteria),
+        "<<RETRIEVED_EVIDENCE_JSON>>": _as_text(retrieved_evidence),
+        "<<EXTERNAL_RESEARCH_JSON>>": _as_text(external_research or []),
+        "<<PROVISIONAL_IDEA_JSON>>": _as_text(provisional_idea),
+    }
+    for token, value in replacements.items():
+        template = template.replace(token, value)
+    return template
+
+
+def build_ideation_conv_idea_validation_technical_prompt(
+    notice_and_criteria: Any,
+    retrieved_evidence: Any,
+    provisional_idea: Any,
+    planning_validation: Any,
+    *,
+    external_research: Any = None,
+) -> str:
+    """용준/Claude(2026-07-28, 요청: "위원들이 순서대로 대화하는 것처럼 보여야 한다") —
+    잠정 후보를 개발 관점에서 검증하는 프롬프트. 기획 전문가가 방금 만든 검증 결과
+    (planning_validation)를 입력으로 받아, 회의가 실제로 이어지는 것처럼 만든다."""
+    card = get_persona_card("dev_expert")
+    template = _read_text(IDEATION_CONV_IDEA_VALIDATION_TECHNICAL_TEMPLATE)
+    replacements = {
+        "<<PERSONA_BLOCK>>": render_persona_block(card),
+        "<<NOTICE_AND_CRITERIA_JSON>>": _as_text(notice_and_criteria),
+        "<<RETRIEVED_EVIDENCE_JSON>>": _as_text(retrieved_evidence),
+        "<<EXTERNAL_RESEARCH_JSON>>": _as_text(external_research or []),
+        "<<PROVISIONAL_IDEA_JSON>>": _as_text(provisional_idea),
+        "<<PLANNING_VALIDATION_JSON>>": _as_text(planning_validation),
     }
     for token, value in replacements.items():
         template = template.replace(token, value)

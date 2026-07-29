@@ -47,6 +47,7 @@ def write_csv(report: EvalReport, path: str | Path) -> Path:
                 "case_id": case_id,
                 "recall_at_k": retrieval.recall_at_k if retrieval else "",
                 "hit_at_k": retrieval.hit_at_k if retrieval else "",
+                "reciprocal_rank": retrieval.reciprocal_rank if retrieval else "",
                 "faithfulness": (sum(faith_values) / len(faith_values)) if faith_values else "",
                 "hallucination_rate": (sum(halluc_values) / len(halluc_values)) if halluc_values else "",
                 "persona_evidence_fit": (sum(fit_values) / len(fit_values)) if fit_values else "",
@@ -62,6 +63,7 @@ def write_csv(report: EvalReport, path: str | Path) -> Path:
                 "case_id",
                 "recall_at_k",
                 "hit_at_k",
+                "reciprocal_rank",
                 "faithfulness",
                 "hallucination_rate",
                 "persona_evidence_fit",
@@ -103,6 +105,7 @@ def write_markdown(report: EvalReport, path: str | Path) -> Path:
         agg = report.retrieval_aggregate
         lines.append(f"- Recall@{agg.k}: {_fmt(agg.recall_at_k_macro)} (참고: {_fmt(agg.reference_recall_at_k_macro)}, 검수 {agg.human_verified_case_count}건 기준)")
         lines.append(f"- Hit@{agg.k}: {_fmt(agg.hit_at_k_macro)} (참고: {_fmt(agg.reference_hit_at_k_macro)})")
+        lines.append(f"- MRR@{agg.k}: {_fmt(agg.mrr_macro)} (참고: {_fmt(agg.reference_mrr_macro)})")
         lines.append(f"- 검색 실패율(예상 근거 있는데 결과 0건): {_fmt(agg.retrieval_failure_rate)}")
         lines.append(f"- 근거 없음 예상 케이스 정확도: {_fmt(agg.no_evidence_accuracy)} ({agg.no_evidence_case_count}건)")
         lines.append(f"- 평균 검색 시간: {agg.avg_retrieval_time_ms:.1f}ms")

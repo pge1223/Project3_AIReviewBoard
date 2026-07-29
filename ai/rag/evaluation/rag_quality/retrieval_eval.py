@@ -64,6 +64,7 @@ def run_retrieval_eval(
             case.filters.project_id,
             role_retrieval_service,
             top_k=top_k,
+            phase=case.filters.phase,
         )
         elapsed_ms = (time.perf_counter() - started) * 1000
 
@@ -73,6 +74,11 @@ def run_retrieval_eval(
 
         recall = recall_at_k(retrieved_document_ids, gold_ids, top_k) if gold_ids else 0.0
         hit = hit_rate_at_k(retrieved_document_ids, gold_ids, top_k) if gold_ids else 0.0
+        first_relevant_rank = next(
+            (rank for rank, document_id in enumerate(retrieved_document_ids[:top_k], start=1) if document_id in gold_ids),
+            None,
+        )
+        reciprocal_rank = 1.0 / first_relevant_rank if first_relevant_rank is not None else 0.0
 
         results.append(
             RetrievalCaseResult(
@@ -86,6 +92,7 @@ def run_retrieval_eval(
                 retrieved_document_ids=retrieved_document_ids,
                 recall_at_k=recall,
                 hit_at_k=hit,
+                reciprocal_rank=reciprocal_rank,
                 expect_no_evidence=case.expect_no_evidence,
                 empty_result=len(items) == 0,
                 human_verified=case.human_verified,
@@ -114,8 +121,10 @@ def aggregate_retrieval(results: list[RetrievalCaseResult], *, k: int) -> Retrie
         human_verified_case_count=len(verified),
         recall_at_k_macro=_mean([r.recall_at_k for r in verified]),
         hit_at_k_macro=_mean([r.hit_at_k for r in verified]),
+        mrr_macro=_mean([r.reciprocal_rank for r in verified]),
         reference_recall_at_k_macro=_mean([r.recall_at_k for r in scored]),
         reference_hit_at_k_macro=_mean([r.hit_at_k for r in scored]),
+        reference_mrr_macro=_mean([r.reciprocal_rank for r in scored]),
         no_evidence_case_count=len(no_evidence),
         no_evidence_accuracy=_mean([1.0 if r.empty_result else 0.0 for r in no_evidence]),
         retrieval_failure_rate=(len(retrieval_failures) / len(scored)) if scored else None,

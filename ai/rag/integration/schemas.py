@@ -99,6 +99,7 @@ class MeetingRetrievedEvidence(TypedDict):
     # 색인 데이터에는 이 값이 없을 수 있다). ai/rag/orchestration/ideation_evidence_service.py가
     # 이 값으로 역할별 top_k 구성(criteria/target 쿼터)을 계산한다.
     document_role: Optional[str]
+    document_type: Optional[str]
 
     # 용준/Claude(2026-07-22, 요청: 선택된 아이디어/사용자 답변을 target evidence로 색인) —
     # ai/rag/orchestration/ideation_target_indexing_service.py가 IndexingContext.extra_metadata로

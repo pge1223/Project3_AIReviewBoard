@@ -93,12 +93,18 @@ export function buildCompetitionDocumentText(analysis) {
 
 // RAG 사용 여부는 "유효한 projectId와 색인 완료 상태가 확인될 때만 true"(요청 사항 그대로)
 // — documents 배열의 status는 EntryScreen이 이미 쓰는 값('done'/'embedding'/'warning'/
-// 'error')이다. 색인이 끝났다고 보는 상태는 'done'뿐이다(embedding=진행 중, warning=
-// 색인은 됐지만 내용이 비어있음, error=실패 — 어느 쪽도 RAG에 쓸 수 있는 완료 상태가
-// 아니다).
+// 'error')이다. embedding(진행 중)/error(실패)는 검색할 내용이 없거나 신뢰할 수 없어
+// 제외한다.
+// 용준/Claude(2026-07-28, 실측: "검증 단계에서 근거가 전혀 안 뜬다") — 'warning'은
+// ReviewBoardPrototype.jsx의 hasReadyCriteriaDoc/completedStatus 기준으로 이미 "본문은
+// 색인됐고 일부 첨부파일만 직접 확인이 필요한" 상태라 분석 시작이 허용되는 상태다. 여기서만
+// 'done'만 인정하면, warning 문서 하나로 시작한 세션은 화면상 "분석 준비 완료"로 통과해놓고
+// 뒤에서 evidence_lookup 자체가 조용히 꺼져(use_rag=false) 회의 내내 RAG 근거가 하나도 안
+// 뜨는 채로 진행됐다 — 사용자에게 아무 에러도 안 보이는 채로. 색인된 본문이 실제로 있는
+// warning도 RAG 대상에 포함한다.
 export function resolveUseRag(projectId, criteriaDocuments) {
   if (!projectId) return false
-  return (criteriaDocuments || []).some((doc) => doc.status === 'done')
+  return (criteriaDocuments || []).some((doc) => doc.status === 'done' || doc.status === 'warning')
 }
 
 // 가은/Claude(2026-07-24, 요청: "신청기관/도시명/홈페이지 같은 건 회의로 할 이야기가
@@ -119,6 +125,7 @@ const ADMINISTRATIVE_FIELD_KEYWORDS = [
   '신청 기관', '신청기관', '참여기관', '주관기관', '기관명', '소속', '도시명', '주소', '기업(법인)명',
   '설립연도', '매출액', '매출', '경영실적', '자본금', '종업원', '고용 인원',
   '주민등록번호', '생년월일', '개인정보',
+  '과제명', '과제번호', '과제 번호', '주제구분', '주제 구분',
 ]
 
 export function isAdministrativeFormField(fieldName) {
