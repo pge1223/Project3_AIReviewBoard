@@ -17,8 +17,12 @@ evidence_lookup 호출 시점의 runtime_scope가 lookup 생성 시점의 closur
 from ai.rag.orchestration.ideation_evidence_service import (
     _build_issue_focused_query,
     _compose_by_document_role,
+    _is_final_direction_query,
+    _prioritize_final_direction,
     _rank_by_document_type,
     _scope_target_evidence,
+    classify_external_source_type,
+    compose_ideation_evidence_pool,
     make_ideation_evidence_lookup,
     search_ideation_evidence,
 )
@@ -52,6 +56,35 @@ def test_planning_expert_prioritizes_criteria_over_target():
     assert roles.count("target") == 2
     assert missing == []
     assert len(composed) == 5
+
+
+def _item_with_document(chunk_id: str, document_id: str, document_role: str | None, score: float = 0.9) -> dict:
+    return {
+        "chunk_id": chunk_id,
+        "document_id": document_id,
+        "document_role": document_role,
+        "final_score": score,
+        "text": f"content {chunk_id}",
+    }
+
+
+def test_criteria_quota_diversifies_across_documents_before_repeating():
+    """용준/Claude(2026-07-30, 요청 7번) — 같은 문서(예: 공고 URL 본문)의 청크가 top_k 점수
+    순위를 모두 차지해도, criteria quota는 서로 다른 document_id를 먼저 채운 뒤에야 같은
+    문서에서 두 번째 청크를 채택한다."""
+    items = [
+        _item_with_document("C1", "URL-BODY", "criteria", 0.99),
+        _item_with_document("C2", "URL-BODY", "criteria", 0.97),
+        _item_with_document("C3", "URL-BODY", "criteria", 0.95),
+        _item_with_document("C4", "ATTACHMENT-HWP", "criteria", 0.5),
+        _item_with_document("T1", "TARGET-DOC", "target", 0.6),
+        _item_with_document("T2", "TARGET-DOC", "target", 0.4),
+    ]
+    composed, missing = _compose_by_document_role(items, persona_id="planning_expert", top_k=5)
+    criteria_ids = [item["chunk_id"] for item in composed if item["document_role"] == "criteria"]
+    assert missing == []
+    assert "C4" in criteria_ids
+    assert "C1" in criteria_ids
 
 
 def test_dev_expert_prioritizes_target_over_criteria():
@@ -391,3 +424,232 @@ class TestRuntimeScopeOverride:
         result_b = lookup("dev_expert", "쿼리", runtime_scope={"session_id": "S1", "selected_candidate_document_id": doc_b})
         document_ids = {item["document_id"] for item in result_b if item.get("document_role") == "target"}
         assert document_ids == {doc_b}
+
+
+# ---------------------------------------------------------------------------
+# 용준/Claude(2026-07-29, 요청: B05 회귀 — "최종 확정한 방향은?" 질문에서 검토 중인 후보
+# 목록 chunk가 실제 확정된 아이디어 chunk보다 앞서 top_k에 들어 위원이 후보를 최종안으로
+# 오인한 문제(Ragas Context Precision=0.0, Faithfulness=0.0 실측). _prioritize_final_direction
+# 은 최종/확정 질문일 때만 순서를 조정하고, 항목을 삭제하지 않는다.
+# ---------------------------------------------------------------------------
+
+
+def test_is_final_direction_query_matches_confirmation_phrasing():
+    assert _is_final_direction_query("이 회의에서 사용자가 최종적으로 확정한 해결 방향은 무엇인가요?")
+    assert _is_final_direction_query("선택한 아이디어가 뭔가요?")
+    assert not _is_final_direction_query("실증·PoC 부문 심사 항목은 무엇인가요?")
+    assert not _is_final_direction_query("")
+
+
+def test_prioritize_final_direction_pushes_provisional_candidate_list_to_back():
+    confirmed_idea = _ideation_item("TARGET1", ideation_source_type="ideation_candidate")
+    confirmed_idea["text"] = "제목:\n상대적 기준 검토 방식\n\n문제:\nAI 모델의 편향성으로..."
+    confirmation_answer = _ideation_item("ANSWER1", ideation_source_type="user_session_answer")
+    confirmation_answer["text"] = "사용자 답변:\n이 방향으로 최종 확정합니다."
+    provisional_candidates = _ideation_item("ANSWER2", ideation_source_type="user_session_answer")
+    provisional_candidates["text"] = (
+        "사용자 답변:\n현재 활성 해결 방향(‘데이터 다양성 강화 방식’, ‘편향성 검증 도구 개발 방식’, "
+        "‘사용자 참여 기반 AI 수정 방식’ 외 1개)으로 검증을 진행합니다."
+    )
+    unrelated = _ideation_item("CRIT1", ideation_source_type=None)
+
+    # 검색 결과 순서 자체가 이미 "잘못된" 상태(후보 목록이 맨 앞)에서 시작해도 재배열되는지 검증
+    items = [provisional_candidates, unrelated, confirmation_answer, confirmed_idea]
+
+    reordered = _prioritize_final_direction(items, "이 회의에서 사용자가 최종적으로 확정한 해결 방향은 무엇인가요?")
+    chunk_ids = [item["chunk_id"] for item in reordered]
+
+    assert chunk_ids[0] == "TARGET1"  # 선택된 아이디어 문서 자체가 최우선
+    assert chunk_ids.index("ANSWER1") < chunk_ids.index("ANSWER2")  # 확정 발언이 후보 목록보다 앞
+    assert chunk_ids[-1] == "ANSWER2"  # 검토 중 후보 목록은 맨 뒤로
+    assert set(chunk_ids) == {"TARGET1", "ANSWER1", "ANSWER2", "CRIT1"}  # 삭제 없이 전부 유지
+
+
+def test_prioritize_final_direction_noop_for_non_final_query():
+    items = [_ideation_item("A", ideation_source_type=None), _ideation_item("B", ideation_source_type=None)]
+    assert _prioritize_final_direction(items, "실증·PoC 부문 심사 항목은 무엇인가요?") == items
+
+
+class TestFinalDirectionEndToEnd:
+    """search_ideation_evidence()가 실제로 선택된 아이디어를 최우선으로 반환하는지
+    (요청: confirmed 데이터가 active 후보보다 우선 검색됨) 통합 검증한다."""
+
+    def test_final_query_with_selected_candidate_returns_target_first(self):
+        target_document_id = "ideation-target::P1::S1::candidate_1"
+        target_records = [
+            _search_result(
+                "T1", target_document_id, document_role="target",
+                ideation_source_type="ideation_candidate", session_id="S1",
+            )
+        ]
+        provisional_record = _search_result(
+            "A2", "ideation-answer::P1::S1::MSG-2", document_role="target",
+            ideation_source_type="user_session_answer", session_id="S1",
+        )
+        provisional_record.content = "사용자 답변:\n현재 활성 해결 방향(...)으로 검증을 진행합니다."
+        fake = _FakeRoleRetrievalBackend([provisional_record], {target_document_id: target_records})
+        service = RoleAwareRetrievalService(retrieval_service=fake, role_registry=RoleRegistry())
+
+        items = search_ideation_evidence(
+            "dev_expert",
+            "이 회의에서 사용자가 최종적으로 확정한 해결 방향은 무엇인가요?",
+            "P1",
+            service,
+            top_k=5,
+            session_id="S1",
+            selected_candidate_document_id=target_document_id,
+        )
+
+        target_role_items = [item for item in items if item.get("document_role") == "target"]
+        assert target_role_items, "target 근거가 전혀 검색되지 않음"
+
+
+# ---------------------------------------------------------------------------
+# 용준/Claude(2026-07-29, 요청: RAG 품질 개선 3단계 — dual-query 방식) — "1차 서면심사에서는
+# 몇 개 과제가 선정되나요?" 같은 질문은 admin 키워드 목록에 없어도(2단계의 한계) 여전히
+# 사용자 질문 원문 검색 결과가 최종 결과에 살아남아야 한다. topic_query 전체(쟁점/역할 관점
+# 포함, " | " 있음)로 검색하면 못 찾고, " | " 앞부분(사용자 질문 원문)만으로 검색하면 찾는
+# fake로 실측 실패 패턴을 재현한다."""
+# ---------------------------------------------------------------------------
+
+
+class _QueryDiscriminatingBackend:
+    """query에 " | "(topic_query가 쟁점/역할 관점을 붙였다는 표시)가 있으면 무관한 기술
+    템플릿 레코드를, 없으면(순수 질문 원문) 실제로 관련된 레코드를 반환한다 — 임베딩
+    유사도 희석을 fake로 흉내낸다."""
+
+    def __init__(self):
+        self.calls: list[str] = []
+
+    def search(self, query, project_id, document_id=None, top_k=5):
+        self.calls.append(query)
+        if " | " in query:
+            return [_search_result("TECH1", "DOC-TECH", document_role="criteria", score=0.9)]
+        return [_search_result("ADMIN1", "DOC-ADMIN", document_role="criteria", score=0.9)]
+
+
+class TestDualQueryFusion:
+    def test_raw_question_only_result_survives_when_expanded_query_misses_it(self):
+        fake = _QueryDiscriminatingBackend()
+        service = RoleAwareRetrievalService(retrieval_service=fake, role_registry=RoleRegistry())
+
+        topic_query = (
+            "1차 서면심사에서는 몇 개 과제가 선정되나요? | 현재 쟁점: 문제 정의 | "
+            "검토 관점: 기술 구조와 구현 가능성, 데이터 수집·품질"
+        )
+        items = search_ideation_evidence("dev_expert", topic_query, "P1", service, top_k=5)
+
+        document_ids = {item["document_id"] for item in items}
+        assert "DOC-ADMIN" in document_ids, "Query A(질문 원문) 결과가 최종 결과에서 사라짐"
+
+    def test_expanded_query_still_searched_alongside_raw_question(self):
+        """dual-query는 원문 검색만 하는 게 아니라 역할 확장 검색도 그대로 병행한다 — 둘 다
+        호출됐는지 fake 호출 기록으로 확인한다."""
+        fake = _QueryDiscriminatingBackend()
+        service = RoleAwareRetrievalService(retrieval_service=fake, role_registry=RoleRegistry())
+
+        topic_query = "질문 원문 | 현재 쟁점: 이슈"
+        search_ideation_evidence("dev_expert", topic_query, "P1", service, top_k=5)
+
+        assert any(" | " in q for q in fake.calls), "Query B(역할 확장, 전체 topic_query)가 호출되지 않음"
+        assert any(" | " not in q for q in fake.calls), "Query A(질문 원문만)가 호출되지 않음"
+
+
+def _external_item(chunk_id: str, evidence_type: str, score: float = 0.9) -> dict:
+    return {
+        "chunk_id": chunk_id,
+        "document_id": f"EXT-{chunk_id}",
+        "evidence_type": evidence_type,
+        "final_score": score,
+        "quote": f"external content {chunk_id}",
+    }
+
+
+def _similar_case_item(chunk_id: str, score: float = 0.9) -> dict:
+    return {
+        "chunk_id": chunk_id,
+        "document_id": f"CASE-{chunk_id}",
+        "_source": "similar_case",
+        "final_score": score,
+        "quote": f"similar case content {chunk_id}",
+    }
+
+
+class TestClassifyExternalSourceType:
+    def test_evidence_type_maps_to_expected_source_type(self):
+        assert classify_external_source_type(_external_item("A", "statistics")) == "official_statistics"
+        assert classify_external_source_type(_external_item("B", "public_data")) == "official_statistics"
+        assert classify_external_source_type(_external_item("C", "law")) == "official_report"
+        assert classify_external_source_type(_external_item("D", "news")) == "news"
+
+    def test_unknown_evidence_type_falls_back_to_external_other_not_news(self):
+        item = _external_item("E", "some_new_type_not_seen_before")
+        assert classify_external_source_type(item) == "external_other"
+
+    def test_similar_case_marker_takes_priority(self):
+        assert classify_external_source_type(_similar_case_item("F")) == "similar_case"
+
+    def test_summary_only_official_page_is_not_promoted_to_official_report(self):
+        item = _external_item("DPG1", "policy")
+        item.update(
+            {
+                "source_type": "official_page_summary",
+                "summary_only": True,
+                "allow_grounded_claim": False,
+            }
+        )
+        assert classify_external_source_type(item) == "official_page_summary"
+
+
+class TestComposeIdeationEvidencePool:
+    def test_target_is_not_reclassified_as_external(self):
+        project_items = [_item("T1", "target"), _item("C1", "criteria")]
+        pool = compose_ideation_evidence_pool(project_items, [], [])
+
+        target_entry = next(item for item in pool if item["chunk_id"] == "T1")
+        assert target_entry["source_type"] == "target"
+        external_source_types = {"official_statistics", "official_report", "similar_case", "press_release", "news"}
+        assert target_entry["source_type"] not in external_source_types
+
+    def test_project_item_count_and_order_unchanged(self):
+        project_items = [_item("C1", "criteria"), _item("T1", "target")]
+        pool = compose_ideation_evidence_pool(project_items, [_external_item("E1", "statistics")], [])
+
+        project_portion = pool[: len(project_items)]
+        assert [item["chunk_id"] for item in project_portion] == ["C1", "T1"]
+
+    def test_news_never_outranks_official_statistics_or_report(self):
+        external_items = [
+            _external_item("NEWS1", "news", score=0.99),
+            _external_item("LAW1", "law", score=0.1),
+            _external_item("STAT1", "statistics", score=0.1),
+        ]
+        pool = compose_ideation_evidence_pool([], external_items, [], max_external_evidence=3)
+
+        source_types_in_order = [item["source_type"] for item in pool]
+        assert source_types_in_order.index("official_statistics") < source_types_in_order.index("news")
+        assert source_types_in_order.index("official_report") < source_types_in_order.index("news")
+
+    def test_does_not_pad_with_more_than_available_candidates(self):
+        pool = compose_ideation_evidence_pool([], [_external_item("E1", "statistics")], [], max_external_evidence=5)
+        external_portion = [item for item in pool if item.get("source_type") != "target"]
+        assert len(external_portion) == 1
+
+    def test_no_relevant_external_candidates_yields_zero_external_items(self):
+        pool = compose_ideation_evidence_pool([_item("C1", "criteria")], [], [])
+        assert len(pool) == 1
+
+    def test_max_external_evidence_caps_selection_by_priority(self):
+        external_items = [
+            _external_item("STAT1", "statistics", score=0.5),
+            _external_item("LAW1", "law", score=0.9),
+            _external_item("NEWS1", "news", score=0.99),
+        ]
+        pool = compose_ideation_evidence_pool([], external_items, [], max_external_evidence=2)
+        selected_chunk_ids = {item["chunk_id"] for item in pool}
+        assert selected_chunk_ids == {"STAT1", "LAW1"}, "낮은 우선순위(news)가 상위 2건 안에 끼면 안 된다"
+
+    def test_similar_case_items_are_included_and_tagged(self):
+        pool = compose_ideation_evidence_pool([], [], [_similar_case_item("CASE1")])
+        entry = next(item for item in pool if item["chunk_id"] == "CASE1")
+        assert entry["source_type"] == "similar_case"
