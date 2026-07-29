@@ -1,4 +1,4 @@
-import { FEASIBILITY_LABEL } from './ideationConversationHelpers'
+import { FEASIBILITY_LABEL, humanizeExpertIdentifiers } from './ideationConversationHelpers'
 
 // 작성자: 가은/Claude(2026-07-22)
 // 목적: /board "주제 아이디어 회의" 오른쪽 패널의 '아이디어 기획 캔버스'.
@@ -56,7 +56,25 @@ function textOf(value) {
 
 function listOf(value, max) {
   if (!Array.isArray(value)) return []
-  return value.filter((v) => typeof v === 'string' && v.trim()).slice(0, max)
+  const items = value.filter((v) => typeof v === 'string' && v.trim())
+  return max == null ? items : items.slice(0, max)
+}
+
+function collectLiveUnresolvedIssues(ideationConv) {
+  const items = [...listOf(ideationConv?.unresolved_issues)]
+  const validation = ideationConv?.validation_result
+  for (const concerns of [validation?.planning?.concerns, validation?.technical?.concerns]) {
+    items.push(...listOf(concerns))
+  }
+  for (const issues of [validation?.planning?.issues, validation?.technical?.issues]) {
+    if (!Array.isArray(issues)) continue
+    for (const issue of issues) {
+      if (typeof issue?.description === 'string' && issue.description.trim()) {
+        items.push(issue.description.trim())
+      }
+    }
+  }
+  return [...new Set(items.map((item) => item.trim()).filter(Boolean))]
 }
 
 // 가은/Claude(2026-07-23, 요청: 4개로 자르지 말고 전부 보여주되 2단 배치 + 부문명은 한 번만):
@@ -120,6 +138,12 @@ export default function IdeaCanvasPanel({ ideationConv, analysis, bare = false }
   const contestFit = textOf(idea?.contest_fit)
   const feasibility = idea?.feasibility ? FEASIBILITY_LABEL[idea.feasibility] || null : null
   const risks = listOf(idea?.risks, 4)
+  const selectedIdeaTitle = textOf(ideationConv.selected_idea?.title)
+  const consensus = listOf(ideationConv.consensus)
+  // 대화 스트림의 최종 state가 ideationConv를 갱신할 때마다 다시 계산한다. 기본
+  // unresolved_issues뿐 아니라 전문가 검증 중 새로 생긴 planning/technical concerns와
+  // issues도 즉시 합쳐, 대화창에서 쟁점이 추가·해결되면 캔버스가 같은 렌더에서 따라간다.
+  const unresolvedIssues = collectLiveUnresolvedIssues(ideationConv)
   const criteriaGroups = groupByCategory(analysis?.official_facts?.evaluation_criteria)
 
   return (
@@ -130,7 +154,11 @@ export default function IdeaCanvasPanel({ ideationConv, analysis, bare = false }
         위원 발언과 공모전 분석을 바탕으로 자동으로 정리돼요.
       </div>
 
-      <CanvasRow label="문제 상황" source="회의" filled={!!problem} first>
+      <CanvasRow label="선택한 아이디어" source="회의" filled={!!selectedIdeaTitle} first>
+        {selectedIdeaTitle}
+      </CanvasRow>
+
+      <CanvasRow label="문제 상황" source="회의" filled={!!problem}>
         {problem}
       </CanvasRow>
 
@@ -158,6 +186,18 @@ export default function IdeaCanvasPanel({ ideationConv, analysis, bare = false }
             {risks.map((r, i) => <li key={i}>{r}</li>)}
           </ul>
         )}
+      </CanvasRow>
+
+      <CanvasRow label="합의 사항" source="회의" filled={consensus.length > 0}>
+        <ul style={{ margin: 0, paddingLeft: 18 }}>
+          {consensus.map((item, index) => <li key={index}>{humanizeExpertIdentifiers(item)}</li>)}
+        </ul>
+      </CanvasRow>
+
+      <CanvasRow label="미해결 쟁점" source="회의" filled={unresolvedIssues.length > 0}>
+        <ul style={{ margin: 0, paddingLeft: 18 }}>
+          {unresolvedIssues.map((item, index) => <li key={index}>{humanizeExpertIdentifiers(item)}</li>)}
+        </ul>
       </CanvasRow>
 
       <CanvasRow

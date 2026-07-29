@@ -1736,11 +1736,11 @@ export default function VersionTrackerTestPage({ embedded = false, projectId = n
           </div>
         )}
         {embedded && onBack && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12 }}>
+          <div className="rb-page-eyebrow-row" style={{ marginBottom: 12 }}>
             <button type="button" className="rb-back-button" onClick={onBack} aria-label="이전 화면으로 이동">
               {'←'}
             </button>
-            <div className="badge purple mono">종합 리포트</div>
+            <div className="rb-page-eyebrow">AI REVIEW BOARD</div>
           </div>
         )}
 
