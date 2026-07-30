@@ -42,11 +42,13 @@ from .ideation_conv_nodes import (
 from .ideation_conv_problem import (
     _route_after_conflict_merge,
     _route_after_idea_validation,
+    _route_after_specification_completion,
     make_concept_confirmation_node,
     make_conflict_resolution_node,
     make_idea_conflict_and_merge_node,
     make_idea_divergence_node,
     make_planning_validation_node,
+    make_specification_completion_node,
     make_technical_validation_node,
     make_problem_definition_node,
     make_problem_discovery_node,
@@ -76,6 +78,11 @@ _ENTRY_NODES = {
     "problem_focus_selection": "problem_focus_selection",
     "conflict_resolution": "conflict_resolution",
     "provisional_selection": "provisional_selection",
+    # 용준/Claude(2026-07-30, 요청: specification_completion 흐름 추가) — 정상 흐름에서는
+    # provisional_from_merge/provisional_selection이 같은 그래프 호출 안에서 바로 이
+    # 노드로 이어지므로 별도 API 재진입이 필요 없지만, 방어적으로(예: 예외 복구 후 재개)
+    # phase="specification_completion"으로 그래프가 다시 시작될 수 있으므로 등록해 둔다.
+    "specification_completion": "specification_completion",
     # 용준/Claude(2026-07-28, 요청: "위원들이 순서대로 대화하는 것처럼 보여야 한다") —
     # idea_validation은 이제 항상 기획위원부터(validate_planning) 진입한다. 개발위원 차례로
     # 이어서 재진입하는 경우는 expert_discussion과 동일하게 forced_next_speaker로
@@ -250,12 +257,14 @@ def _route_after_conflict_resolution(state: IdeationConvState) -> str:
 def _route_after_provisional_selection(state: IdeationConvState) -> str:
     """용준/Claude(2026-07-27) — make_provisional_selection_node는 기존
     make_candidate_selection_node를 그대로 감싸므로, 그 결과 phase 값 그대로 분기한다.
-    "idea_validation"(선택/결합 확정 -> 검증 단계로) / "candidate_generation"(재추천) /
-    그 외(재질문·결합 적합도 낮음 등, awaiting_candidate_selection 유지) / "failed"."""
+    "specification_completion"(선택/결합 확정 -> 설계 필드 보완 단계로, 용준/Claude
+    (2026-07-30) — 예전에는 곧바로 idea_validation으로 갔다) / "candidate_generation"
+    (재추천) / 그 외(재질문·결합 적합도 낮음 등, awaiting_candidate_selection 유지) /
+    "failed"."""
     phase = state.get("phase")
     if phase == "failed":
         return "failed"
-    if phase == "idea_validation":
+    if phase == "specification_completion":
         return "validate"
     if phase == "candidate_generation":
         return "regenerate"
@@ -288,6 +297,8 @@ def assemble_ideation_conversation_graph(
     index_target_evidence=None,
     evidence_planner=None,
     external_evidence_lookup=None,
+    similar_case_lookup=None,
+    compose_evidence_pool=None,
 ):
     """대화형 아이디어 발전 회의 그래프를 조립한다.
 
@@ -328,6 +339,9 @@ def assemble_ideation_conversation_graph(
         evidence_lookup=evidence_lookup,
         ground_claims=ground_claims,
         evidence_planner=evidence_planner,
+        external_evidence_lookup=external_evidence_lookup,
+        similar_case_lookup=similar_case_lookup,
+        compose_evidence_pool=compose_evidence_pool,
     )
     dev_discussion_node = make_conv_discussion_node(
         "dev_expert",
@@ -335,6 +349,9 @@ def assemble_ideation_conversation_graph(
         evidence_lookup=evidence_lookup,
         ground_claims=ground_claims,
         evidence_planner=evidence_planner,
+        external_evidence_lookup=external_evidence_lookup,
+        similar_case_lookup=similar_case_lookup,
+        compose_evidence_pool=compose_evidence_pool,
     )
     discussion_facilitator_node = make_discussion_facilitator_node(llm_call)
     canvas_update_node = make_canvas_update_node(llm_call)
@@ -359,6 +376,7 @@ def assemble_ideation_conversation_graph(
         llm_call,
         evidence_lookup,
         external_evidence_lookup,
+        ground_claims,
     )
     problem_focus_selection_node = make_problem_focus_selection_node(llm_call, evidence_lookup)
     problem_definition_node = make_problem_definition_node(llm_call, evidence_lookup)
@@ -375,6 +393,10 @@ def assemble_ideation_conversation_graph(
     # ideation_conv_problem.py 참고). candidate_planning 등 기존 노드는 레거시 세션
     # 재개용으로 그대로 남겨둔다(아래 등록/엣지 변경 없음).
     provisional_from_merge_node = make_provisional_from_merge_node(index_target_evidence)
+    # 용준/Claude(2026-07-30, 요청: specification_completion 흐름 추가) — evidence_lookup만
+    # 주입한다(ground_claims는 이 노드가 claim 단위 grounding 대신 ref 존재 여부만 직접
+    # 검사하므로 필요 없다, ideation_conv_problem.py 참고).
+    specification_completion_node = make_specification_completion_node(llm_call, evidence_lookup)
     # 용준/Claude(2026-07-28, 요청: "위원들이 순서대로 대화하는 것처럼 보여야 한다") — 기존
     # 단일 idea_validation 노드(기획+개발 동시 1회 호출)를 expert_discussion과 같은 패턴
     # (위원마다 별도 노드 + 별도 LLM 호출)으로 분리했다.
@@ -405,6 +427,7 @@ def assemble_ideation_conversation_graph(
     graph.add_node("conflict_resolution", conflict_resolution_node)
     graph.add_node("provisional_selection", provisional_selection_node)
     graph.add_node("provisional_from_merge", provisional_from_merge_node)
+    graph.add_node("specification_completion", specification_completion_node)
     graph.add_node("validate_planning", planning_validation_node)
     graph.add_node("validate_technical", technical_validation_node)
     graph.add_node("concept_confirmation", concept_confirmation_node)
@@ -428,6 +451,7 @@ def assemble_ideation_conversation_graph(
             "problem_focus_selection": "problem_focus_selection",
             "conflict_resolution": "conflict_resolution",
             "provisional_selection": "provisional_selection",
+            "specification_completion": "specification_completion",
             # 용준/Claude(2026-07-28, 요청: "위원들이 순서대로 대화하는 것처럼 보여야
             # 한다") — idea_validation 기본 진입점(validate_planning)과, 위 주석과 같은
             # 이유로 forced_next_speaker="dev_expert"일 때의 강제 진입점
@@ -575,15 +599,30 @@ def assemble_ideation_conversation_graph(
     graph.add_conditional_edges(
         "provisional_from_merge",
         lambda state: "failed" if state.get("phase") == "failed" else "ok",
-        {"ok": "validate_planning", "failed": END},
+        {"ok": "specification_completion", "failed": END},
     )
     graph.add_conditional_edges(
         "provisional_selection",
         _route_after_provisional_selection,
         {
-            "validate": "validate_planning",
+            "validate": "specification_completion",
             "regenerate": "candidate_planning",
             "await_selection": END,
+            "failed": END,
+        },
+    )
+    # 용준/Claude(2026-07-30, 요청: "미확정 필드 확인 -> 필드별 논의 -> 구조화 저장 -> 검증
+    # -> 사용자 확인" 흐름 추가) — main_features 등 설계 필드가 unknown인 동안은 이 노드가
+    # 자기 자신으로 반복해서 한 번에 하나씩만 채운다(요청 4번). 모든 필수 필드가
+    # proposed 이상이 되면(phase가 "idea_validation"으로 바뀜) validate_planning으로
+    # 진행한다 — idea_conflict_and_merge와 동일한 "라우터가 반복 여부를, 노드가 콘텐츠
+    # 생성을 담당" 원칙.
+    graph.add_conditional_edges(
+        "specification_completion",
+        _route_after_specification_completion,
+        {
+            "continue": "specification_completion",
+            "proceed": "validate_planning",
             "failed": END,
         },
     )

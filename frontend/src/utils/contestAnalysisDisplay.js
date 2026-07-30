@@ -58,15 +58,23 @@ export function deriveKeywordTags(criteriaGroups, limit = 8) {
 
 export const CONFIDENCE_LABEL = { high: '확신 높음', medium: '확신 보통', low: '확신 낮음' };
 
-// 가은/Claude(2026-07-24, 요청: 공모전 분석 결과 화면 개편) — "N개 항목, 총 M점"
-// 요약 문구에 쓸 항목 수·총점을 parseEvaluationCriteria() 결과에서 계산한다. 배점이
-// 하나도 파싱되지 않았으면(원문에 "N점" 표기가 없는 공고문) totalScore는 null — 0점으로
-// 지어내지 않는다.
+// 서로 다른 공모 부문은 선택 트랙이므로 점수를 합산하면 안 된다. 그룹이 하나일 때만
+// totalScore를 제공하고, 여러 그룹이면 부문 수와 부문별 항목 수를 반환해 UI가
+// "10개 항목·195점"처럼 서로 다른 평가표를 하나로 더하지 않게 한다.
 export function summarizeCriteria(criteriaGroups) {
   const items = criteriaGroups.flatMap((group) => group.items);
   const scored = items.filter((item) => item.score != null);
+  const groupCount = criteriaGroups.length;
+  const itemCounts = criteriaGroups.map((group) => group.items.length);
+  const perGroupItemCount = (
+    itemCounts.length > 0 && itemCounts.every((count) => count === itemCounts[0])
+  ) ? itemCounts[0] : null;
   return {
     itemCount: items.length,
-    totalScore: scored.length > 0 ? scored.reduce((sum, item) => sum + item.score, 0) : null,
+    groupCount,
+    perGroupItemCount,
+    totalScore: groupCount === 1 && scored.length > 0
+      ? scored.reduce((sum, item) => sum + item.score, 0)
+      : null,
   };
 }

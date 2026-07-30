@@ -13,8 +13,14 @@ function authHeaders() {
 async function handleResponse(res) {
   const data = await res.json()
   if (!res.ok) {
-    const error = new Error(data.detail || '아이디어 회의 프리뷰 요청에 실패했습니다.')
+    const detail = data.detail
+    const error = new Error(
+      (detail && typeof detail === 'object' ? detail.message : detail)
+        || '아이디어 회의 프리뷰 요청에 실패했습니다.'
+    )
     error.status = res.status
+    error.code = detail && typeof detail === 'object' ? detail.code : undefined
+    error.details = detail && typeof detail === 'object' ? detail : undefined
     throw error
   }
   return data
@@ -191,7 +197,14 @@ async function readNdjsonStream(res, onEvent) {
     } catch {
       // 본문이 JSON이 아니면(예: 프록시가 끊은 경우) 기본 메시지로 대체한다.
     }
-    throw new Error(detail || '아이디어 회의 스트리밍 요청에 실패했습니다.')
+    const error = new Error(
+      (detail && typeof detail === 'object' ? detail.message : detail)
+        || '아이디어 회의 스트리밍 요청에 실패했습니다.'
+    )
+    error.status = res.status
+    error.code = detail && typeof detail === 'object' ? detail.code : undefined
+    error.details = detail && typeof detail === 'object' ? detail : undefined
+    throw error
   }
 
   const reader = res.body.getReader()

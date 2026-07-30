@@ -17,6 +17,8 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import re
 import uuid
 from datetime import datetime, timezone
@@ -45,14 +47,20 @@ from .ideation_conv_discovery import (
 from .ideation_conv_nodes import (
     ClaimGroundingFn,
     _blank,
+    _build_evidence_funnel,
     _build_message,
+    _classify_linked_evidence_buckets,
+    _eligible_document_evidence,
     _last_user_answer,
+    _retrieve_with_criteria_retry,
     _safe_call_structured_json,
+    _visible_text_not_korean,
 )
 from .ideation_conv_state import (
     MAX_CONFLICT_ROUNDS,
     MAX_PROBLEM_REGENERATIONS,
     MAX_VALIDATION_REVISE_ROUNDS,
+    ConvMessage,
     IdeationConvState,
     critique_count,
     meets_conflict_and_merge_min_conditions,
@@ -63,7 +71,7 @@ from .ideation_conv_state import (
 )
 from .ideation_nodes import EvidenceLookup, call_evidence_lookup
 from .ideation_trace import sanitize_preview, trace_event
-from .llm import LLMCall
+from .llm import LLMCall, parse_json_response
 
 IndexTargetEvidenceFn = Callable[[str, dict], dict]
 
@@ -131,6 +139,296 @@ def _problem_discovery_external_query(
     return " ".join(" ".join(part.split()) for part in parts if part)[:300]
 
 
+def _problem_discovery_query(state: IdeationConvState, persona_id: str) -> str:
+    """초기 문제 탐색용 역할별 검색어.
+
+    같은 project_id/criteria 컬렉션을 검색하되 기획·개발 관점이 서로 섞이지 않게 한다.
+    """
+    notice = state.get("notice_and_criteria") or {}
+    competition = ""
+    if isinstance(notice, dict):
+        competition = str(notice.get("competition_name") or notice.get("title") or "").strip()
+    if persona_id == "planning_expert":
+        perspective = (
+            "공모 목적 평가 기준 해결해야 할 국민 기관 불편 대국민 체감 효과 정책 적합성"
+        )
+    else:
+        perspective = (
+            "활용 가능한 데이터 기술 구현 가능성 개인정보 보안 법적 제약 "
+            "공모전 기간 내 MVP 실증 가능성 운영 확장 위험"
+        )
+    return f"{competition} | {perspective}".strip(" |")
+
+
+def _validation_query(state: IdeationConvState, persona_id: str, provisional_idea: dict) -> str:
+    """용준/Claude(2026-07-30, 요청 §3 — 위원별 criteria 검색 관점) — 기존 검증 노드는
+    _contest_query(state)(공고문 텍스트만 조합)만 검색어로 썼다. 같은 공고문이라도 지금
+    검증 대상 아이디어와 무관한 조항이 top_k를 차지할 수 있으므로, 검증 대상 아이디어 내용과
+    위원 관점 키워드를 함께 실어 "이 아이디어의 쟁점에 맞는" criteria 청크가 검색되게 한다.
+    검색 인프라 자체(role-quota로 target/criteria를 분리하는 search_ideation_evidence)는
+    바꾸지 않고, 그 인프라에 넘기는 쿼리 텍스트만 더 구체화한다."""
+    contest_text = _contest_query(state)
+    idea_fragment = " ".join(
+        str(provisional_idea.get(field) or "")
+        for field in ("title", "problem", "target_user", "solution", "differentiation")
+    ).strip()
+    if persona_id == "planning_expert":
+        perspective = (
+            "공모 목적 평가 항목 해결 대상과 수요 정책 적합성 대국민 기관 체감 효과 "
+            "차별성 지속 가능성 실증 계획 제출 문서 요구사항"
+        )
+    else:
+        perspective = (
+            "활용 가능한 데이터 기술 구현 가능성 개인정보 보안 법적 제한 연동 대상 시스템 "
+            "MVP 범위 공모전 기간 내 구현 가능성 운영 유지보수 성능 검증 방식"
+        )
+    current_user_input = str(state.get("current_user_input") or "").strip()
+    active_issue = str(
+        state.get("active_issue_title") or state.get("active_issue_id") or ""
+    ).strip()
+    parts = [
+        part
+        for part in (
+            current_user_input,
+            active_issue,
+            contest_text,
+            idea_fragment,
+            perspective,
+        )
+        if part
+    ]
+    return " ".join(parts)[:600]
+
+
+def _prefix_evidence_refs(items: list[dict], prefix: str) -> list[dict]:
+    return [{**item, "ref": f"{prefix}{idx}"} for idx, item in enumerate(items, start=1)]
+
+
+def _retrieval_summary(items: list[dict]) -> list[dict]:
+    """실측·감사용 검색 결과 메타데이터. 원문 전체는 state에 중복 복사하지 않는다."""
+    return [
+        {
+            "ref": item.get("ref"),
+            "chunk_id": item.get("chunk_id"),
+            "document_name": item.get("document_name") or item.get("document_title"),
+            "page": item.get("page") or item.get("page_number"),
+            "section": item.get("section") or item.get("page_or_section"),
+            "score": item.get("final_score") or item.get("score"),
+            "source_url": item.get("source_url"),
+        }
+        for item in items
+    ]
+
+
+def _warn_if_criteria_retrieval_empty(
+    state: IdeationConvState, retrieved: list[dict], *, node_name: str, query: str
+) -> None:
+    """용준/Claude(2026-07-30, 요청 8·14번 — preflight) — notice_and_criteria가 이미 채워진
+    세션(=criteria 문서가 색인되어 있어야 정상인 상태)에서 이번 검증 검색이 criteria 역할
+    청크를 단 하나도 못 찾았으면, 조용히 target/전문가 판단만으로 넘어가지 않고 trace에
+    경고를 남긴다. 이 함수는 ai/meeting 쪽에서 볼 수 있는 이번 턴의 검색 결과만 근거로
+    판단한다 — 프로젝트 전체 criteria 청크 총량(criteria_chunk_count)은 ai.rag 색인
+    컬렉션을 직접 조회해야 알 수 있고 ai/meeting은 ai.rag를 import하지 않는 경계를 지키므로,
+    여기서는 "이번 검색에서 criteria가 0건"이라는 더 좁지만 확실한 신호만 남긴다."""
+    if not state.get("notice_and_criteria"):
+        return
+    criteria_count = sum(
+        1 for item in retrieved if isinstance(item, dict) and item.get("document_role") == "criteria"
+    )
+    if criteria_count > 0:
+        return
+    trace_event(
+        "IDEATION_CRITERIA_RETRIEVAL_EMPTY",
+        level=logging.WARNING,
+        node=node_name,
+        criteria_retrieval_empty=True,
+        retrieved_count=len(retrieved),
+        query=sanitize_preview(query),
+    )
+
+
+def _validate_problem_role_analysis(raw: dict) -> str | None:
+    if _blank(raw.get("spoken_text")):
+        return "spoken_text_missing"
+    claims = raw.get("claims")
+    if not isinstance(claims, list):
+        return "claims_not_list"
+    return None
+
+
+def _problem_role_prompt(
+    *,
+    persona_id: str,
+    query: str,
+    evidence: list[dict],
+    planning_analysis: dict | None = None,
+) -> str:
+    role_label = "기획위원" if persona_id == "planning_expert" else "개발위원"
+    focus = (
+        "공모 목적, 평가 기준, 국민·기관의 불편, 대국민 체감 효과, 정책 적합성"
+        if persona_id == "planning_expert"
+        else "활용 데이터, 구현 가능성, 개인정보·보안·법적 제약, 기간 내 MVP·실증, 운영·확장 위험"
+    )
+    counterpart = (
+        "\n[기획위원 선행 분석]\n"
+        + json.dumps(planning_analysis or {}, ensure_ascii=False)
+        if persona_id == "dev_expert"
+        else ""
+    )
+    return f"""[problem_discovery {role_label} 1회 분석]
+당신은 {role_label}입니다. 사용자가 등록한 공고 URL 및 첨부파일에서 검색된 criteria 근거만
+검토합니다. 관점: {focus}
+
+규칙:
+- 말풍선용 spoken_text는 자연스러운 한국어 2~4문장으로 쓰고 파일명이나 원문 목록을 복사하지 않습니다.
+- 문서에서 직접 확인한 사실은 claim_type=document_fact와 실제 ref를 기록합니다.
+- 근거 없는 전문 판단은 claim_type=expert_judgment, evidence_refs=[]로 명시합니다.
+- 개발 관점에서 관련 근거가 없으면 억지로 인용하지 않습니다.
+- 유효한 JSON 객체 하나만 반환합니다.
+
+[retrieval_query]
+{query}
+
+[retrieved_criteria_evidence]
+{json.dumps(evidence, ensure_ascii=False)}
+{counterpart}
+
+{{
+  "spoken_text": "string",
+  "claims": [
+    {{
+      "claim_id": "{'planning' if persona_id == 'planning_expert' else 'technical'}_claim_1",
+      "text": "string",
+      "claim_type": "document_fact | expert_judgment",
+      "evidence_refs": ["{'P1' if persona_id == 'planning_expert' else 'D1'}"]
+    }}
+  ]
+}}"""
+
+
+def _problem_synthesis_prompt(
+    *,
+    planning_analysis: dict,
+    technical_analysis: dict,
+    grounded_facts: list[dict],
+    allowed_refs: list[str],
+    previous_problem_areas: list[dict],
+    regeneration_reason: str | None,
+) -> str:
+    return f"""[문제 영역 생성 규칙]
+당신은 진행자입니다. 기획위원 1회 분석과 개발위원 1회 검토를 종합해 해결할 가치가 있는
+문제 후보 2~4개를 만드세요. 해결책이나 완성된 서비스 이름을 만들지 마세요.
+
+규칙:
+- 문서 사실은 아래 grounding 통과 사실만 사용합니다.
+- evidence_refs에는 허용된 ref만 넣습니다: {json.dumps(allowed_refs, ensure_ascii=False)}
+- 근거가 없는 내용은 planning_view/technical_view에서 '전문가 판단:'으로 구분합니다.
+- 파일명, 작성 양식, 원문 목록 기호를 spoken_text에 복사하지 않습니다.
+- 유효한 JSON 객체 하나만 반환합니다.
+
+[기획위원 분석]
+{json.dumps(planning_analysis, ensure_ascii=False)}
+
+[개발위원 검토]
+{json.dumps(technical_analysis, ensure_ascii=False)}
+
+[grounding 통과 사실]
+{json.dumps(grounded_facts, ensure_ascii=False)}
+
+[이전 후보]
+{json.dumps(previous_problem_areas, ensure_ascii=False)}
+
+[재탐색 사유]
+{json.dumps(regeneration_reason, ensure_ascii=False)}
+
+{{
+  "spoken_text": "두 위원의 검토를 종합한 자연스러운 안내 문장",
+  "problem_areas": [
+    {{
+      "area_id": "area_1",
+      "problem_title": "string",
+      "problem_description": "string",
+      "affected_users": "string",
+      "planning_view": "string",
+      "technical_view": "string",
+      "evidence_refs": ["P1", "D1"]
+    }}
+  ]
+}}"""
+
+
+def _merge_problem_grounding(
+    grounding_items: list[dict],
+    *,
+    selected_refs: set[str],
+) -> dict:
+    claims: list[dict] = []
+    links: list[dict] = []
+    unsupported: list[dict] = []
+    chunk_ids: list[str] = []
+    missing: list[str] = []
+    for grounding in grounding_items:
+        linked_claim_ids: set[str] = set()
+        for link in grounding.get("claim_evidence_links") or []:
+            pairs = [
+                (ref, chunk_id)
+                for ref, chunk_id in zip(link.get("evidence_refs") or [], link.get("chunk_ids") or [])
+                if ref in selected_refs
+            ]
+            if not pairs:
+                continue
+            linked_claim_ids.add(link.get("claim_id"))
+            links.append(
+                {
+                    "claim_id": link.get("claim_id"),
+                    "evidence_refs": [pair[0] for pair in pairs],
+                    "chunk_ids": [pair[1] for pair in pairs],
+                }
+            )
+            chunk_ids.extend(pair[1] for pair in pairs)
+        claims.extend(
+            claim for claim in (grounding.get("claims") or []) if claim.get("claim_id") in linked_claim_ids
+        )
+        unsupported.extend(grounding.get("unsupported_claims") or [])
+        missing.extend(grounding.get("missing_information") or [])
+    unique_chunks = list(dict.fromkeys(chunk_ids))
+    grounded_count = len(links)
+    return {
+        "claims": claims,
+        "linked_evidence_refs": unique_chunks,
+        "claim_evidence_links": links,
+        "unsupported_claims": unsupported,
+        "supported_claim_count": len(claims),
+        "unsupported_claim_count": len(unsupported),
+        "accepted_claim_count": len(claims),
+        "grounded_claim_count": grounded_count,
+        "expert_judgment_count": 0,
+        "linked_evidence_count": len(unique_chunks),
+        "missing_information": list(dict.fromkeys(missing)),
+        "evidence_status": "grounded" if grounded_count else "no_evidence_available",
+        "prompt_guard": "",
+        "allow_definitive_judgment": bool(grounded_count),
+    }
+
+
+def _clean_grounding_claim_refs(grounding: dict) -> dict:
+    """검증에 실패한 ref가 API claims[]에 남아 '사용한 근거'처럼 보이지 않게 한다."""
+    linked_refs_by_claim = {
+        link.get("claim_id"): list(link.get("evidence_refs") or [])
+        for link in grounding.get("claim_evidence_links") or []
+    }
+    return {
+        **grounding,
+        "claims": [
+            {
+                **claim,
+                "evidence_refs": linked_refs_by_claim.get(claim.get("claim_id"), []),
+            }
+            for claim in grounding.get("claims") or []
+        ],
+    }
+
+
 def _new_evolution_record(
     state: IdeationConvState,
     *,
@@ -169,6 +467,9 @@ def _new_evolution_record(
 
 
 def _validate_problem_discovery_response(raw: dict) -> str | None:
+    spoken_text = str(raw.get("spoken_text") or "").strip()
+    if "spoken_text" in raw and not spoken_text:
+        return "spoken_text_missing"
     areas = raw.get("problem_areas")
     if not isinstance(areas, list) or not (2 <= len(areas) <= 4):
         return "problem_areas_count_invalid"
@@ -180,9 +481,19 @@ def _validate_problem_discovery_response(raw: dict) -> str | None:
         if _blank(area_id) or area_id in seen:
             return "area_id_missing_or_duplicate"
         seen.add(area_id)
-        for field in ("title", "summary", "who_is_affected"):
-            if _blank(area.get(field)):
-                return f"missing_or_empty_field:{field}"
+        for legacy_field, structured_field in (
+            ("title", "problem_title"),
+            ("summary", "problem_description"),
+            ("who_is_affected", "affected_users"),
+        ):
+            if _blank(area.get(legacy_field)) and _blank(area.get(structured_field)):
+                return f"missing_or_empty_field:{structured_field}"
+        for field in ("planning_view", "technical_view"):
+            # 신규 3단계 종합 응답은 두 관점을 필수로 한다. 기존 단일 호출 응답은 legacy
+            # 필드(title/summary/who_is_affected)만 있어도 계속 허용한다.
+            if any(key in area for key in ("problem_title", "problem_description", "affected_users")):
+                if _blank(area.get(field)):
+                    return f"missing_or_empty_field:{field}"
     return None
 
 
@@ -190,12 +501,258 @@ def make_problem_discovery_node(
     llm_call: LLMCall,
     evidence_lookup: EvidenceLookup | None = None,
     external_evidence_lookup: ExternalEvidenceLookupFn | None = None,
+    ground_claims: ClaimGroundingFn | None = None,
 ) -> Callable[[IdeationConvState], dict]:
     """기획 전문가가 완성된 아이디어가 아니라 "해결할 가치가 있는 문제 영역" 2~4개를
     만드는 노드. discovery 모드의 새 진입점(요청: "발산 전에 완성되는" 문제를 막기 위해
     candidate_generation보다 앞에 둔다)."""
 
     def node(state: IdeationConvState) -> dict:
+        # 실제 RAG 운영 경로에서는 두 위원이 동일 project의 criteria 문서를 서로 다른
+        # 관점으로 각각 검색·검토한 뒤 진행자가 한 번만 종합한다. ground_claims가 없는
+        # 레거시/단위 테스트 호출은 아래 기존 단일 호출 경로를 유지한다.
+        if ground_claims and evidence_lookup:
+            previous_areas = state.get("problem_areas") or []
+            regeneration_reason = None
+            if previous_areas:
+                last_answer = _last_user_answer(state["messages"])
+                regeneration_reason = (last_answer or {}).get("content")
+
+            planning_query = _problem_discovery_query(state, "planning_expert")
+            technical_query = _problem_discovery_query(state, "dev_expert")
+            planning_evidence = _prefix_evidence_refs(
+                [
+                    item for item in call_evidence_lookup(
+                        evidence_lookup,
+                        "planning_expert",
+                        planning_query,
+                        runtime_scope=_runtime_scope_for(state),
+                    )
+                    if item.get("document_role") == "criteria"
+                ],
+                "P",
+            )
+            technical_evidence = _prefix_evidence_refs(
+                [
+                    item for item in call_evidence_lookup(
+                        evidence_lookup,
+                        "dev_expert",
+                        technical_query,
+                        runtime_scope=_runtime_scope_for(state),
+                    )
+                    if item.get("document_role") == "criteria"
+                ],
+                "D",
+            )
+
+            planning_raw, planning_ok, planning_attempts = _safe_call_structured_json(
+                llm_call,
+                _problem_role_prompt(
+                    persona_id="planning_expert",
+                    query=planning_query,
+                    evidence=planning_evidence,
+                ),
+                _validate_problem_role_analysis,
+                "problem_discovery_planning",
+            )
+            if not planning_ok:
+                return {
+                    "phase": "failed",
+                    "failed_node": "problem_discovery",
+                    "llm_calls_used": state.get("llm_calls_used", 0) + planning_attempts,
+                }
+            planning_grounding = _clean_grounding_claim_refs(
+                ground_claims(
+                    "planning_expert", planning_raw.get("claims"), planning_evidence
+                )
+            )
+            planning_message = _build_message(
+                persona_id="planning_expert",
+                round_number=state["round"],
+                message_type="opinion",
+                content=_safe_validation_message(
+                    planning_raw.get("spoken_text"),
+                    "공모 목적과 평가 기준을 바탕으로 해결할 문제를 검토했습니다.",
+                    planning_evidence,
+                ),
+                referenced_message_ids=[],
+                evidence=planning_evidence,
+                structured={
+                    "problem_discovery": {
+                        "query": planning_query,
+                        "retrieval_results": _retrieval_summary(planning_evidence),
+                    }
+                },
+                grounding=planning_grounding,
+                evidence_buckets=_classify_linked_evidence_buckets(
+                    planning_grounding, planning_evidence
+                ),
+            )
+
+            technical_raw, technical_ok, technical_attempts = _safe_call_structured_json(
+                llm_call,
+                _problem_role_prompt(
+                    persona_id="dev_expert",
+                    query=technical_query,
+                    evidence=technical_evidence,
+                    planning_analysis={
+                        "spoken_text": planning_message["content"],
+                        "grounded_claims": planning_grounding.get("claims") or [],
+                    },
+                ),
+                _validate_problem_role_analysis,
+                "problem_discovery_technical",
+            )
+            used = (
+                state.get("llm_calls_used", 0)
+                + planning_attempts
+                + technical_attempts
+            )
+            if not technical_ok:
+                return {"phase": "failed", "failed_node": "problem_discovery", "llm_calls_used": used}
+            technical_grounding = _clean_grounding_claim_refs(
+                ground_claims(
+                    "dev_expert", technical_raw.get("claims"), technical_evidence
+                )
+            )
+            technical_message = _build_message(
+                persona_id="dev_expert",
+                round_number=state["round"],
+                message_type="opinion",
+                content=_safe_validation_message(
+                    technical_raw.get("spoken_text"),
+                    "구현 가능성과 기술·운영 위험을 검토했습니다.",
+                    technical_evidence,
+                ),
+                referenced_message_ids=[planning_message["message_id"]],
+                evidence=technical_evidence,
+                structured={
+                    "problem_discovery": {
+                        "query": technical_query,
+                        "retrieval_results": _retrieval_summary(technical_evidence),
+                    }
+                },
+                grounding=technical_grounding,
+                evidence_buckets=_classify_linked_evidence_buckets(
+                    technical_grounding, technical_evidence
+                ),
+            )
+
+            grounding_items = [planning_grounding, technical_grounding]
+            grounded_facts: list[dict] = []
+            allowed_refs: list[str] = []
+            for grounding in grounding_items:
+                claim_by_id = {
+                    claim.get("claim_id"): claim for claim in grounding.get("claims") or []
+                }
+                for link in grounding.get("claim_evidence_links") or []:
+                    claim = claim_by_id.get(link.get("claim_id"))
+                    if not claim:
+                        continue
+                    refs = list(link.get("evidence_refs") or [])
+                    allowed_refs.extend(refs)
+                    grounded_facts.append(
+                        {"text": claim.get("text"), "evidence_refs": refs}
+                    )
+
+            synthesis_raw, synthesis_ok, synthesis_attempts = _safe_call_structured_json(
+                llm_call,
+                _problem_synthesis_prompt(
+                    planning_analysis={"spoken_text": planning_message["content"]},
+                    technical_analysis={"spoken_text": technical_message["content"]},
+                    grounded_facts=grounded_facts,
+                    allowed_refs=list(dict.fromkeys(allowed_refs)),
+                    previous_problem_areas=previous_areas,
+                    regeneration_reason=regeneration_reason,
+                ),
+                _validate_problem_discovery_response,
+                "problem_discovery",
+            )
+            used += synthesis_attempts
+            if not synthesis_ok:
+                return {"phase": "failed", "failed_node": "problem_discovery", "llm_calls_used": used}
+
+            allowed_ref_set = set(allowed_refs)
+            selected_refs: set[str] = set()
+            normalized_areas: list[dict] = []
+            ref_to_chunk = {}
+            for grounding in grounding_items:
+                for link in grounding.get("claim_evidence_links") or []:
+                    ref_to_chunk.update(
+                        zip(link.get("evidence_refs") or [], link.get("chunk_ids") or [])
+                    )
+            for idx, area in enumerate(synthesis_raw["problem_areas"], start=1):
+                refs = [
+                    ref for ref in (area.get("evidence_refs") or [])
+                    if ref in allowed_ref_set
+                ]
+                selected_refs.update(refs)
+                problem_title = area.get("problem_title") or area.get("title")
+                problem_description = area.get("problem_description") or area.get("summary")
+                affected_users = area.get("affected_users") or area.get("who_is_affected")
+                planning_view = area.get("planning_view") or "추가 검토가 필요합니다."
+                technical_view = area.get("technical_view") or "추가 검토가 필요합니다."
+                # planning_view/technical_view는 문서 사실 자체가 아니라 그 사실을 바탕으로
+                # 한 역할별 해석이다. 후보가 ref를 갖더라도 해석까지 원문이 직접 증명하는
+                # 것은 아니므로 항상 전문가 판단으로 명시한다.
+                if not planning_view.startswith("전문가 판단:"):
+                    planning_view = f"전문가 판단: {planning_view}"
+                if not technical_view.startswith("전문가 판단:"):
+                    technical_view = f"전문가 판단: {technical_view}"
+                normalized_areas.append(
+                    {
+                        **area,
+                        "area_id": area.get("area_id") or f"area_{idx}",
+                        "problem_title": problem_title,
+                        "problem_description": problem_description,
+                        "affected_users": affected_users,
+                        "planning_view": planning_view,
+                        "technical_view": technical_view,
+                        "evidence_refs": list(
+                            dict.fromkeys(ref_to_chunk[ref] for ref in refs if ref in ref_to_chunk)
+                        ),
+                        # 기존 선택·정의 단계와 프론트 하위 호환.
+                        "title": problem_title,
+                        "summary": problem_description,
+                        "who_is_affected": affected_users,
+                    }
+                )
+
+            combined_grounding = _merge_problem_grounding(
+                grounding_items, selected_refs=selected_refs
+            )
+            evidence_pool = planning_evidence + technical_evidence
+            linked_chunks = set(combined_grounding["linked_evidence_refs"])
+            linked_evidence = [
+                item for item in evidence_pool if item.get("chunk_id") in linked_chunks
+            ]
+            facilitator_message = _build_message(
+                persona_id="ideation_facilitator",
+                round_number=state["round"],
+                message_type="question",
+                content=_PROBLEM_FOCUS_QUESTION,
+                referenced_message_ids=[
+                    planning_message["message_id"], technical_message["message_id"]
+                ],
+                evidence=linked_evidence,
+                structured={
+                    "problem_discovery": {
+                        "planning_query": planning_query,
+                        "technical_query": technical_query,
+                    }
+                },
+                grounding=combined_grounding,
+                evidence_buckets=_classify_linked_evidence_buckets(
+                    combined_grounding, linked_evidence
+                ),
+            )
+            return {
+                "problem_areas": normalized_areas,
+                "messages": [planning_message, technical_message, facilitator_message],
+                "phase": "awaiting_problem_focus_selection",
+                "llm_calls_used": used,
+            }
+
         retrieved = call_evidence_lookup(
             evidence_lookup, "planning_expert", _contest_query(state), runtime_scope=_runtime_scope_for(state)
         )
@@ -392,6 +949,29 @@ def _validate_problem_definition_response(raw: dict) -> str | None:
     return None
 
 
+def _natural_problem_selection_message(problem_text: str, target_user: str) -> str:
+    """선택된 문제를 "(대상: X)" 같은 라벨 붙은 요약이 아니라, 실제로 옆에서 말해주듯
+    자연스러운 구어체 문장으로 만든다(가은/Claude(2026-07-29, 요청: "친구랑 대화할 때 너
+    밥 뭐 먹. 이렇게 안 하잖아" — 필드를 그대로 이어붙인 템플릿 말투를 자연어로 바꿔달라는
+    요청). problem_text는 보통 "~하는 문제." 형태의 명사구로 끝나므로(problem_definition
+    프롬프트가 강제하는 형식은 아니지만 실측상 일관된 패턴), 그 경우 마침표만 떼고 "를
+    선택하셨네요."를 자연스럽게 이어 붙인다. 다른 형태(완결된 문장)로 끝나면 원문을 그대로
+    두고 "이 문제"로 대신 받아 자연스러운 두 번째 문장으로 확인한다."""
+    text = (problem_text or "").strip()
+    if text.endswith("."):
+        text = text[:-1].rstrip()
+    if text.endswith("문제"):
+        confirmation = f"{text}를 선택하셨네요."
+    else:
+        confirmation = f"{text}. 이 문제를 선택하셨네요."
+    target = (target_user or "").strip()
+    if not target:
+        return confirmation
+    # "에게"는 대상 명사의 받침 유무와 무관하게 항상 자연스럽게 붙는다 — target_user가
+    # 자유 텍스트라 받침 여부를 알 수 없으므로, 조사 변화가 필요 없는 표현만 쓴다.
+    return f"{confirmation} 이 문제는 주로 {target}에게 영향을 미쳐요."
+
+
 def make_problem_definition_node(
     llm_call: LLMCall, evidence_lookup: EvidenceLookup | None = None
 ) -> Callable[[IdeationConvState], dict]:
@@ -417,7 +997,7 @@ def make_problem_definition_node(
             persona_id="ideation_facilitator",
             round_number=state["round"],
             message_type="summary",
-            content=f"{definition['problem']}\n(대상: {definition['target_user']})",
+            content=_natural_problem_selection_message(definition["problem"], definition["target_user"]),
             referenced_message_ids=[],
             evidence=[],
         )
@@ -867,6 +1447,11 @@ def make_provisional_from_merge_node(
             "selected_idea": None,
             "idea_locked": False,
             "validation_result": None,
+            # 용준/Claude(2026-07-30, 요청: specification_completion 흐름 추가) — 새
+            # provisional_idea가 채택될 때마다(재결합 라운드 포함, 방향 자체가 바뀌므로)
+            # 필드별 논의를 처음부터 다시 시작한다.
+            "idea_spec": None,
+            "spec_completion_rounds": {},
             # 용준/Claude(2026-07-28) — 여기서 validation_revise_count를 리셋하지 않는다.
             # 이 노드는 idea_conflict_and_merge가 "proceed"할 때마다 실행되는데, 그 "proceed"가
             # 검증 실패 후 재결합 라운드에서 온 것일 수도 있다(정확히 그 경우를 위해 이
@@ -874,7 +1459,12 @@ def make_provisional_from_merge_node(
             # 늘려놓은 값이 매 재결합마다 지워져 자동 반복 상한이 무력화된다.
             "idea_evolution": evolution_records,
             "messages": [bridge_message],
-            "phase": "idea_validation",
+            # 용준/Claude(2026-07-30, 요청: "최종 validation으로 바로 넘어가지 말고
+            # specification_completion 단계를 추가") — 기존에는 곧바로 "idea_validation"
+            # (validate_planning)으로 갔다. main_features/required_data 등 설계 필드가
+            # 아직 unknown인 채로 검증·최종 추천으로 넘어가던 문제(실측: 상세 화면에
+            # "아직 확정되지 않음"이 계속 남음)를 이 단계가 막는다.
+            "phase": "specification_completion",
         }
 
     return node
@@ -1114,10 +1704,501 @@ def make_provisional_selection_node(
         result["idea_locked"] = False
         result["validation_result"] = None
         result["validation_revise_count"] = 0
-        result["phase"] = "idea_validation"
+        # 용준/Claude(2026-07-30, 요청: specification_completion 흐름 추가) — 아래
+        # make_provisional_from_merge_node와 동일한 이유로 새 provisional_idea마다
+        # idea_spec을 리셋하고, 곧바로 idea_validation이 아니라 specification_completion을
+        # 먼저 거친다(레거시 카드 선택 경로도 동일한 게이트를 통과해야 한다).
+        result["idea_spec"] = None
+        result["spec_completion_rounds"] = {}
+        result["phase"] = "specification_completion"
         return result
 
     return node
+
+
+# ============================================================================
+# 7.5 specification_completion — main_features/required_data 등 설계 필드를
+#     "아직 확정되지 않음"으로 남기지 않고 위원 제안(proposed)으로 채운다
+# ============================================================================
+#
+# 용준/Claude(2026-07-30, 요청: "미확정 필드 확인 -> 필드별 논의 -> 구조화 저장 -> 검증 ->
+# 사용자 확인" 흐름 추가) — 실측: 회의가 여러 턴 진행돼도 상세 화면의 main_features/
+# required_data/technical_approach/mvp_scope/risks_and_mitigations/success_metrics/
+# assumptions_to_validate가 계속 "아직 확정되지 않음"으로 남았다. 원인은 provisional_idea
+# 생성 함수(solution_direction_to_idea, ideation_conv_discovery.py)가 애초에 이 필드들을
+# 만들지 않고(문서 자체에 없는 필드), 이후 discussion/synthesis 단계도 이 필드들을 구조화
+# 저장으로 되돌려 쓰지 않았기 때문이다 — "회의 횟수를 늘리는" 우회로는 고칠 수 없는
+# 구조적 공백이었다. 이 노드가 provisional_selection/provisional_from_merge 직후,
+# idea_validation 이전에 끼어들어 그 공백을 직접 채운다.
+
+_SPEC_BOOTSTRAP_FIELDS: tuple[str, ...] = ("core_user_value", "differentiation")
+# 권장 순서(요청 4번 그대로) — 한 번에 모든 필드를 논의하지 않고, 이 노드가 그래프
+# 자기 자신으로 루프하며 한 번의 실행마다 딱 하나의 unknown 필드만 채운다.
+_SPEC_FIELD_ORDER: tuple[str, ...] = (
+    "main_features",
+    "required_data",
+    "technical_approach",
+    "mvp_scope",
+    "risks_and_mitigations",
+    "success_metrics",
+    "assumptions_to_validate",
+)
+_SPEC_REQUIRED_FIELDS: tuple[str, ...] = _SPEC_BOOTSTRAP_FIELDS + _SPEC_FIELD_ORDER
+_SPEC_FIELD_LABELS_KO: dict[str, str] = {
+    "core_user_value": "핵심 사용자 가치",
+    "main_features": "주요 기능",
+    "required_data": "필요한 데이터",
+    "technical_approach": "기술 구현 방향",
+    "mvp_scope": "MVP 범위",
+    "differentiation": "차별성",
+    "risks_and_mitigations": "위험 요소와 대응 방안",
+    "success_metrics": "성공 지표",
+    "assumptions_to_validate": "검증이 필요한 가정",
+}
+# 요청 5번 — 필드별 위원 역할. 공동 검토 필드는 기획위원 먼저, 개발위원이 그 제안을 보고
+# 이어서 발언한다(discussion 노드의 "먼저 말한 위원 발언을 이어 말한다" 원칙과 동일).
+_SPEC_FIELD_OWNERS: dict[str, tuple[str, ...]] = {
+    "main_features": ("planning_expert",),
+    "required_data": ("dev_expert",),
+    "technical_approach": ("dev_expert",),
+    "mvp_scope": ("planning_expert", "dev_expert"),
+    "risks_and_mitigations": ("planning_expert", "dev_expert"),
+    "success_metrics": ("planning_expert",),
+    "assumptions_to_validate": ("planning_expert", "dev_expert"),
+}
+# 요청 8번 — 필드별 최대 논의 횟수(무한 반복 방지). 상한에 도달하면 위원들이 만든
+# 초안이 부족해도(예: 빈 응답 반복) 그대로 proposed로 확정하고 다음 필드로 넘어간다 —
+# "추가 논의가 필요합니다"를 반복하지 않는다(요청 8번 그대로).
+_SPEC_MAX_ROUNDS_PER_FIELD = 2
+
+
+def _new_field_spec(
+    value: Any,
+    *,
+    status: str,
+    updated_by: str,
+    source_turn_ids: list[str] | None = None,
+    evidence_refs: list[str] | None = None,
+    expert_judgment: bool = False,
+) -> dict:
+    return {
+        "value": value,
+        "status": status,
+        "source_turn_ids": list(source_turn_ids or []),
+        "evidence_refs": list(evidence_refs or []),
+        "updated_by": updated_by,
+        "updated_at": _now_iso(),
+        "expert_judgment": expert_judgment,
+    }
+
+
+def _bootstrap_idea_spec(provisional_idea: dict) -> dict:
+    """provisional_idea가 이미 갖고 있는 core_value/differentiation은 그대로 proposed로
+    승격하고(solution_direction_to_idea/candidate 스키마 둘 다 이 두 필드는 항상 채운다),
+    나머지 설계 필드는 unknown으로 시작한다."""
+    idea_spec: dict[str, dict] = {}
+    core_value = provisional_idea.get("core_value") or provisional_idea.get("core_user_value")
+    if isinstance(core_value, str) and core_value.strip():
+        idea_spec["core_user_value"] = _new_field_spec(core_value.strip(), status="proposed", updated_by="facilitator")
+    else:
+        idea_spec["core_user_value"] = _new_field_spec(None, status="unknown", updated_by="facilitator")
+    differentiation = provisional_idea.get("differentiation")
+    if isinstance(differentiation, str) and differentiation.strip():
+        idea_spec["differentiation"] = _new_field_spec(differentiation.strip(), status="proposed", updated_by="facilitator")
+    else:
+        idea_spec["differentiation"] = _new_field_spec(None, status="unknown", updated_by="facilitator")
+    for field in _SPEC_FIELD_ORDER:
+        idea_spec[field] = _new_field_spec(None, status="unknown", updated_by="facilitator")
+    return idea_spec
+
+
+def _next_unknown_spec_field(idea_spec: dict) -> str | None:
+    for field in _SPEC_FIELD_ORDER:
+        if (idea_spec.get(field) or {}).get("status", "unknown") == "unknown":
+            return field
+    return None
+
+
+def spec_gate_passed(idea_spec: dict | None) -> bool:
+    """completion gate(요청 8번) — 필수 필드가 전부 unknown이 아니어야(proposed 이상)
+    validate_planning/final_recommendation/awaiting_concept_confirmation으로 넘어갈 수
+    있다. idea_spec 자체가 없으면(구버전 세션 하위 호환) 통과시킨다 — 이 게이트는
+    새로 만드는 세션부터 적용된다."""
+    if idea_spec is None:
+        return True
+    return all((idea_spec.get(field) or {}).get("status", "unknown") != "unknown" for field in _SPEC_REQUIRED_FIELDS)
+
+
+def _spec_field_query(state: IdeationConvState, provisional_idea: dict, label: str) -> str:
+    contest_text = _contest_query(state)
+    idea_fragment = " ".join(
+        str(provisional_idea.get(field) or "") for field in ("title", "problem", "target_user", "solution")
+    ).strip()
+    return " / ".join(part for part in (contest_text, idea_fragment, label) if part)[:600]
+
+
+# 용준/Claude(2026-07-30, 요청 3번 — "품질 게이트") — 실측: 필드당 "1~4개 항목"만
+# 요구하는 느슨한 프롬프트로는 개수는 채워져도 required_data가 "용도" 없이 데이터명만
+# 나열되거나, mvp_scope에 포함/제외/검증 구분이 없거나, risks_and_mitigations가 위험만
+# 있고 대응이 빠지는 등 구조가 비어 있었다. 필드마다 요구되는 최소 구조를 프롬프트에
+# 명시하고, 아래 _validate_spec_field_response가 그 구조를 실제로 검사한다.
+_SPEC_FIELD_MIN_ITEMS: dict[str, int] = {
+    "main_features": 3,
+    "required_data": 3,
+    "technical_approach": 4,
+    "mvp_scope": 3,
+    "risks_and_mitigations": 3,
+    "success_metrics": 3,
+    "assumptions_to_validate": 3,
+}
+# "A — B"(항목 — 용도/측정방법/검증방법) 짝 구조가 필요한 필드. 각 value 문자열 안에
+# 구분자가 있어야 한다 — 없으면 항목명만 나열하고 용도/방법을 생략했다는 뜻이다.
+_SPEC_FIELD_PAIR_REQUIRED: frozenset[str] = frozenset(
+    {"required_data", "risks_and_mitigations", "success_metrics", "assumptions_to_validate"}
+)
+_SPEC_PAIR_SEPARATOR_RE = re.compile(r"[—\-:]|용도|측정|검증|대응")
+_SPEC_PLACEHOLDER_RE = re.compile(
+    r"^아직\s*확정되지\s*않음$|추가\s*논의가?\s*필요|구체화가?\s*필요|^확인\s*필요$"
+)
+_SPEC_FIELD_INSTRUCTIONS: dict[str, str] = {
+    "main_features": "구체적인 기능을 3개 이상 제시하세요. 각 항목은 사용자가 실제로 무엇을 할 수 있는지 한 문장으로 씁니다(추상적인 표어가 아니라 기능 단위).",
+    "required_data": (
+        "필요한 데이터 종류를 3개 이상 제시하세요. 각 항목은 반드시 "
+        "\"데이터명 — 이 데이터를 어디에 쓰는지(용도)\" 형식으로, 데이터명과 용도를 "
+        "\" — \"로 구분해 한 문자열에 함께 씁니다."
+    ),
+    "technical_approach": (
+        "입력(어떤 데이터를 받는지) · 처리(어떻게 분석·가공하는지) · 저장(어디에 어떻게 "
+        "저장하는지) · 출력(사용자에게 무엇을 보여주는지) 네 단계를 각각 최소 1개 항목씩, "
+        "총 4개 이상 제시하세요. 각 항목 앞에 어느 단계인지 명시합니다(예: \"입력: ...\")."
+    ),
+    "mvp_scope": (
+        "다음 세 종류를 모두 포함해 최소 3개 이상 제시하세요 — \"포함: ...\"(MVP에 실제로 "
+        "들어갈 기능, 1개 이상), \"제외: ...\"(이번 MVP에서는 의도적으로 빼는 범위, 1개 "
+        "이상), \"검증 대상: ...\"(MVP로 확인하려는 가설, 1개 이상). 각 항목은 반드시 이 "
+        "세 접두어 중 하나로 시작합니다."
+    ),
+    "risks_and_mitigations": (
+        "위험 요소와 그에 대한 구체적 대응 방안을 3쌍 이상 제시하세요. 각 항목은 반드시 "
+        "\"위험: ... / 대응: ...\" 형식으로, 위험만 쓰고 대응 방안을 생략하지 않습니다."
+    ),
+    "success_metrics": (
+        "측정 가능한 지표를 3개 이상 제시하세요. 각 항목은 반드시 \"지표명 — 측정 방법\" "
+        "형식으로, 지표와 그것을 어떻게 측정할지(설문/로그 분석/전후 비교 등)를 함께 씁니다."
+    ),
+    "assumptions_to_validate": (
+        "아직 검증되지 않은 가정을 3개 이상 제시하세요. 각 항목은 반드시 \"가정 — 검증 "
+        "방법\" 형식으로, 가정과 그것을 어떻게 검증할지(사용자 인터뷰/파일럿 운영/데이터 "
+        "분석 등)를 함께 씁니다."
+    ),
+}
+
+
+def _validate_spec_field_response(raw: dict, field: str) -> str | None:
+    if not isinstance(raw, dict):
+        return "response_not_object"
+    value = raw.get("value")
+    if not isinstance(value, list) or not value or not all(isinstance(v, str) and v.strip() for v in value):
+        return "value_missing_or_invalid_list"
+    if raw.get("claim_type") not in ("document_fact", "expert_judgment"):
+        return "invalid_claim_type"
+    if any(_SPEC_PLACEHOLDER_RE.search(v.strip()) for v in value):
+        return "placeholder_value_not_allowed"
+    min_items = _SPEC_FIELD_MIN_ITEMS.get(field, 1)
+    if len(value) < min_items:
+        return "insufficient_item_count"
+    if len(value) != len(set(v.strip() for v in value)):
+        return "duplicate_value_items"
+    if field in _SPEC_FIELD_PAIR_REQUIRED and not all(_SPEC_PAIR_SEPARATOR_RE.search(v) for v in value):
+        return "missing_pair_structure"
+    if field == "mvp_scope":
+        joined = " ".join(value)
+        if not all(marker in joined for marker in ("포함", "제외", "검증")):
+            return "missing_mvp_scope_structure"
+    if field == "technical_approach":
+        joined = " ".join(value)
+        if not all(marker in joined for marker in ("입력", "처리", "저장", "출력")):
+            return "missing_technical_approach_structure"
+    return None
+
+
+def _spec_field_prompt(*, persona_id: str, field: str, label: str, provisional_idea: dict, evidence: list[dict]) -> str:
+    role_label = "기획위원" if persona_id == "planning_expert" else "개발위원"
+    instruction = _SPEC_FIELD_INSTRUCTIONS.get(field, "구체적인 항목을 3개 이상 제시하세요.")
+    return f"""[specification_completion — {role_label}가 "{label}" 항목 초안 제시]
+당신은 {role_label}입니다. 검증 대상 아이디어(provisional_idea)의 "{label}" 항목이 아직
+구체화되지 않았습니다. 사용자에게 되묻지 말고, 공고문/평가기준과 아이디어 내용을 참고해
+합리적인 초안을 직접 제시하세요 — 이것은 최종 확정이 아니라 수정 가능한 제안입니다.
+
+규칙:
+- {instruction}
+- "아직 확정되지 않음", "추가 논의가 필요합니다", "구체화가 필요합니다", "확인이 필요합니다"
+  같은 보류성 문구를 항목 값으로 쓰지 않습니다 — 항목 자체가 구체적인 결론이어야 합니다.
+- 다른 항목과 사실상 같은 내용을 표현만 바꿔 반복하지 않습니다.
+- claim_type은 "document_fact"(검색 근거에 실제로 적힌 내용을 근거로 삼음) 또는
+  "expert_judgment"(근거 없는 전문가 판단) 중 하나입니다. document_fact면 evidence_refs에
+  근거의 "ref" 값을 반드시 포함합니다. 근거가 없으면 expert_judgment로 표시합니다 —
+  근거가 없다고 해서 제안 자체를 거부하지 않습니다.
+- 근거에 없는 수치·법령 등을 지어내지 않습니다.
+- 유효한 JSON 객체 하나만 반환합니다.
+
+[검증 대상 provisional_idea]
+{json.dumps(provisional_idea, ensure_ascii=False)}
+
+[검색 근거]
+{json.dumps(evidence, ensure_ascii=False)}
+
+{{
+  "value": ["string", "string", "string"],
+  "claim_type": "document_fact | expert_judgment",
+  "evidence_refs": ["string"],
+  "reason": "string"
+}}"""
+
+
+def _spec_fallback_values(field: str, label: str) -> list[str]:
+    min_items = _SPEC_FIELD_MIN_ITEMS.get(field, 1)
+    return [
+        f"{label} 항목 {index}: 위원 논의만으로 구체안을 확정하지 못해 잠정 기본안으로 진행합니다."
+        for index in range(1, min_items + 1)
+    ]
+
+
+def _concise_validation_message(
+    message: str,
+    fallback: str,
+    retrieved: list[dict],
+    *,
+    max_chars: int = 180,
+) -> str:
+    """검증 발화를 두 문장 이내로 제한하고 중간 생략 부호가 섞인 문장을 제거한다.
+
+    상세 항목과 근거는 structured/evidence에 그대로 남으므로 말풍선에서 장황한 나열을
+    반복할 필요가 없다. 문장 경계 없이 긴 응답은 어절 중간을 자르지 않고 고정 안내문으로
+    대체한다.
+    """
+    text = _safe_validation_message(message, fallback, retrieved)
+    text = re.sub(r"\s*(?:\.{2,}|…+)\s*", " ", text)
+    text = " ".join(text.split()).strip()
+    if not text:
+        return fallback
+    if len(text) <= max_chars:
+        return text
+
+    sentences = [
+        sentence.strip()
+        for sentence in re.split(r"(?<=[.!?])\s+", text)
+        if sentence.strip()
+    ]
+    selected: list[str] = []
+    for sentence in sentences[:2]:
+        candidate = " ".join(selected + [sentence])
+        if len(candidate) > max_chars:
+            break
+        selected.append(sentence)
+    return " ".join(selected) if selected else fallback
+
+
+def make_specification_completion_node(
+    llm_call: LLMCall,
+    evidence_lookup: EvidenceLookup | None = None,
+) -> Callable[[IdeationConvState], dict]:
+    """provisional_idea 채택 직후, idea_validation으로 바로 넘어가지 않고 main_features 등
+    필수 설계 필드를 채운다. 그래프가 이 노드를 조건부 자기 루프로 반복 호출해(요청 4번
+    "한 번에 모든 필드를 논의하지 마세요") 매 실행마다 unknown 필드 하나씩만 진행하고,
+    모든 필수 필드가 proposed 이상이 되면 phase="idea_validation"으로 전환해 루프를
+    끝낸다(_route_after_specification_completion이 이 phase 전환만 보고 라우팅한다)."""
+
+    def node(state: IdeationConvState) -> dict:
+        provisional_idea = state.get("provisional_idea") or {}
+        idea_spec = state.get("idea_spec")
+        if not idea_spec:
+            idea_spec = _bootstrap_idea_spec(provisional_idea)
+
+        field = _next_unknown_spec_field(idea_spec)
+        if field is None:
+            # 이미 모든 필드가 채워진 채로 이 노드에 도달함(방어적 — 정상적으로는 직전
+            # 실행이 이미 phase를 idea_validation으로 바꿔 그래프를 빠져나갔어야 한다).
+            return {"idea_spec": idea_spec, "phase": "idea_validation"}
+
+        label = _SPEC_FIELD_LABELS_KO.get(field, field)
+        owners = _SPEC_FIELD_OWNERS.get(field, ("planning_expert",))
+        query = _spec_field_query(state, provisional_idea, label)
+
+        round_counts = dict(state.get("spec_completion_rounds") or {})
+        current_round = round_counts.get(field, 0) + 1
+        round_counts[field] = current_round
+
+        used = state.get("llm_calls_used", 0)
+        # 세부 7개 항목은 내부적으로 모두 생성·저장하되 항목마다 말풍선을 만들지 않는다.
+        # 마지막 항목까지 끝났을 때 진행자 요약 한 번만 표시한다.
+        speaker_messages: list[ConvMessage] = []
+        collected_values: list[str] = []
+        collected_chunk_ids: list[str] = []
+        saw_document_fact = False
+
+        for persona_id in owners:
+            retrieved = call_evidence_lookup(
+                evidence_lookup, persona_id, query, runtime_scope=_runtime_scope_for(state)
+            )
+            normalized_evidence = [
+                {**item, "quote": str(item.get("quote") or item.get("text") or "").strip()}
+                for item in retrieved
+                if isinstance(item, dict)
+            ]
+            prompt = _spec_field_prompt(
+                persona_id=persona_id, field=field, label=label, provisional_idea=provisional_idea, evidence=normalized_evidence
+            )
+            raw, ok, attempts = _safe_call_structured_json(
+                llm_call,
+                prompt,
+                lambda payload: _validate_spec_field_response(payload, field),
+                f"specification_completion_{field}_{persona_id}",
+            )
+            used += attempts
+            if not ok:
+                continue
+
+            valid_refs = {item.get("ref") for item in normalized_evidence if item.get("ref")}
+            ref_to_chunk = {item.get("ref"): item.get("chunk_id") for item in normalized_evidence}
+            claim_type = raw.get("claim_type")
+            evidence_refs = [ref for ref in (raw.get("evidence_refs") or []) if ref in valid_refs]
+            if claim_type == "document_fact" and not evidence_refs:
+                # 근거를 인용하지 못했는데 document_fact라고 주장하면 안전하게
+                # expert_judgment로 강등한다(요청 11번 — 근거 없이 문서 근거처럼 보이면 안 됨).
+                claim_type = "expert_judgment"
+            if claim_type == "document_fact":
+                saw_document_fact = True
+                collected_chunk_ids.extend(ref_to_chunk[ref] for ref in evidence_refs if ref in ref_to_chunk)
+
+            value_items = [v.strip() for v in raw.get("value") or [] if isinstance(v, str) and v.strip()]
+            collected_values.extend(value_items)
+
+        deduped_values = list(dict.fromkeys(collected_values))
+        if not deduped_values:
+            if current_round < _SPEC_MAX_ROUNDS_PER_FIELD:
+                # 요청 8번 — 아직 상한에 도달하지 않았으면 같은 필드를 다음 실행에서
+                # 다시 시도한다(proposed로 확정하지 않고, 다음 필드로도 넘어가지 않는다).
+                return {
+                    "idea_spec": idea_spec,
+                    "spec_completion_rounds": round_counts,
+                    "messages": speaker_messages,
+                    "llm_calls_used": used,
+                    "phase": "specification_completion",
+                }
+            deduped_values = _spec_fallback_values(field, label)
+            saw_document_fact = False
+
+        field_spec = _new_field_spec(
+            deduped_values,
+            status="proposed",
+            updated_by="+".join(owners),
+            source_turn_ids=[m["message_id"] for m in speaker_messages],
+            evidence_refs=list(dict.fromkeys(collected_chunk_ids)),
+            expert_judgment=not saw_document_fact,
+        )
+        # 요청 2번(2회 논의 후 재검증) — provisional_idea에 실제 반영됐는지 다시 읽어서
+        # 확인한 뒤에만 다음 필드로 넘어간다. value가 비어 있으면(방어적) proposed로
+        # 확정하지 않는다 — 자연어 발언에만 존재하고 구조에 저장되지 않은 값은 실패로
+        # 간주한다(요청 8번 강제 불변식).
+        if not field_spec["value"]:
+            return {
+                "idea_spec": idea_spec,
+                "spec_completion_rounds": round_counts,
+                "messages": speaker_messages,
+                "llm_calls_used": used,
+                "phase": "specification_completion",
+            }
+        updated_idea_spec = {**idea_spec, field: field_spec}
+        stored_field = updated_idea_spec[field]
+        if stored_field.get("status") != "proposed" or not stored_field.get("value"):
+            raise AssertionError(f"specification_completion: {field} write-back 검증 실패")
+
+        next_field = _next_unknown_spec_field(updated_idea_spec)
+        # 상세 초안은 idea_spec에 보존한다. 모든 항목을 채운 마지막에는 아바타가 오래
+        # 읽지 않도록 기획위원·개발위원·진행자가 한 문장씩만 말한다. 실제 항목 전체는
+        # 말풍선에 나열하지 않고 최종 주제 화면에서 idea_spec 값을 구조화해 보여준다.
+        if next_field is None:
+            planning_message = _build_message(
+                persona_id="planning_expert",
+                round_number=state["round"],
+                message_type="opinion",
+                content="주요 기능과 MVP 범위를 사용자 가치 중심으로 정리했습니다.",
+                referenced_message_ids=[],
+                evidence=[],
+                structured={
+                    "specification_quick_review": {
+                        "fields": ["main_features", "mvp_scope"]
+                    }
+                },
+            )
+            development_message = _build_message(
+                persona_id="dev_expert",
+                round_number=state["round"],
+                message_type="opinion",
+                content="필요한 데이터와 기술 구현 방향, 위험 대응을 구현 가능한 수준으로 정리했습니다.",
+                referenced_message_ids=[planning_message["message_id"]],
+                evidence=[],
+                structured={
+                    "specification_quick_review": {
+                        "fields": [
+                            "required_data",
+                            "technical_approach",
+                            "risks_and_mitigations",
+                        ]
+                    }
+                },
+            )
+            completion_message = _build_message(
+                persona_id="ideation_facilitator",
+                round_number=state["round"],
+                message_type="summary",
+                content="핵심 기능, 데이터, 기술 방향, MVP 범위와 위험 대응을 빠르게 검토했습니다.",
+                referenced_message_ids=[
+                    planning_message["message_id"],
+                    development_message["message_id"],
+                ],
+                evidence=[],
+                structured={
+                    "specification_completion_summary": {
+                        "fields": [
+                            "main_features",
+                            "required_data",
+                            "technical_approach",
+                            "mvp_scope",
+                            "risks_and_mitigations",
+                        ]
+                    }
+                },
+            )
+            speaker_messages.extend([planning_message, development_message, completion_message])
+            completion_message_ids = [message["message_id"] for message in speaker_messages]
+            for spec_field, spec in updated_idea_spec.items():
+                source_ids = list(spec.get("source_turn_ids") or [])
+                source_ids.extend(completion_message_ids)
+                updated_idea_spec[spec_field] = {
+                    **spec,
+                    "source_turn_ids": list(dict.fromkeys(source_ids)),
+                }
+
+        next_phase = "idea_validation" if next_field is None else "specification_completion"
+        return {
+            "idea_spec": updated_idea_spec,
+            "spec_completion_rounds": round_counts,
+            "messages": speaker_messages,
+            "llm_calls_used": used,
+            "phase": next_phase,
+        }
+
+    return node
+
+
+def _route_after_specification_completion(state: IdeationConvState) -> str:
+    if state.get("phase") == "failed":
+        return "failed"
+    if state.get("phase") == "idea_validation":
+        return "proceed"
+    return "continue"
 
 
 # ============================================================================
@@ -1298,6 +2379,130 @@ def _validation_unavailable_fallback(section: str, label: str) -> dict:
     }
 
 
+def _normalize_validation_external_evidence(
+    items: list[dict],
+    *,
+    ref_offset: int,
+    max_items: int = 2,
+) -> list[dict]:
+    """RAG-007 결과를 이번 validation 턴의 인용 가능한 근거 풀로 정규화한다."""
+    normalized: list[dict] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        quote = str(item.get("quote") or item.get("text") or "").strip()
+        if not quote or not item.get("chunk_id"):
+            continue
+        normalized.append(
+            {
+                **item,
+                "ref": item.get("ref") or f"E{ref_offset + len(normalized) + 1}",
+                "quote": quote,
+                "text": quote,
+                "source_type": item.get("source_type") or "external_other",
+            }
+        )
+        if len(normalized) >= max_items:
+            break
+    return normalized
+
+
+def _ground_validation_evidence_first(
+    *,
+    persona_id: str,
+    raw: dict,
+    evidence: list[dict],
+    prompt: str,
+    llm_call: LLMCall,
+    ground_claims: ClaimGroundingFn | None,
+) -> tuple[dict, dict | None, int]:
+    """validation 응답이 관련 문서 후보를 무시하면 생성 보정을 정확히 한 번 수행한다."""
+    if ground_claims is None:
+        return raw, None, 0
+    grounding = ground_claims(persona_id, raw.get("claims"), evidence)
+    eligible = _eligible_document_evidence(evidence)
+    if not eligible or grounding.get("linked_evidence_count", 0) > 0:
+        return raw, grounding, 0
+
+    refs = [str(item.get("ref")) for item in eligible if item.get("ref")]
+    retry_note = (
+        "\n\n[근거 우선 검증 보정]\n"
+        "관련 공모전 또는 외부 문서 근거가 검색됐지만 이전 응답에서 실제 인용되지 않았습니다. "
+        "message를 (1) 문서에서 확인되는 사실, (2) 그 사실을 현재 아이디어에 적용한 평가, "
+        "(3) 구체적인 개선 제안 순서로 자연스럽게 다시 작성하세요. 문서 사실은 document_fact "
+        "claim으로 만들고 다음 ref 중 실제로 뒷받침되는 것만 연결하세요: "
+        + ", ".join(refs)
+        + ". target은 기능·대상 확인에만 사용하고 효과·수요·실현 가능성의 근거로 쓰지 마세요. "
+        "원문 청크를 그대로 복사하지 말고 JSON 객체 하나만 반환하세요."
+    )
+    discard = getattr(llm_call, "discard_streamed_prompt", None)
+    if callable(discard):
+        discard(prompt, "validation_evidence_first_retry", True)
+    try:
+        retry_raw = parse_json_response(llm_call(prompt + retry_note))
+    except (ValueError, KeyError, TypeError):
+        retry_raw = None
+    if (
+        retry_raw is not None
+        and not _visible_text_not_korean(retry_raw)
+        and _validate_validation_section_response(retry_raw) is None
+    ):
+        retry_grounding = ground_claims(
+            persona_id,
+            retry_raw.get("claims"),
+            evidence,
+        )
+        if retry_grounding.get("linked_evidence_count", 0) > 0:
+            raw = retry_raw
+            grounding = retry_grounding
+    trace_event(
+        "IDEATION_VALIDATION_EVIDENCE_FIRST_RETRY",
+        speaker=persona_id,
+        eligible_refs=refs,
+        linked_evidence_count=grounding.get("linked_evidence_count", 0),
+        retry_count=1,
+    )
+    return raw, grounding, 1
+
+
+def _ensure_grounded_fact_in_validation_message(
+    raw: dict,
+    grounding: dict | None,
+) -> dict:
+    """말풍선에도 grounding을 통과한 문서 사실이 최소 한 번 드러나게 한다."""
+    if not grounding:
+        return raw
+    grounded_claim_ids = {
+        str(link.get("claim_id"))
+        for link in grounding.get("claim_evidence_links") or []
+        if link.get("claim_id") and link.get("chunk_ids")
+    }
+    grounded_facts = [
+        str(claim.get("text") or "").strip()
+        for claim in raw.get("claims") or []
+        if isinstance(claim, dict)
+        and claim.get("claim_type") == "document_fact"
+        and str(claim.get("claim_id")) in grounded_claim_ids
+        and str(claim.get("text") or "").strip()
+    ]
+    if not grounded_facts:
+        return raw
+
+    message = str(raw.get("message") or "").strip()
+    fact = grounded_facts[0].rstrip(" .。")
+    normalized_message = " ".join(message.split())
+    normalized_fact = " ".join(fact.split())
+    if normalized_fact in normalized_message:
+        return raw
+    return {
+        **raw,
+        "message": (
+            f"문서에서 확인되는 사실로, {fact}. "
+            f"이 기준을 현재 아이디어에 적용하면, {message}"
+        ).strip(),
+    }
+
+
 def make_planning_validation_node(
     llm_call: LLMCall,
     evidence_lookup: EvidenceLookup | None = None,
@@ -1314,10 +2519,19 @@ def make_planning_validation_node(
     만든다, 하위 호환)."""
 
     def node(state: IdeationConvState) -> dict:
-        retrieved = call_evidence_lookup(
-            evidence_lookup, "dev_expert", _contest_query(state), runtime_scope=_runtime_scope_for(state)
-        )
         provisional_idea = state.get("provisional_idea") or {}
+        planning_query = _validation_query(state, "planning_expert", provisional_idea)
+        runtime_scope = _runtime_scope_for(state)
+        retrieved, planning_retry_query, planning_retry_count = _retrieve_with_criteria_retry(
+            evidence_lookup=evidence_lookup,
+            persona_id="planning_expert",
+            query=planning_query,
+            state=state,
+            runtime_scope=runtime_scope,
+        )
+        _warn_if_criteria_retrieval_empty(
+            state, retrieved, node_name="planning_validation", query=planning_query
+        )
         external_query = _external_evidence_query(state, [provisional_idea])
         planning_external_result = _call_external_evidence_lookup(
             external_evidence_lookup, "planning_expert", external_query
@@ -1325,11 +2539,25 @@ def make_planning_validation_node(
         planning_external_evidence = [
             item for item in planning_external_result.get("external_evidence") or [] if isinstance(item, dict)
         ]
+        normalized_evidence = [
+            {
+                **item,
+                "quote": str(item.get("quote") or item.get("text") or "").strip(),
+                "source_type": item.get("source_type") or item.get("document_role"),
+            }
+            for item in retrieved
+            if isinstance(item, dict)
+        ]
+        normalized_planning_external = _normalize_validation_external_evidence(
+            planning_external_evidence, ref_offset=len(normalized_evidence)
+        )
+        validation_evidence = normalized_evidence + normalized_planning_external
         prompt = build_ideation_conv_idea_validation_planning_prompt(
             state["notice_and_criteria"],
-            retrieved,
+            normalized_evidence,
             provisional_idea,
-            external_research=planning_external_evidence,
+            external_research=normalized_planning_external,
+            current_user_instruction=state.get("current_user_instruction") or None,
         )
         raw, ok, attempts = _safe_call_structured_json(
             llm_call,
@@ -1342,29 +2570,51 @@ def make_planning_validation_node(
         if not ok:
             raw = {**_validation_unavailable_fallback("planning", "기획"), "unresolved_assumptions": ["기획 검증 응답을 다시 확인해야 합니다."]}
 
+        raw, planning_grounding, grounding_calls = _ground_validation_evidence_first(
+            persona_id="planning_expert",
+            raw=raw,
+            evidence=validation_evidence,
+            prompt=prompt,
+            llm_call=llm_call,
+            ground_claims=ground_claims,
+        )
+        used += grounding_calls
+        raw = _ensure_grounded_fact_in_validation_message(raw, planning_grounding)
         planning = _normalize_validation_section(raw, "planning")
-        normalized_evidence = [
-            {
-                **item,
-                "quote": str(item.get("quote") or item.get("text") or "").strip(),
-            }
-            for item in retrieved
-            if isinstance(item, dict)
-        ]
-        normalized_planning_external = [
-            {**item, "quote": str(item.get("quote") or item.get("text") or "").strip()}
-            for item in planning_external_evidence
-        ]
-        # 용준/Claude(2026-07-28, 요청: "위원들이 RAG를 근거로 회의를 진행" + 화면 "근거 보기"
-        # 복구) — claims(위 프롬프트 [근거 인용 규칙]로 요구)를 실제 검색된 근거
-        # (normalized_evidence, "ref" 보존됨)와 대조 검증한다. ground_claims가 None이면
-        # (use_rag=False 세션 등) 기존과 동일하게 grounding 없이 진행한다 — 외부 참고자료는
-        # 이 claims 검증 대상이 아니다.
-        planning_grounding = ground_claims("planning_expert", raw.get("claims"), normalized_evidence) if ground_claims else None
-        planning["message"] = _safe_validation_message(
+        planning_evidence_buckets = _classify_linked_evidence_buckets(
+            planning_grounding or {"claims": [], "claim_evidence_links": []}, validation_evidence
+        )
+        planning_funnel = _build_evidence_funnel(
+            raw=raw,
+            grounding=planning_grounding
+            or {
+                "claims": [],
+                "claim_evidence_links": [],
+                "unsupported_claims": [],
+                "linked_evidence_refs": [],
+                "expert_judgment_count": 0,
+            },
+            evidence_pool=validation_evidence,
+            evidence_buckets=planning_evidence_buckets,
+            query=planning_query,
+            retry_query=planning_retry_query,
+            retry_count=planning_retry_count,
+            criteria_chunk_count=getattr(evidence_lookup, "criteria_chunk_count", None),
+        )
+        trace_event(
+            "IDEATION_EVIDENCE_FUNNEL",
+            session_id=state.get("session_id"),
+            current_user_input=sanitize_preview(state.get("current_user_input"), limit=200),
+            active_issue=state.get("active_issue_id"),
+            speaker="planning_expert",
+            node="idea_validation_planning",
+            project_id=getattr(evidence_lookup, "trace_project_id", None),
+            **planning_funnel,
+        )
+        planning["message"] = _concise_validation_message(
             planning["message"],
             "기획 관점의 검증 항목과 보완 필요 여부를 확인했습니다.",
-            normalized_evidence + normalized_planning_external,
+            validation_evidence,
         )
         planning["status"] = _effective_validation_status(planning)
         unresolved = [a for a in (raw.get("unresolved_assumptions") or []) if a]
@@ -1372,10 +2622,7 @@ def make_planning_validation_node(
             persona_id="ideation_facilitator",
             round_number=state["round"],
             message_type="summary",
-            content=(
-                "선택한 후보는 아직 최종 확정되지 않았습니다. "
-                "기획 관점과 개발 관점에서 차례로 검증하겠습니다."
-            ),
+            content="기획과 개발 관점에서 짧게 검증하겠습니다.",
             referenced_message_ids=[],
             evidence=[],
         )
@@ -1385,9 +2632,11 @@ def make_planning_validation_node(
             message_type="opinion",
             content=planning["message"],
             referenced_message_ids=[start_message["message_id"]],
-            evidence=normalized_evidence + normalized_planning_external,
+            evidence=validation_evidence,
             structured={"validation": planning},
             grounding=planning_grounding,
+            evidence_buckets=planning_evidence_buckets,
+            evidence_funnel=planning_funnel,
         )
         merged_external = _merge_external_evidence_results(
             {"external_evidence": state.get("external_evidence", []), **(state.get("external_evidence_meta") or {})},
@@ -1424,10 +2673,19 @@ def make_technical_validation_node(
     결정한다 — _route_after_idea_validation은 이 노드의 조건부 엣지로만 연결한다."""
 
     def node(state: IdeationConvState) -> dict:
-        retrieved = call_evidence_lookup(
-            evidence_lookup, "dev_expert", _contest_query(state), runtime_scope=_runtime_scope_for(state)
-        )
         provisional_idea = state.get("provisional_idea") or {}
+        technical_query = _validation_query(state, "dev_expert", provisional_idea)
+        runtime_scope = _runtime_scope_for(state)
+        retrieved, technical_retry_query, technical_retry_count = _retrieve_with_criteria_retry(
+            evidence_lookup=evidence_lookup,
+            persona_id="dev_expert",
+            query=technical_query,
+            state=state,
+            runtime_scope=runtime_scope,
+        )
+        _warn_if_criteria_retrieval_empty(
+            state, retrieved, node_name="technical_validation", query=technical_query
+        )
         planning = (state.get("validation_result") or {}).get("planning") or {}
         external_query = _external_evidence_query(state, [provisional_idea])
         technical_external_result = _call_external_evidence_lookup(
@@ -1436,12 +2694,26 @@ def make_technical_validation_node(
         technical_external_evidence = [
             item for item in technical_external_result.get("external_evidence") or [] if isinstance(item, dict)
         ]
+        normalized_evidence = [
+            {
+                **item,
+                "quote": str(item.get("quote") or item.get("text") or "").strip(),
+                "source_type": item.get("source_type") or item.get("document_role"),
+            }
+            for item in retrieved
+            if isinstance(item, dict)
+        ]
+        normalized_technical_external = _normalize_validation_external_evidence(
+            technical_external_evidence, ref_offset=len(normalized_evidence)
+        )
+        validation_evidence = normalized_evidence + normalized_technical_external
         prompt = build_ideation_conv_idea_validation_technical_prompt(
             state["notice_and_criteria"],
-            retrieved,
+            normalized_evidence,
             provisional_idea,
             planning,
-            external_research=technical_external_evidence,
+            external_research=normalized_technical_external,
+            current_user_instruction=state.get("current_user_instruction") or None,
         )
         raw, ok, attempts = _safe_call_structured_json(
             llm_call,
@@ -1454,24 +2726,51 @@ def make_technical_validation_node(
         if not ok:
             raw = {**_validation_unavailable_fallback("technical", "개발"), "unresolved_assumptions": ["개발 검증 응답을 다시 확인해야 합니다."]}
 
+        raw, technical_grounding, grounding_calls = _ground_validation_evidence_first(
+            persona_id="dev_expert",
+            raw=raw,
+            evidence=validation_evidence,
+            prompt=prompt,
+            llm_call=llm_call,
+            ground_claims=ground_claims,
+        )
+        used += grounding_calls
+        raw = _ensure_grounded_fact_in_validation_message(raw, technical_grounding)
         technical = _normalize_validation_section(raw, "technical")
-        normalized_evidence = [
-            {
-                **item,
-                "quote": str(item.get("quote") or item.get("text") or "").strip(),
-            }
-            for item in retrieved
-            if isinstance(item, dict)
-        ]
-        normalized_technical_external = [
-            {**item, "quote": str(item.get("quote") or item.get("text") or "").strip()}
-            for item in technical_external_evidence
-        ]
-        technical_grounding = ground_claims("dev_expert", raw.get("claims"), normalized_evidence) if ground_claims else None
-        technical["message"] = _safe_validation_message(
+        technical_evidence_buckets = _classify_linked_evidence_buckets(
+            technical_grounding or {"claims": [], "claim_evidence_links": []}, validation_evidence
+        )
+        technical_funnel = _build_evidence_funnel(
+            raw=raw,
+            grounding=technical_grounding
+            or {
+                "claims": [],
+                "claim_evidence_links": [],
+                "unsupported_claims": [],
+                "linked_evidence_refs": [],
+                "expert_judgment_count": 0,
+            },
+            evidence_pool=validation_evidence,
+            evidence_buckets=technical_evidence_buckets,
+            query=technical_query,
+            retry_query=technical_retry_query,
+            retry_count=technical_retry_count,
+            criteria_chunk_count=getattr(evidence_lookup, "criteria_chunk_count", None),
+        )
+        trace_event(
+            "IDEATION_EVIDENCE_FUNNEL",
+            session_id=state.get("session_id"),
+            current_user_input=sanitize_preview(state.get("current_user_input"), limit=200),
+            active_issue=state.get("active_issue_id"),
+            speaker="dev_expert",
+            node="idea_validation_technical",
+            project_id=getattr(evidence_lookup, "trace_project_id", None),
+            **technical_funnel,
+        )
+        technical["message"] = _concise_validation_message(
             technical["message"],
             "개발 관점의 구현 가능성과 기술 위험을 확인했습니다.",
-            normalized_evidence + normalized_technical_external,
+            validation_evidence,
         )
         technical["status"] = _effective_validation_status(technical)
 
@@ -1549,9 +2848,11 @@ def make_technical_validation_node(
             message_type="opinion",
             content=technical["message"],
             referenced_message_ids=[planning_message_id] if planning_message_id else [],
-            evidence=normalized_evidence + normalized_technical_external,
+            evidence=validation_evidence,
             structured={"validation": technical},
             grounding=technical_grounding,
+            evidence_buckets=technical_evidence_buckets,
+            evidence_funnel=technical_funnel,
         )
         summary_message_record = _build_message(
             persona_id="ideation_facilitator",
@@ -1566,7 +2867,19 @@ def make_technical_validation_node(
             {"external_evidence": state.get("external_evidence", []), **(state.get("external_evidence_meta") or {})},
             technical_external_result,
         )
+        # 용준/Claude(2026-07-30, 요청 9번 — "validated는 위원 검토 완료 상태이며 사용자
+        # 최종 확정과 다르다") — 기획·개발 검증을 통과(needs_revision이 아님)하면 그
+        # 시점까지 proposed였던 idea_spec 필드를 validated로 승격한다. 새 LLM 호출을
+        # 추가하지 않는다 — 이미 방금 끝난 검증 결과를 그대로 반영할 뿐이다. user_confirmed는
+        # 오직 concept_confirmation의 명시적 사용자 확정에서만 세팅된다(여기서 건드리지 않음).
+        idea_spec = state.get("idea_spec")
+        if idea_spec and not needs_revision:
+            idea_spec = {
+                field: ({**spec, "status": "validated"} if spec.get("status") == "proposed" else spec)
+                for field, spec in idea_spec.items()
+            }
         return {
+            "idea_spec": idea_spec,
             "validation_result": validation_result,
             "unresolved_issues": list(state["unresolved_issues"]) + [a for a in unresolved if a not in state["unresolved_issues"]],
             "idea_evolution": [evolution_record],
@@ -1659,6 +2972,8 @@ def make_concept_confirmation_node(llm_call: LLMCall) -> Callable[[IdeationConvS
                 }
             return {
                 "provisional_idea": None,
+                "idea_spec": None,
+                "spec_completion_rounds": {},
                 "validation_result": None,
                 "selected_idea": None,
                 "idea_locked": False,
@@ -1695,7 +3010,16 @@ def make_concept_confirmation_node(llm_call: LLMCall) -> Callable[[IdeationConvS
             for topic in _CONFIRMED_CORE_TOPICS:
                 if topic not in resolved_topics:
                     resolved_topics.append(topic)
+            # 용준/Claude(2026-07-30, 요청 10번 — "사용자 최종 승인 전에는 user_confirmed
+            # 금지") — 이 is_confirm 분기가 사용자의 명시적 확정(action_code="confirm_concept"
+            # 또는 확정 키워드) 그 자체이므로, 여기서만 idea_spec 전체를 user_confirmed로
+            # 승격한다. validated가 아니었던(예: 검증을 아직 안 거친 레거시 경로) 필드도
+            # 사용자가 이 화면까지 도달했다는 것 자체가 검토를 마쳤다는 뜻이므로 함께 올린다.
+            idea_spec = state.get("idea_spec")
+            if idea_spec:
+                idea_spec = {field: {**spec, "status": "user_confirmed"} for field, spec in idea_spec.items()}
             return {
+                "idea_spec": idea_spec,
                 "selected_idea": provisional_idea,
                 "user_idea": provisional_idea,
                 "initial_idea": provisional_idea.get("title"),

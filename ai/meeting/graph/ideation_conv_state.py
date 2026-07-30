@@ -417,6 +417,19 @@ class ConvMessage(TypedDict):
     missing_information: list[str]
     evidence_status: str | None
     sufficiency: str | None
+    # 용준/Claude(2026-07-29, 요청: target/criteria/외부근거/전문가판단 분리) — evidence(위)는
+    # "이번 턴에 주입된 검색 결과 전체"(감사용, 화면에 그대로 노출하지 않음)이고,
+    # linked_evidence_refs(위)는 "실제로 claim에 연결된 chunk_id 전체"인데 그 안에
+    # target(검토 대상)/criteria(공모전 근거)/외부 근거가 섞여 있어 프론트가 구분할 수
+    # 없었다. 아래 4개 필드는 linked_evidence_refs를 source_type 기준으로 재분류한 신규
+    # 선택 필드다(claims/grounding이 없는 메시지 타입은 빈 리스트로 채운다 — 기존 세션
+    # 데이터와 하위 호환, TypedDict라 런타임 강제되지 않는다).
+    reviewed_target_refs: list[str]
+    linked_criteria_refs: list[str]
+    linked_external_evidence_refs: list[str]
+    expert_judgment_without_external_evidence: list[str]
+    # 개발 모드에서 검색→인용→grounding→표시 퍼널을 확인하기 위한 턴별 진단값.
+    evidence_funnel: dict | None
 
 
 class IdeationConvState(TypedDict):
@@ -592,6 +605,18 @@ class IdeationConvState(TypedDict):
     # 사용자가 최종 확정하기 전까지는 이 필드만 채워지고 selected_idea는 그대로 None이다
     # (요청 3번: "잠정 후보 선택"과 "최종 아이디어 확정"은 상태상 구분되어야 한다).
     provisional_idea: dict | None
+    # 용준/Claude(2026-07-30, 요청: "미확정 필드 확인 -> 필드별 논의 -> 구조화 저장 ->
+    # 검증 -> 사용자 확인" 흐름) — provisional_idea의 자연어 필드(main_features 등)와는
+    # 별도로, 필수 설계 필드마다 상태 기계(unknown/proposed/validated/user_confirmed)를
+    # 추적한다. 각 값은 {"value","status","source_turn_ids","evidence_refs","updated_by",
+    # "updated_at","expert_judgment"} 구조다(ideation_conv_problem.py::_new_field_spec).
+    # provisional_idea가 새로 채택될 때만 초기화되고(make_specification_completion_node가
+    # 최초 진입 시 부트스트랩), 그 외에는 이 필드 하나만 갱신된다 — provisional_idea
+    # 자체(자연어 표현)는 건드리지 않는다(하위 호환 유지).
+    idea_spec: dict | None
+    # 필드별 specification_completion 논의 횟수(요청 8번 — 필드당 최대 2회, 무한 반복
+    # 방지). provisional_idea가 바뀌면 idea_spec과 함께 초기화된다.
+    spec_completion_rounds: dict
     # idea_validation이 채우는 기획/개발 관점 검증 결과. planning_validation_completed/
     # technical_validation_completed(요청 5·7번)는 이 dict의 해당 섹션이 채워졌는지로
     # 코드가 판단한다.
@@ -607,6 +632,36 @@ class IdeationConvState(TypedDict):
     # — concept_confirmation(discovery 전용, "방향 확정")과 finalizing/finalized(공통,
     # "회의 결과 정리·종료")는 서로 다른 개념이므로 역할이 겹치지 않는다.
     idea_locked: bool
+
+    # 용준/Claude(2026-07-29, 요청: 생성 품질 개선 5단계 — 최상위 요청 라우터). 사용자가
+    # 방금 보낸 원문 메시지(/start의 초기 아이디어 설명, /reply의 user_message)를
+    # ideation_conv_run.py가 _drive_graph 호출 전에 딱 한 번
+    # classify_query_type(ideation_conv_nodes.py)으로 분류해 채운다 — "document_fact_query" |
+    # "session_state_query" | "expert_analysis_query" | "ideation_discussion_request" | None.
+    # 선택 필드다: 구버전 저장 세션에는 이 키가 없으므로 읽는 쪽은 항상
+    # `.get("request_type")`로 접근한다(하위 호환). 매 사용자 턴마다 최신 원문 기준으로
+    # 새로 덮어써지고, 이전 턴 값을 누적하지 않는다.
+    request_type: str | None
+
+    # 용준/Claude(2026-07-29, 요청: B05 실제 운영 경로 버그 수정 — "결정적 상태 답변이
+    # _topic_query 대신 최신 사용자 입력을 봐야 한다"). request_type과 같은 지점
+    # (ideation_conv_run.py가 _drive_graph 호출 전)에서 함께 채우는 "이번 턴 사용자 원문"
+    # 전용 필드다. user_idea(회의의 원래 아이디어·배경, 세션 시작 시 한 번 정해지고 이후
+    # 잘 안 바뀜)와 절대 혼동하면 안 된다 — current_user_input은 매 턴 사용자가 방금
+    # 입력한 문장 그 자체(/start의 초기 아이디어 설명, /reply의 user_message)이고, 이전
+    # 턴 값을 누적하지 않는다. 선택 필드다: 구버전 저장 세션에는 이 키가 없으므로 읽는
+    # 쪽은 항상 `.get("current_user_input")`로 접근한다(하위 호환 — 없으면 기존처럼
+    # _topic_query 기반 판정으로 폴백).
+    current_user_input: str | None
+
+    # 용준/Claude(2026-07-30, 요청: "최신 직접 사용자 지시와 대화 문맥 분리" — 출처 기반
+    # 설계) — current_user_input과 정확히 같은 지점·같은 생명주기(매 턴 새로 덮어씀, 누적
+    # 안 함)에서 ideation_conv_instruction.py::parse_current_user_instruction()이 채우는
+    # 파생 값이다. current_user_input(원문 문자열)과 달리 이건 "이번 턴 사용자가 다루지
+    # 말라고 한 주제/다뤄달라고 한 항목"을 구조화한 것 — resolve_effective_issue()가
+    # active_issue_id보다 우선해서 참조한다. 선택 필드: 구버전 저장 세션에는 이 키가
+    # 없으므로 읽는 쪽은 항상 `.get("current_user_instruction")`로 접근한다.
+    current_user_instruction: dict | None
 
     # 용준/Claude(2026-07-27, 후속 요청 4번: "2차 프론트에서는 action code를 함께 보낼
     # 예정 — 백엔드는 action code를 우선 사용하고 자연어 키워드 판정은 하위 호환용
@@ -843,9 +898,13 @@ def initial_conv_state(
         conflict_round_count=0,
         validation_revise_count=0,
         provisional_idea=None,
+        idea_spec=None,
+        spec_completion_rounds={},
         validation_result=None,
         user_confirmed=False,
         idea_locked=False,
+        request_type=None,
+        current_user_input=None,
         pending_user_action=None,
         discussion_rounds=[],
         discussion_planning_position=None,

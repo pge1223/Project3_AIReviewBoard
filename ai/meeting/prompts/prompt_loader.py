@@ -404,6 +404,8 @@ def build_ideation_conv_discussion_prompt(
     responding_to_message: Any = None,
     evidence_plan_notice: str = "",
     application_form_items: Any = None,
+    query_type_notice: str = "",
+    current_user_instruction: Any = None,
 ) -> str:
     """기획/개발 전문가의 "보완 의견 턴" 실행 프롬프트를 조립한다.
 
@@ -430,9 +432,26 @@ def build_ideation_conv_discussion_prompt(
     가은/Claude(2026-07-22, 요청: 신청양식 항목 약한 주입): application_form_items는 순수
     추가 파라미터(기본값 None)다 — [{"field_name","description","char_limit"}] 형태의
     항목 목록을 "참고 자료"(지시 아님)로 주입한다. None/빈 리스트면 템플릿의
-    [신청양식 참고 규칙] 섹션이 실질적으로 아무 효과가 없다(참고할 항목 자체가 없으므로)."""
+    [신청양식 참고 규칙] 섹션이 실질적으로 아무 효과가 없다(참고할 항목 자체가 없으므로).
+
+    용준/Claude(2026-07-30, 요청: "최신 직접 사용자 지시와 대화 문맥 분리" — 출처 기반
+    설계): current_user_instruction(기본값 None)은 호출부(ideation_conv_nodes.py)가
+    state["current_user_instruction"](ideation_conv_instruction.py::
+    parse_current_user_instruction의 반환값)를 그대로 넘긴다 — 이 함수는 값을 검증하거나
+    가공하지 않고 그대로 JSON 직렬화해 주입만 한다. None이면(파싱 결과가 없거나 호출부가
+    안 넘기면) <<CURRENT_USER_INSTRUCTION_JSON>>은 빈 객체로 렌더돼 [경계] 2번 규칙이
+    사실상 아무 효과가 없다(topic_override/excluded_topics가 없으므로) — 즉 신호가 없는
+    턴은 기존 동작과 동일하다."""
     card = get_persona_card(persona_id)
     template = _read_text(IDEATION_CONV_DISCUSSION_TEMPLATE)
+    # 용준/Claude(2026-07-29, 요청: 생성 품질 개선 2단계 — 질문 유형별 생성 전략 분리).
+    # query_type_notice가 비어 있으면(기본값, 또는 질문 유형 분류 실패) template은 한 글자도
+    # 달라지지 않는다 — document_fact_query/expert_analysis_query로 분류된 턴에서만
+    # evidence_plan_notice와 같은 방식으로 additive 주입한다(베이스 템플릿에 전역 규칙을
+    # 추가하지 않는다 — session_state_query는 별도 결정론적 문장으로 처리하므로 여기서
+    # 노트를 주입하지 않는다).
+    if query_type_notice:
+        template = f"{query_type_notice}\n\n{template}"
     evidence_text = _as_text(retrieved_evidence)
     if evidence_plan_notice:
         evidence_text = f"{evidence_plan_notice}\n\n{evidence_text}"
@@ -452,6 +471,9 @@ def build_ideation_conv_discussion_prompt(
             responding_to_message if responding_to_message is not None else {}
         ),
         "<<APPLICATION_FORM_ITEMS_JSON>>": _as_text(application_form_items if application_form_items else None),
+        "<<CURRENT_USER_INSTRUCTION_JSON>>": _as_text(
+            current_user_instruction if current_user_instruction else {}
+        ),
     }
     for token, value in replacements.items():
         template = template.replace(token, value)
@@ -1005,10 +1027,15 @@ def build_ideation_conv_idea_validation_planning_prompt(
     provisional_idea: Any,
     *,
     external_research: Any = None,
+    current_user_instruction: Any = None,
 ) -> str:
     """용준/Claude(2026-07-28, 요청: "위원들이 순서대로 대화하는 것처럼 보여야 한다") —
     잠정 후보(provisional_idea)를 기획 관점에서만 검증하는 프롬프트. 개발 전문가 검증
-    (build_ideation_conv_idea_validation_technical_prompt)이 이 결과를 이어받는다."""
+    (build_ideation_conv_idea_validation_technical_prompt)이 이 결과를 이어받는다.
+
+    current_user_instruction(용준/Claude(2026-07-30), 기본값 None): build_ideation_conv_
+    discussion_prompt와 동일한 계약 — 호출부가 state["current_user_instruction"]을 그대로
+    넘기면 JSON으로 주입만 한다."""
     card = get_persona_card("planning_expert")
     template = _read_text(IDEATION_CONV_IDEA_VALIDATION_PLANNING_TEMPLATE)
     replacements = {
@@ -1017,6 +1044,7 @@ def build_ideation_conv_idea_validation_planning_prompt(
         "<<RETRIEVED_EVIDENCE_JSON>>": _as_text(retrieved_evidence),
         "<<EXTERNAL_RESEARCH_JSON>>": _as_text(external_research or []),
         "<<PROVISIONAL_IDEA_JSON>>": _as_text(provisional_idea),
+        "<<CURRENT_USER_INSTRUCTION_JSON>>": _as_text(current_user_instruction if current_user_instruction else {}),
     }
     for token, value in replacements.items():
         template = template.replace(token, value)
@@ -1030,10 +1058,14 @@ def build_ideation_conv_idea_validation_technical_prompt(
     planning_validation: Any,
     *,
     external_research: Any = None,
+    current_user_instruction: Any = None,
 ) -> str:
     """용준/Claude(2026-07-28, 요청: "위원들이 순서대로 대화하는 것처럼 보여야 한다") —
     잠정 후보를 개발 관점에서 검증하는 프롬프트. 기획 전문가가 방금 만든 검증 결과
-    (planning_validation)를 입력으로 받아, 회의가 실제로 이어지는 것처럼 만든다."""
+    (planning_validation)를 입력으로 받아, 회의가 실제로 이어지는 것처럼 만든다.
+
+    current_user_instruction(용준/Claude(2026-07-30), 기본값 None): 위 planning 검증
+    프롬프트와 동일한 계약."""
     card = get_persona_card("dev_expert")
     template = _read_text(IDEATION_CONV_IDEA_VALIDATION_TECHNICAL_TEMPLATE)
     replacements = {
@@ -1043,6 +1075,7 @@ def build_ideation_conv_idea_validation_technical_prompt(
         "<<EXTERNAL_RESEARCH_JSON>>": _as_text(external_research or []),
         "<<PROVISIONAL_IDEA_JSON>>": _as_text(provisional_idea),
         "<<PLANNING_VALIDATION_JSON>>": _as_text(planning_validation),
+        "<<CURRENT_USER_INSTRUCTION_JSON>>": _as_text(current_user_instruction if current_user_instruction else {}),
     }
     for token, value in replacements.items():
         template = template.replace(token, value)

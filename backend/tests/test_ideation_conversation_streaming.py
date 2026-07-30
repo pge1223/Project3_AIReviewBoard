@@ -392,7 +392,11 @@ def test_start_stream_discovery_emits_phase_events_then_final_state(client: Test
     # 모드는 이제 candidate_generation 이전에 problem_discovery부터 시작하므로, /start
     # 한 번으로는 문제 영역 생성까지만 진행되고 후보 생성/실현 가능성 검토는 아직 호출되지
     # 않는다(사용자가 문제 영역을 고른 뒤에야 그 단계로 이어진다).
-    assert any("문제 영역을 찾고" in label for label in phase_labels)
+    assert any(
+        "공고문과 최근 이슈를 바탕으로, 이번 공모전에서 해결할 수 있는 문제 후보를 찾고 있습니다."
+        in label
+        for label in phase_labels
+    )
     assert "message_delta" not in types  # discovery 시작은 화면 메시지를 만들지 않는다.
 
     final_state = events[-2]["state"]

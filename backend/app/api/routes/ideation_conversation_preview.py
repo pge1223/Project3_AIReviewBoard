@@ -42,6 +42,7 @@ from app.config import settings
 from app.repositories.ideation_conversation_session_repository import (
     IdeationConversationSessionRepository,
 )
+from app.repositories.document_repository import DocumentRepository
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +86,7 @@ from app.api.routes.meetings import (  # noqa: E402
     GUEST_USER_EMAIL,
     _external_research_service,
     _role_retrieval_service,
+    _similar_case_service,
     get_current_user,
 )
 # 용준/Claude(2026-07-21, 요청: 실시간 스트리밍) — 스트리밍 llm_call 생성 로직은 별도
@@ -109,6 +111,87 @@ _MAX_LLM_CALLS_PER_REQUEST = 24  # 한 HTTP 요청에서 허용하는 최대 LLM
 # 반납할 때까지 짧게 폴링한다(요청: "취소 완료 전에 새 reply를 보내 세션 lock 409가
 # 발생하지 않게").
 _CANCEL_CONFIRM_TIMEOUT_SECONDS = 5.0
+
+
+async def _ensure_problem_discovery_preflight(request: "StartRequest") -> None:
+    """실제 프로젝트의 discovery 회의가 미색인 문서를 근거 없이 시작하지 않게 막는다.
+
+    project_id가 없는 개발용 legacy 호출은 그대로 허용하지만, 프로젝트 화면에서 시작하는
+    요청(project_id 존재)은 use_rag와 criteria 파싱/색인 완료를 모두 요구한다.
+    """
+    if not request.project_id:
+        return
+
+    checks = {
+        "use_rag": bool(request.use_rag),
+        "parsing_succeeded": False,
+        "chunking_succeeded": False,
+        "chroma_indexing_succeeded": False,
+        "criteria_chunk_count": 0,
+        "project_id_matches_index": False,
+    }
+    if request.use_rag:
+        documents = await DocumentRepository().find_by_project_id(request.project_id)
+        criteria_docs = [
+            document for document in documents
+            if document.get("document_role") == "criteria"
+        ]
+        indexed_docs = [
+            document for document in criteria_docs
+            if document.get("status") == "indexed"
+        ]
+        checks["parsing_succeeded"] = bool(criteria_docs) and all(
+            bool(str(document.get("parsed_text") or "").strip())
+            for document in criteria_docs
+        )
+        checks["chunking_succeeded"] = bool(indexed_docs)
+
+        if indexed_docs:
+            try:
+                from app.api.routes.documents import _get_indexing_service
+
+                collection = _get_indexing_service().vector_store._collection
+                result = collection.get(
+                    where={
+                        "$and": [
+                            {"project_id": {"$eq": request.project_id}},
+                            {"document_role": {"$eq": "criteria"}},
+                        ]
+                    },
+                    include=["metadatas"],
+                )
+                metadatas = result.get("metadatas") or []
+                checks["criteria_chunk_count"] = len(metadatas)
+                checks["chroma_indexing_succeeded"] = bool(metadatas)
+                checks["project_id_matches_index"] = bool(metadatas) and all(
+                    metadata.get("project_id") == request.project_id
+                    for metadata in metadatas
+                )
+            except Exception:
+                logger.exception(
+                    "[ideation-preflight] Chroma criteria 확인 실패 project_id=%s",
+                    request.project_id,
+                )
+
+    if not all(
+        (
+            checks["use_rag"],
+            checks["parsing_succeeded"],
+            checks["chunking_succeeded"],
+            checks["chroma_indexing_succeeded"],
+            checks["criteria_chunk_count"] >= 1,
+            checks["project_id_matches_index"],
+        )
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "IDEATION_DOCUMENT_ANALYSIS_IN_PROGRESS",
+                "status": "document_analysis_in_progress",
+                "message": "공고문 문서 분석 중입니다. 파싱·색인 완료 후 회의를 시작해 주세요.",
+                "checks": checks,
+            },
+        )
 
 
 class _SessionRecord:
@@ -604,7 +687,37 @@ def _trace_evidence_lookup(lookup, *, project_id: str, top_k: int):
 
     setattr(traced_lookup, "trace_project_id", project_id)
     setattr(traced_lookup, "trace_top_k", top_k)
+    setattr(
+        traced_lookup,
+        "criteria_chunk_count",
+        getattr(lookup, "criteria_chunk_count", None),
+    )
     return traced_lookup
+
+
+def _criteria_chunk_count(project_id: Optional[str]) -> int:
+    """동일 project_id에 실제 색인된 criteria 청크 수를 턴 진단용으로 반환한다."""
+    if not project_id:
+        return 0
+    try:
+        from app.api.routes.documents import _get_indexing_service
+
+        result = _get_indexing_service().vector_store._collection.get(
+            where={
+                "$and": [
+                    {"project_id": {"$eq": project_id}},
+                    {"document_role": {"$eq": "criteria"}},
+                ]
+            },
+            include=["metadatas"],
+        )
+        return len(result.get("ids") or [])
+    except Exception:
+        logger.exception(
+            "[IDEATION_CRITERIA_CHUNK_COUNT_FAILED] project_id=%s",
+            project_id,
+        )
+        return 0
 
 
 def _evidence_lookup_for(
@@ -631,6 +744,7 @@ def _evidence_lookup_for(
         session_id=session_id,
         selected_candidate_document_id=selected_candidate_document_id,
     )
+    setattr(lookup, "criteria_chunk_count", _criteria_chunk_count(project_id))
     lookup = _trace_evidence_lookup(lookup, project_id=project_id, top_k=5)
     trace_event(
         "IDEATION_RAG_CONFIGURATION",
@@ -659,6 +773,35 @@ def _external_evidence_lookup_for(use_rag: bool):
     from ai.rag.orchestration.ideation_external_evidence_service import make_ideation_external_evidence_lookup
 
     return make_ideation_external_evidence_lookup(_external_research_service, top_k=3)
+
+
+def _similar_case_lookup_for(use_rag: bool):
+    """용준/Claude(2026-07-29, 요청: target/criteria/외부근거/전문가판단 분리) — RAG-006
+    (유사 공공서비스 사례, ai/rag/similar_cases) 콜백. _external_evidence_lookup_for와
+    동일한 정책 — use_rag=False면 콜백 자체를 주입하지 않는다. similar_success_cases
+    컬렉션이 비어 있어도 SimilarCaseSearchService.search()가 정상 빈 응답을 반환하므로
+    (ai/rag/orchestration/ideation_similar_case_service.py 확인됨) 이 함수는 추가 방어
+    로직 없이 그 응답을 그대로 감싼다 — 컬렉션이 나중에 채워지면 같은 인터페이스로
+    자동으로 결과가 나온다."""
+    if not use_rag:
+        return None
+    from ai.rag.orchestration.ideation_similar_case_service import make_ideation_similar_case_lookup
+
+    return make_ideation_similar_case_lookup(_similar_case_service, top_k=3)
+
+
+def _compose_evidence_pool_for(use_rag: bool):
+    """용준/Claude(2026-07-29, 요청: target/criteria/외부근거/전문가판단 분리) — ai.meeting은
+    ai.rag를 import하지 않는 경계를 유지해야 하므로(ai/rag/tests/test_meeting_evidence_service.py::
+    TestScopeBoundary), 순수 병합 함수(compose_ideation_evidence_pool)를 backend가 여기서
+    주입한다. use_rag=False면 evidence_lookup/external_evidence_lookup 자체가 None이라 병합할
+    후보가 없으므로 이 콜러블도 주입하지 않는다 — ai/meeting/graph 쪽 기본 폴백
+    (_compose_evidence_pool_fallback)이 대신 동작한다."""
+    if not use_rag:
+        return None
+    from ai.rag.orchestration.ideation_evidence_service import compose_ideation_evidence_pool
+
+    return compose_ideation_evidence_pool
 
 
 def _index_target_evidence_for(use_rag: bool, project_id: Optional[str]):
@@ -754,17 +897,40 @@ _ROLE_RELEVANCE_KEYWORDS = {
 }
 
 
-def _ground_claims_for(use_rag: bool):
+def _ground_claims_for(use_rag: bool, *, session_id: str | None = None):
+    """용준/Claude(2026-07-30, 요청: "claim-evidence 의미 정합성 2차 검사 — shadow mode")
+    — ENABLE_IDEATION_CLAIM_ALIGNMENT_SHADOW가 꺼져 있으면(기본값) 기존과 완전히 동일한
+    grounder를 반환한다(judge용 llm_call도 만들지 않는다 — zero behavior change 보장).
+    켜져 있으면 ground_claims_with_alignment_shadow로 감싼 grounder를 반환하지만, 그
+    반환값 자체는 여전히 ground_claims()와 동일하다 — shadow 판정은 trace 로그로만 샌다."""
     if not use_rag:
         return None
     from ai.rag.evidence_linking.claim_grounding import ground_claims as _ground_claims_impl
 
-    def grounder(persona_id: str, claims, retrieved_evidence: list[dict]) -> dict:
-        return _ground_claims_impl(
-            claims, retrieved_evidence, role_keywords=_ROLE_RELEVANCE_KEYWORDS.get(persona_id)
+    if not settings.ENABLE_IDEATION_CLAIM_ALIGNMENT_SHADOW:
+
+        def grounder(persona_id: str, claims, retrieved_evidence: list[dict]) -> dict:
+            return _ground_claims_impl(
+                claims, retrieved_evidence, role_keywords=_ROLE_RELEVANCE_KEYWORDS.get(persona_id)
+            )
+
+        return grounder
+
+    from ai.rag.evidence_linking.semantic_alignment import ground_claims_with_alignment_shadow
+
+    alignment_llm_call = _build_llm_call(session_id or "IDEA-CONV-ALIGNMENT", settings.EVAL_LLM_MODEL)
+
+    def grounder_with_shadow(persona_id: str, claims, retrieved_evidence: list[dict]) -> dict:
+        return ground_claims_with_alignment_shadow(
+            claims,
+            retrieved_evidence,
+            role_keywords=_ROLE_RELEVANCE_KEYWORDS.get(persona_id),
+            llm_call=alignment_llm_call,
+            model=settings.EVAL_LLM_MODEL,
+            trace_sink=lambda payload: trace_event(**payload, session_id=session_id, speaker=persona_id),
         )
 
-    return grounder
+    return grounder_with_shadow
 
 
 def _evidence_planner_for(use_rag: bool):
@@ -883,9 +1049,17 @@ def _serialize_state(state: IdeationConvState) -> dict:
         "solution_directions": state.get("solution_directions", []),
         "idea_evolution": state.get("idea_evolution", []),
         "provisional_idea": state.get("provisional_idea"),
+        # 용준/Claude(2026-07-30, 요청: specification_completion 실제 웹 검증) — idea_spec
+        # (필드별 unknown/proposed/validated/user_confirmed 상태)이 그래프 state에는
+        # 채워지는데 이 직렬화 함수가 노출하지 않아, 프론트가 값을 읽을 방법이 없었다
+        # (실측: /reply 응답에 idea_spec 자체가 없음). 순수 추가 필드 — 구버전 세션은 None.
+        "idea_spec": state.get("idea_spec"),
         "validation_result": state.get("validation_result"),
         "user_confirmed": state.get("user_confirmed", False),
         "idea_locked": state.get("idea_locked", False),
+        # 용준/Claude(2026-07-29, 요청: 생성 품질 개선 5단계 — 최상위 요청 라우터). 순수 추가
+        # 필드 — 기존 클라이언트는 무시하면 그만이다. 옛 세션에는 키가 없을 수 있어 .get.
+        "request_type": state.get("request_type"),
         "error": (
             {"code": "IDEATION_CONV_NODE_FAILED", "message": f"{state.get('failed_node')} 노드에서 실패했습니다."}
             if state["phase"] == "failed"
@@ -980,6 +1154,7 @@ async def start_conversation(
 ):
     _require_preview_enabled()
     user_email = get_current_user(authorization)
+    await _ensure_problem_discovery_preflight(request)
     if request.use_rag and not request.project_id:
         raise HTTPException(status_code=400, detail="use_rag=true이면 project_id가 필요합니다.")
 
@@ -996,10 +1171,12 @@ async def start_conversation(
     # 용준/Claude(2026-07-22, 요청: 세션 범위 검색) — /start 시점에는 아직 후보를 선택하지
     # 않았으므로(discovery 모드 시작) selected_candidate_document_id는 항상 None이다.
     evidence_lookup = _evidence_lookup_for(request.use_rag, request.project_id, session_id=session_id)
-    ground_claims = _ground_claims_for(request.use_rag)
+    ground_claims = _ground_claims_for(request.use_rag, session_id=session_id)
     index_target_evidence = _index_target_evidence_for(request.use_rag, request.project_id)
     evidence_planner = _evidence_planner_for(request.use_rag)
     external_evidence_lookup = _external_evidence_lookup_for(request.use_rag)
+    similar_case_lookup = _similar_case_lookup_for(request.use_rag)
+    compose_evidence_pool = _compose_evidence_pool_for(request.use_rag)
 
     logger.info("[ideation-conversation] 시작 session_id=%s max_rounds=%d", session_id, effective_max_rounds)
     try:
@@ -1015,6 +1192,8 @@ async def start_conversation(
             index_target_evidence=index_target_evidence,
             evidence_planner=evidence_planner,
             external_evidence_lookup=external_evidence_lookup,
+            similar_case_lookup=similar_case_lookup,
+            compose_evidence_pool=compose_evidence_pool,
             application_form_items=request.application_form_items,
         )
     except Exception:
@@ -1082,10 +1261,12 @@ async def reply_conversation(
             session_id=session_id,
             selected_candidate_document_id=previous_state.get("selected_idea_document_id"),
         )
-        ground_claims = _ground_claims_for(record.use_rag)
+        ground_claims = _ground_claims_for(record.use_rag, session_id=session_id)
         index_target_evidence = _index_target_evidence_for(record.use_rag, record.project_id)
         evidence_planner = _evidence_planner_for(record.use_rag)
         external_evidence_lookup = _external_evidence_lookup_for(record.use_rag)
+        similar_case_lookup = _similar_case_lookup_for(record.use_rag)
+        compose_evidence_pool = _compose_evidence_pool_for(record.use_rag)
 
         try:
             state = await run_in_threadpool(
@@ -1098,6 +1279,8 @@ async def reply_conversation(
                 index_target_evidence=index_target_evidence,
                 evidence_planner=evidence_planner,
                 external_evidence_lookup=external_evidence_lookup,
+                similar_case_lookup=similar_case_lookup,
+                compose_evidence_pool=compose_evidence_pool,
                 stop_after_expert_turn=request.single_turn,
                 action_code=request.action_code,
                 action_payload=request.action_payload,
@@ -1156,10 +1339,12 @@ async def retry_failed_node(
             session_id=session_id,
             selected_candidate_document_id=previous_state.get("selected_idea_document_id"),
         )
-        ground_claims = _ground_claims_for(record.use_rag)
+        ground_claims = _ground_claims_for(record.use_rag, session_id=session_id)
         index_target_evidence = _index_target_evidence_for(record.use_rag, record.project_id)
         evidence_planner = _evidence_planner_for(record.use_rag)
         external_evidence_lookup = _external_evidence_lookup_for(record.use_rag)
+        similar_case_lookup = _similar_case_lookup_for(record.use_rag)
+        compose_evidence_pool = _compose_evidence_pool_for(record.use_rag)
 
         try:
             state = await run_in_threadpool(
@@ -1171,6 +1356,8 @@ async def retry_failed_node(
                 index_target_evidence=index_target_evidence,
                 evidence_planner=evidence_planner,
                 external_evidence_lookup=external_evidence_lookup,
+                similar_case_lookup=similar_case_lookup,
+                compose_evidence_pool=compose_evidence_pool,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
@@ -1268,10 +1455,12 @@ async def reply_conversation_stream(
         session_id=session_id,
         selected_candidate_document_id=previous_state.get("selected_idea_document_id"),
     )
-    ground_claims = _ground_claims_for(record.use_rag)
+    ground_claims = _ground_claims_for(record.use_rag, session_id=session_id)
     index_target_evidence = _index_target_evidence_for(record.use_rag, record.project_id)
     evidence_planner = _evidence_planner_for(record.use_rag)
     external_evidence_lookup = _external_evidence_lookup_for(record.use_rag)
+    similar_case_lookup = _similar_case_lookup_for(record.use_rag)
+    compose_evidence_pool = _compose_evidence_pool_for(record.use_rag)
 
     def worker() -> None:
         trace_tokens = bind_trace_context(session_id, request_id)
@@ -1312,6 +1501,8 @@ async def reply_conversation_stream(
                 index_target_evidence=index_target_evidence,
                 evidence_planner=evidence_planner,
                 external_evidence_lookup=external_evidence_lookup,
+                similar_case_lookup=similar_case_lookup,
+                compose_evidence_pool=compose_evidence_pool,
                 stop_after_expert_turn=request.single_turn,
                 action_code=request.action_code,
                 action_payload=request.action_payload,
@@ -1459,10 +1650,12 @@ async def continue_expert_turn_stream(
         session_id=session_id,
         selected_candidate_document_id=previous_state.get("selected_idea_document_id"),
     )
-    ground_claims = _ground_claims_for(record.use_rag)
+    ground_claims = _ground_claims_for(record.use_rag, session_id=session_id)
     index_target_evidence = _index_target_evidence_for(record.use_rag, record.project_id)
     evidence_planner = _evidence_planner_for(record.use_rag)
     external_evidence_lookup = _external_evidence_lookup_for(record.use_rag)
+    similar_case_lookup = _similar_case_lookup_for(record.use_rag)
+    compose_evidence_pool = _compose_evidence_pool_for(record.use_rag)
 
     def worker() -> None:
         trace_tokens = bind_trace_context(session_id, request_id)
@@ -1496,6 +1689,8 @@ async def continue_expert_turn_stream(
                     index_target_evidence=index_target_evidence,
                     evidence_planner=evidence_planner,
                     external_evidence_lookup=external_evidence_lookup,
+                    similar_case_lookup=similar_case_lookup,
+                    compose_evidence_pool=compose_evidence_pool,
                 )
             _store.update(session_id, state)
             _persist_from_worker(record, persistence_loop)
@@ -1586,6 +1781,7 @@ async def start_conversation_stream(
     _require_preview_enabled()
     _require_streaming_enabled()
     user_email = get_current_user(authorization)
+    await _ensure_problem_discovery_preflight(request)
     if request.use_rag and not request.project_id:
         raise HTTPException(status_code=400, detail="use_rag=true이면 project_id가 필요합니다.")
 
@@ -1603,10 +1799,12 @@ async def start_conversation_stream(
     # 빠져 있으면 회의 시작을 스트리밍으로 하는 세션만 근거 품질이 조용히 떨어지는
     # 회귀가 되므로 그대로 맞춘다.
     evidence_lookup = _evidence_lookup_for(request.use_rag, request.project_id, session_id=session_id)
-    ground_claims = _ground_claims_for(request.use_rag)
+    ground_claims = _ground_claims_for(request.use_rag, session_id=session_id)
     index_target_evidence = _index_target_evidence_for(request.use_rag, request.project_id)
     evidence_planner = _evidence_planner_for(request.use_rag)
     external_evidence_lookup = _external_evidence_lookup_for(request.use_rag)
+    similar_case_lookup = _similar_case_lookup_for(request.use_rag)
+    compose_evidence_pool = _compose_evidence_pool_for(request.use_rag)
 
     logger.info("[ideation-conversation] 스트리밍 시작 session_id=%s max_rounds=%d", session_id, effective_max_rounds)
 
@@ -1638,6 +1836,8 @@ async def start_conversation_stream(
                 index_target_evidence=index_target_evidence,
                 evidence_planner=evidence_planner,
                 external_evidence_lookup=external_evidence_lookup,
+                similar_case_lookup=similar_case_lookup,
+                compose_evidence_pool=compose_evidence_pool,
                 application_form_items=request.application_form_items,
             )
             # 용준/Claude(2026-07-22, RAG 근거 유실 수정 2탄) 패턴과 동일 — 이후

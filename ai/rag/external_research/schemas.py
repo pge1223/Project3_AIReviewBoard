@@ -95,6 +95,38 @@ class ExternalEvidenceDocument(BaseModel):
     page: Optional[int] = None
     section: Optional[str] = None
 
+    # 용준/Claude(2026-07-30, 요청: RAG-007 색인 청크 품질 정제) — 전부 Optional
+    # 추가 필드다(기존 레코드/호출부와 하위 호환, 값이 없으면 그냥 None/기본값).
+    # file_hash/source_content_hash: 문서(웹페이지·첨부파일) 단위 원문 해시 —
+    # ai/rag/preprocessing/content_hashing.py::compute_source_content_hash로 계산한다.
+    # 같은 원문을 재실행해도 새 record로 중복 색인되지 않게 하는 목적이다(현재는
+    # document_id/chunk_id가 discriminator 해시로 이미 결정론적이라 재실행 자체는
+    # idempotent하지만, "같은 내용이 이미 색인돼 있는지" 사후 감사에는 원문 해시가
+    # 필요하다).
+    file_hash: Optional[str] = None
+    source_content_hash: Optional[str] = None
+    # chunk_content_hash/normalized_content_hash: 청크 단위 해시. 배치 내 근사 중복
+    # 청크 병합(compute_normalized_content_hash)과 완전 동일 문자열 탐지
+    # (compute_chunk_content_hash)에 쓴다.
+    chunk_content_hash: Optional[str] = None
+    normalized_content_hash: Optional[str] = None
+    # page_start/page_end: 기존 page(단일 페이지 번호)와 하위 호환 유지하며 추가된
+    # 필드 — 여러 페이지에 걸친 청크(병합된 짧은 청크 등)의 범위를 표현한다. 단일
+    # 페이지 청크는 page_start==page_end==page로 채운다.
+    page_start: Optional[int] = None
+    page_end: Optional[int] = None
+    # content_level: 이 청크가 어느 단계 콘텐츠인지("web_page"/"pdf_attachment" 등).
+    content_level: Optional[str] = None
+    # url_verified: source_url이 실제로 색인 시점에 정상 응답을 받은 URL인지.
+    url_verified: Optional[bool] = None
+    # direct_file_url: 기존에는 metadata dict에만 있던 값을 1급 필드로 승격(웹페이지
+    # 청크는 None, 첨부파일 청크는 그 첨부파일 자체의 URL).
+    direct_file_url: Optional[str] = None
+    # allow_grounded_claim: 기존엔 fallback(summary-only) 경로에서만 metadata dict로
+    # 설정하던 값을 1급 필드로 승격한다. 기본값 True로 기존 동작을 그대로 유지한다 —
+    # page/section이 모두 없는 청크만 색인 스크립트가 명시적으로 False를 채운다.
+    allow_grounded_claim: bool = True
+
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator(
@@ -220,6 +252,17 @@ class ExternalEvidenceResult(BaseModel):
     page: Optional[int] = None
     section: Optional[str] = None
 
+    # 용준/Claude(2026-07-30, 요청: RAG-007 색인 청크 품질 정제) — ExternalEvidenceDocument와
+    # 동일한 신규 필드를 검색 결과에도 미러링한다(UI 근거 카드/grounding 게이트가
+    # page_start/page_end·content_level·url_verified·direct_file_url을 쓸 수
+    # 있어야 하므로). 전부 Optional, 기존 호출부는 영향받지 않는다.
+    file_hash: Optional[str] = None
+    page_start: Optional[int] = None
+    page_end: Optional[int] = None
+    content_level: Optional[str] = None
+    url_verified: Optional[bool] = None
+    direct_file_url: Optional[str] = None
+
     semantic_score: float
     role_score: float
     criteria_score: float
@@ -227,6 +270,9 @@ class ExternalEvidenceResult(BaseModel):
     final_score: float
 
     retrieval_source: str
+    source_type: Optional[str] = None
+    summary_only: bool = False
+    allow_grounded_claim: bool = True
 
     # 외부자료는 항상 참고 자료이며 현재 문서의 직접 평가 근거가 아니다(RAG-005 근거
     # 충족도/숫자 점수 허용 정책과 무관함).

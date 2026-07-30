@@ -60,6 +60,21 @@ function listOf(value, max) {
   return max == null ? items : items.slice(0, max)
 }
 
+function isNoisyEvaluationScoreConsensus(value) {
+  return value.replace(/\s/g, '').includes('5개평가항목및항목별배점')
+}
+
+function summarizeConsensusItem(value) {
+  const text = humanizeExpertIdentifiers(value).replace(/\s+/g, ' ').replace(/^[•\-·]\s*/, '').trim()
+  if (!text) return ''
+  const firstSentence = text.match(/^.*?[.!?](?:\s|$)/)?.[0]?.trim() || text
+  if (firstSentence.length <= 90) return firstSentence
+  const prefix = firstSentence.slice(0, 90)
+  const boundary = Math.max(prefix.lastIndexOf(', '), prefix.lastIndexOf(' '))
+  const shortened = boundary >= 45 ? prefix.slice(0, boundary) : prefix
+  return `${shortened.replace(/[.,\s]+$/, '')}…`
+}
+
 function collectLiveUnresolvedIssues(ideationConv) {
   const items = [...listOf(ideationConv?.unresolved_issues)]
   const validation = ideationConv?.validation_result
@@ -139,7 +154,14 @@ export default function IdeaCanvasPanel({ ideationConv, analysis, bare = false }
   const feasibility = idea?.feasibility ? FEASIBILITY_LABEL[idea.feasibility] || null : null
   const risks = listOf(idea?.risks, 4)
   const selectedIdeaTitle = textOf(ideationConv.selected_idea?.title)
-  const consensus = listOf(ideationConv.consensus)
+  // 공고문의 평가표 전체가 한 문장으로 뭉쳐 합의 사항에 들어오는 경우는 캔버스에서 숨긴다.
+  // 평가 기준 데이터 자체는 아래 "심사기준 대응 포인트"에 그대로 유지된다.
+  const consensus = [...new Set(
+    listOf(ideationConv.consensus)
+      .filter((item) => !isNoisyEvaluationScoreConsensus(item))
+      .map(summarizeConsensusItem)
+      .filter(Boolean)
+  )].slice(-4)
   // 대화 스트림의 최종 state가 ideationConv를 갱신할 때마다 다시 계산한다. 기본
   // unresolved_issues뿐 아니라 전문가 검증 중 새로 생긴 planning/technical concerns와
   // issues도 즉시 합쳐, 대화창에서 쟁점이 추가·해결되면 캔버스가 같은 렌더에서 따라간다.
@@ -190,7 +212,7 @@ export default function IdeaCanvasPanel({ ideationConv, analysis, bare = false }
 
       <CanvasRow label="합의 사항" source="회의" filled={consensus.length > 0}>
         <ul style={{ margin: 0, paddingLeft: 18 }}>
-          {consensus.map((item, index) => <li key={index}>{humanizeExpertIdentifiers(item)}</li>)}
+          {consensus.map((item, index) => <li key={index}>{item}</li>)}
         </ul>
       </CanvasRow>
 

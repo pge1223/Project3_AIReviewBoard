@@ -55,6 +55,15 @@ from ai.rag.retrieval.chroma_store import ChromaVectorStore
 from ai.rag.retrieval.service import RAGIndexingService
 from ai.rag.retrieval.exceptions import RAGIndexingError
 from ai.rag.embedding.config import EMBEDDING_VERSION
+from ai.rag.similar_cases import (
+    SimilarCaseConfig,
+    SimilarCaseDocument,
+    SimilarCaseIndexingService,
+    SimilarCaseRepository,
+    SimilarCaseSearchRequest,
+    SimilarCaseSearchService,
+    SimilarCaseType,
+)
 import chromadb
 
 from app.common.exceptions import BadRequestException, InternalServerException
@@ -105,6 +114,11 @@ _indexing_service: RAGIndexingService | None = None
 # 로딩 비용 큼)가 여러 번 생성되는 TOCTOU 레이스가 생긴다. 방어적으로 락을 건다
 # (락 경합은 최초 1회 초기화 이후엔 없음 — 매 요청마다 비용 없음).
 _indexing_service_lock = threading.Lock()
+_similar_case_services: tuple[
+    SimilarCaseRepository, SimilarCaseIndexingService, SimilarCaseSearchService
+] | None = None
+_similar_case_services_lock = threading.Lock()
+_similar_case_seeded_domains: set[str] = set()
 
 
 def _resolve_stored_file_path(file_path: str) -> Path:
@@ -179,6 +193,32 @@ def _get_chroma_client() -> chromadb.ClientAPI:
     범위가 backend/로 제한될 수 있으므로 ai/rag/domain/config.py만 변경한 경우에도
     반드시 백엔드를 다시 시작해야 한다."""
     return _get_indexing_service().vector_store.client
+
+
+def _get_similar_case_services() -> tuple[
+    SimilarCaseRepository, SimilarCaseIndexingService, SimilarCaseSearchService
+]:
+    """프로젝트 문서와 동일한 Chroma client/KURE-v1 embedder를 재사용한다."""
+    global _similar_case_services
+    if _similar_case_services is None:
+        with _similar_case_services_lock:
+            if _similar_case_services is None:
+                config = SimilarCaseConfig()
+                indexing_service = _get_indexing_service()
+                embedder = indexing_service.embedder
+                repository = SimilarCaseRepository(
+                    client=_get_chroma_client(),
+                    collection_name=config.collection_name,
+                    embedding_model=embedder.model_name,
+                    embedding_dimension=embedder.embedding_dimension,
+                    embedding_version=EMBEDDING_VERSION,
+                )
+                _similar_case_services = (
+                    repository,
+                    SimilarCaseIndexingService(repository, embedder),
+                    SimilarCaseSearchService(repository, embedder, config=config),
+                )
+    return _similar_case_services
 
 
 def _parse_chunk_and_index(
@@ -1109,7 +1149,7 @@ _ANNOUNCEMENT_TRUNCATE_CHARS = 16000
 # 가은/Claude(2026-07-23): 재검증 로직을 바꿀 때마다(v3: temperature=0 안정화, v4: "20점"
 # 재발 프롬프트 패치, v5: 재검증을 인용-대조 방식으로 재설계) 기존 캐시엔 반영이 안 되므로
 # 버전을 올려 강제로 재계산한다.
-_ANNOUNCEMENT_ANALYSIS_CACHE_VERSION = 6
+_ANNOUNCEMENT_ANALYSIS_CACHE_VERSION = 8
 
 # 가은/Claude(2026-07-23): application-form-analysis는 지금까지 버전 필드 없이
 # "cached가 있으면 무조건 재사용"이었다 — 프롬프트가 바뀌어도 기존 프로젝트 캐시가
@@ -1273,8 +1313,10 @@ submission_requirements에는 제출 서류·제출 방법을, application_revie
 key_dates에는 신청 기간뿐 아니라 평가일, 결과 발표일, 시상식 일시 등 모든 주요 일정을
 "항목: 날짜/시간" 형태로 담으세요. schedule_items에는 같은 일정을 행사명과 날짜로
 구조화하세요. 날짜는 YYYY-MM-DD 형식으로 쓰고, 기간이면 start_date와 end_date를 모두
-채우세요. 결과 발표 방법(예: 공식 홈페이지)이 원문에 있으면 method에 넣으세요. 원문에
-없는 날짜나 방법은 만들지 마세요. selection_benefits에는 선정·수상 혜택을 빠짐없이 담으세요.
+    채우세요. 일(day)이 없고 "10월 중"처럼 월만 공개된 일정은 start_date에 "YYYY-MM"만
+    쓰고 end_date는 빈 문자열로 두세요. 월의 1일·말일을 임의로 만들지 마세요. 결과 발표
+    방법(예: 공식 홈페이지)이 원문에 있으면 method에 넣으세요. 원문에 없는 날짜나 방법은
+    만들지 마세요. selection_benefits에는 선정·수상 혜택을 빠짐없이 담으세요.
 각 배열 항목에는 서로 독립된 사실 하나만 담고, 별개의 조건을 "또는/및"으로 합치지 마세요.
 URL과 첨부 문서가 함께 있으면 두 출처를 모두 읽고 서로 보완하세요. URL의 짧은 요약에
 없는 세부 표·일정·혜택이 첨부 PDF에 있으면 반드시 첨부 PDF 내용을 결과에 포함하세요.
@@ -1302,7 +1344,7 @@ category는 아래 8개 중 이 공모전/지원사업과 가장 가까운 것 �
     "application_review_conditions": ["..."],
     "key_dates": ["..."],
     "schedule_items": [
-      {{"event_label": "신청 기간", "start_date": "YYYY-MM-DD", "end_date": "YYYY-MM-DD 또는 빈 문자열", "method": "공식 홈페이지 또는 빈 문자열", "source_text": "원문 일정 표현"}}
+      {{"event_label": "신청 기간", "start_date": "YYYY-MM-DD 또는 YYYY-MM", "end_date": "", "method": "", "source_text": "원문 일정 표현"}}
     ],
     "selection_benefits": ["..."]
   }},
@@ -1386,12 +1428,97 @@ def _classify_criteria_document(text: str) -> Optional[str]:
         return None
 
 
-# 가은/Claude(2026-07-21): contest_works는 이 앱이 만드는 데이터가 아니라 kyh님이 별도로
-# 크롤링/분류한 아카이브라 스키마가 느슨하다(work_title 없는 문서는 contest_title로
-# 대체, inst_nm/source_org 둘 다 없을 수 있음) — 그래서 값을 지어내지 않고 빈 문자열로
-# 두는 방어적 변환을 거친다. 컬렉션이 비어있거나 매칭이 0건이면 그냥 빈 리스트를 반환
-# (에러 아님) — has_similar_case_data=False로 이어져 프론트가 기존 "미확보" 문구를 보여준다.
-async def _find_similar_works(category: str) -> list[SimilarWork]:
+def _contest_work_to_similar_case(doc: dict, category: str) -> SimilarCaseDocument | None:
+    case_id = str(doc.get("_id") or "").strip()
+    title = str(doc.get("work_title") or doc.get("contest_title") or "").strip()
+    source_name = str(doc.get("source_org") or doc.get("inst_nm") or doc.get("contest_title") or "").strip()
+    source_url = str(doc.get("source_url") or "").strip()
+    if not case_id or not title or not source_name or not source_url:
+        return None
+    content = "\n".join(
+        value for value in (
+            title,
+            str(doc.get("contest_title") or "").strip(),
+            str(doc.get("ocr_text") or "").strip()[:4000],
+        )
+        if value
+    )
+    status = str(doc.get("selection_status") or "")
+    return SimilarCaseDocument(
+        case_id=case_id,
+        title=title,
+        case_type=SimilarCaseType.AWARD_WINNER if status == "winner" else SimilarCaseType.SELECTED_CASE,
+        domain=category,
+        evaluation_criteria=[],
+        source_name=source_name,
+        source_url=source_url,
+        document_id=f"contest_work:{case_id}",
+        chunk_id=f"contest_work:{case_id}:0",
+        content=content,
+        section=str(doc.get("contest_title") or "").strip() or None,
+    )
+
+
+async def _find_similar_works(
+    category: str,
+    *,
+    document_summary: str,
+    evaluation_criteria: list[str],
+    trace_id: str,
+) -> list[SimilarWork]:
+    """KURE-v1 의미 검색을 우선하고, 이용 불가할 때만 기존 카테고리 조회로 폴백한다."""
+    criteria = [item for item in evaluation_criteria if item.strip()] or ["혁신성", "실현 가능성", "확장성"]
+    summary = document_summary.strip() or f"{category} 분야 공모전"
+    try:
+        repository, indexing_service, search_service = _get_similar_case_services()
+
+        def search():
+            return search_service.search(
+                SimilarCaseSearchRequest(
+                    document_summary=summary,
+                    domain=category,
+                    evaluation_criteria=criteria,
+                    top_k=4,
+                    trace_id=trace_id,
+                )
+            )
+
+        response = await run_in_threadpool(search)
+        if not response.results and category not in _similar_case_seeded_domains:
+            candidates = await contest_work_repo.find_rag_candidates(category)
+            cases = [
+                case
+                for doc in candidates
+                if (case := _contest_work_to_similar_case(doc, category)) is not None
+            ]
+            if cases:
+                await run_in_threadpool(
+                    lambda: indexing_service.index_cases(cases, trace_id=trace_id)
+                )
+                response = await run_in_threadpool(search)
+            _similar_case_seeded_domains.add(category)
+
+        if response.results:
+            return [
+                SimilarWork(
+                    title=item.title,
+                    source_org=item.source_name,
+                    selection_status=(
+                        "winner" if item.case_type == SimilarCaseType.AWARD_WINNER else "candidate"
+                    ),
+                    source_url=item.source_url,
+                    similarity_score=round(item.similarity_score, 4),
+                    retrieval_method="rag",
+                    matched_criteria=item.matched_criteria,
+                )
+                for item in response.results
+            ]
+    except Exception:
+        logger.exception(
+            "[announcement-analysis] project_id=%s 유사 사례 RAG 실패 — category 폴백",
+            trace_id,
+        )
+
     docs = await contest_work_repo.find_by_category(category)
     return [
         SimilarWork(
@@ -1400,6 +1527,8 @@ async def _find_similar_works(category: str) -> list[SimilarWork]:
             award_grade=str(doc.get("award_grade") or "").strip(),
             selection_status=str(doc.get("selection_status") or ""),
             contest_title=str(doc.get("contest_title") or ""),
+            source_url=str(doc.get("source_url") or ""),
+            retrieval_method="category_fallback",
         )
         for doc in docs
         if doc.get("work_title") or doc.get("contest_title")
@@ -1452,20 +1581,71 @@ def _canonical_schedule_label(value: str) -> str:
     compact = re.sub(r"\s+", "", value)
     if any(token in compact for token in ("신청기간", "접수기간", "공모신청", "접수마감", "신청마감")):
         return "신청 기간"
+    if any(token in compact for token in ("서면심사결과", "서류심사결과", "1차심사결과")):
+        return "서면 심사 결과 발표"
+    if any(token in compact for token in ("발표심사결과", "2차심사결과", "최종결과")):
+        return "최종 결과 발표"
     if any(token in compact for token in ("결과발표", "심사결과", "선정발표", "수상자발표")):
         return "결과 발표"
+    if "개별" in compact and "시상" in compact:
+        return "개별 시상식"
+    if "통합" in compact and "시상" in compact:
+        return "통합 시상식"
     if "시상식" in compact:
         return "시상식"
+    if any(token in compact for token in ("발표평가", "발표심사", "발표평가심사")):
+        return "발표 심사"
     if any(token in compact for token in ("서류평가", "서면평가", "서류심사", "평가", "심사")):
         return "서류 평가"
     return value.strip().rstrip(":：·") or "주요 일정"
 
 
+def _month_only_schedule_date(
+    value: str,
+    *,
+    label: str,
+    default_year: int | None,
+) -> str:
+    if not value or _SCHEDULE_DATE_PATTERN.search(value):
+        return ""
+    compact = re.sub(r"\s+", "", value)
+    scoped_match = None
+    if "통합" in label:
+        scoped_match = re.search(r"통합[^0-9]*(?:(20\d{2})년)?(\d{1,2})월", compact)
+    elif "개별" in label:
+        scoped_match = re.search(r"개별[^0-9]*(?:(20\d{2})년)?(\d{1,2})월", compact)
+    match = scoped_match or re.search(r"(?:(20\d{2})년)?(\d{1,2})월", compact)
+    if not match:
+        return ""
+    year = int(match.group(1)) if match.group(1) else default_year
+    month = int(match.group(2))
+    if year is None or not 1 <= month <= 12:
+        return ""
+    return f"{year:04d}-{month:02d}"
+
+
+def _sanitize_schedule_method(value: object) -> str:
+    method = str(value or "").strip()
+    method = re.sub(r"\s*또는\s*빈\s*문자열\s*$", "", method).strip()
+    if method in {"", "빈 문자열", "없음", "미공개"}:
+        return ""
+    return method
+
+
 def _schedule_item_from_mapping(item: dict, default_year: int | None) -> ScheduleItem | None:
-    label = _canonical_schedule_label(str(item.get("event_label") or item.get("label") or ""))
     source_text = str(item.get("source_text") or "").strip()
+    raw_label = str(item.get("event_label") or item.get("label") or "")
+    label = _canonical_schedule_label(f"{raw_label} {source_text}")
     start_date = _normalize_schedule_date(item.get("start_date"), default_year)
     end_date = _normalize_schedule_date(item.get("end_date"), default_year)
+    month_only_date = _month_only_schedule_date(
+        source_text,
+        label=label,
+        default_year=default_year,
+    )
+    if month_only_date:
+        start_date = month_only_date
+        end_date = ""
     if not start_date and source_text:
         matches = list(_SCHEDULE_DATE_PATTERN.finditer(source_text))
         if matches:
@@ -1481,7 +1661,7 @@ def _schedule_item_from_mapping(item: dict, default_year: int | None) -> Schedul
         end_date=end_date,
         start_weekday=_schedule_weekday(start_date),
         end_weekday=_schedule_weekday(end_date) if end_date else "",
-        method=str(item.get("method") or "").strip(),
+        method=_sanitize_schedule_method(item.get("method")),
         source_text=source_text,
     )
 
@@ -1829,7 +2009,22 @@ async def get_announcement_analysis(
 
     category = parsed.get("category") if isinstance(parsed, dict) else None
     category = category if category in _CONTEST_CATEGORIES else "기타"
-    similar_works = await _find_similar_works(category)
+    similar_case_summary = "\n".join(
+        value
+        for value in (
+            str(project.get("title") or "").strip(),
+            announcement_title,
+            strategic_analysis.core_intent,
+            *strategic_analysis.recommended_direction,
+        )
+        if value
+    )
+    similar_works = await _find_similar_works(
+        category,
+        document_summary=similar_case_summary,
+        evaluation_criteria=official_facts.evaluation_criteria,
+        trace_id=project_id,
+    )
 
     result = AnnouncementAnalysisResponse(
         has_announcement=True,

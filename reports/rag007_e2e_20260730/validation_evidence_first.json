@@ -1,0 +1,460 @@
+{
+  "model": "gpt-4o-mini",
+  "source_project_id": "6a68b9b9a84aaa49019a34bd",
+  "test_project_id": "rag007-e2e-validation",
+  "copied_criteria_count": 65,
+  "target_document_id": "ideation-target::rag007-e2e-validation::RAG007-E2E-20260730::public-ai-accessibility-assistant",
+  "target_chunk_count": 1,
+  "planning": {
+    "retrieved_external_evidence": [
+      {
+        "source_id": "NIA-DIGITAL-DIVIDE-SURVEY-2025",
+        "document_id": "DOC-NIA-DIGITAL-DIVIDE-SURVEY-2025",
+        "chunk_id": "CHUNK-NIA-DIGITAL-DIVIDE-SURVEY-2025-01",
+        "title": "2025년 디지털정보격차 실태조사",
+        "evidence_type": "statistics",
+        "publisher": "한국지능정보사회진흥원",
+        "source_url": "https://www.nia.or.kr/site/nia_kor/ex/bbs/View.do?bcIdx=29168&cbIdx=81623&parentSeq=29168",
+        "domain": "competition",
+        "matched_criteria": [],
+        "quote": "2025년 디지털정보격차 실태조사는 일반국민 7,000명과 장애인·저소득층·농어민 각 2,200명, 북한이탈주민·결혼이민자 각 700명을 대상으로 디지털 접근·역량·활용 수준과 정보이용태도를 조사했다. 보고서는 장애인, 고령층, 저소득층, 농어민, 북한이탈주민, 결혼이민자별 결과와 인공지능 서비스 관련 조사 항목을 포함하므로 공공 AI 서비스의 대상 사용자와 접근성 요구를 정할 때 활용할 수 있다.",
+        "reference_date": null,
+        "published_at": "2026-03-27",
+        "region": "대한민국",
+        "period": "2025년",
+        "metric_name": "일반국민 조사 표본",
+        "metric_value": 7000.0,
+        "metric_unit": "명",
+        "final_score": 0.6418721241521835,
+        "retrieval_source": "dataset",
+        "source_type": "official_statistics",
+        "summary_only": false,
+        "allow_grounded_claim": true,
+        "reference_only": true,
+        "organization": "한국지능정보사회진흥원",
+        "document_title": "2025년 디지털정보격차 실태조사",
+        "page_or_section": "조사 개요 및 목차",
+        "short_summary": "2025년 디지털정보격차 실태조사는 일반국민 7,000명과 장애인·저소득층·농어민 각 2,200명, 북한이탈주민·결혼이민자 각 700명을 대상으로 디지털 접근·역량·활용 수준과 정보이용태도를 조사했다. 보고서는 장애인, 고령층, 저소득층, 농어민, 북한이탈주민, 결혼이민자별 결과와 인공지능 서비스 관련 조사 항목을 포함하므로 공공 AI 서비스의 대상 사용자"
+      },
+      {
+        "source_id": "NIA-AI-GOV-SERVICE-CASES-2026",
+        "document_id": "NIA-AI-GOV-SERVICE-CASES-2026:6ac3e4a265a5ac8e",
+        "chunk_id": "chk_00d9cef55db7c47d",
+        "title": "AI 정부 서비스 사례집",
+        "evidence_type": "research_report",
+        "publisher": "행정안전부·한국지능정보사회진흥원",
+        "source_url": "https://www.nia.or.kr/site/nia_kor/ex/bbs/View.do?bcIdx=29161&cbIdx=37989",
+        "domain": "competition",
+        "matched_criteria": [],
+        "quote": "0.7%\n\n- (사용자 의견) 전체적인 화면 구성 및 검색결과는 대체로 만족하나, 생성형 AI를통해 판례ㆍ해석례 등 다양한 법령정보 제공 필요, 검색방법 가이드 등 보완 필요 <출처 : 대국민서비스 생성형 AI 법령정보 서비스 자료> ・\t사용자 의견 : 검색 결과에 대한 전반적인 만족도는 높으나, 판례·행정해석례 등 보다 다양한 법령 정보 제공과 검색 가이드 보완 필요성 제기 ・\t민원 담당 공무원 : 법령 용어나 서식 명칭을 정확히 알지 못하더라도 관련 법령·서식을 쉽게 검색할 수 있어 민원 처리 효율성 향상 ▶ 2단계 기대 효과 (생성형 AI 법령검색 서비스)\n\n・\t접근성 : 법령·판례·해석례를 국민 이용 편의에 맞게 정리·제공하여, 국민 누구나 무료로 AI 기반 법률 정보를 이용 가능 ・\t공동활용 : 법령정보 AI 모델을 표준화하여 타 부처 AI 시스템과 연계 → 행정 전반으로 확산 ・\t정확성 : 법령 분야 특화 소규모 언어모델(sLLM)과 RAG 기술을 도입해 환각(오류) 최소화 신뢰도 83.7%, 국민이 체감한 법률검색의 변화 추진 성과",
+        "reference_date": "2026-03-25",
+        "published_at": "2026-03-25",
+        "region": "대한민국",
+        "period": null,
+        "metric_name": null,
+        "metric_value": null,
+        "metric_unit": null,
+        "final_score": 0.6198234547662734,
+        "retrieval_source": "dataset",
+        "source_type": "official_report",
+        "summary_only": false,
+        "allow_grounded_claim": true,
+        "reference_only": true,
+        "organization": "행정안전부·한국지능정보사회진흥원",
+        "document_title": "AI 정부 서비스 사례집",
+        "page_or_section": "7%",
+        "short_summary": "0.7%\n\n- (사용자 의견) 전체적인 화면 구성 및 검색결과는 대체로 만족하나, 생성형 AI를통해 판례ㆍ해석례 등 다양한 법령정보 제공 필요, 검색방법 가이드 등 보완 필요 <출처 : 대국민서비스 생성형 AI 법령정보 서비스 자료> ・\t사용자 의견 : 검색 결과에 대한 전반적인 만족도는 높으나, 판례·행정해석례 등 보다 다양한 법령 정보 제공과 검색 가이"
+      },
+      {
+        "source_id": "NIA-PUBLIC-AI-GUIDE-2026-FULL",
+        "document_id": "NIA-PUBLIC-AI-GUIDE-2026-FULL:1e28806b2a124468",
+        "chunk_id": "chk_e39f7db8316dd88e",
+        "title": "공공부문 AI 도입·활용 가이드(`26.5월 기준)",
+        "evidence_type": "guideline",
+        "publisher": "한국지능정보사회진흥원",
+        "source_url": "https://www.nia.or.kr/site/nia_kor/ex/bbs/View.do?bcIdx=29526&cbIdx=37989",
+        "domain": "competition",
+        "matched_criteria": [],
+        "quote": "④ 리스크 및 사전 고려 요소 점검\n\n- AI의 기술적 특성을 고려하여 편향성, 권리 침해, 환각 현상(Hallucination) 등 잠재적 위험 요소를 검토한다.\n\n- 개인정보 보호, 디지털 소외계층 배려, 지역 불균형 해소 등 사회적 수용성 이슈를 사전에 점검한다.\n\n- 서비스 운영의 지속 가능성, 성능 유지 방안, 예산 대비 효율성 등을 종합적으로 검토한다.\n\n- 고영향 AI * 의 경우, 관련 법령에 따라 체계적인 리스크 관리를 수행한다.\n\n* 「인공지능 발전과 신뢰 기반 조성 등에 관한 기본법」 제2조 제4호에 따른 고영향 인공지능을 의미 나. 보안 등급 설정\n\n○ 기관의 업무 정보 및 정보 서비스 현황 식별·분석 등 기초 정보를 토대로, 도입 대상 업무에 대한 데이터 보안 등급을 중요도에 따라 구분한다.\n\n[그림 1] 업무 정보에 대한 C/S/O 분류 기준 출처:국가정보원, 국가망 보안체계 보안 가이드라인 1.0, 2025. 23면\n\n① 업무 중요도에 따라 기밀정보(Classified), 민감정보(Sensitive), 공개정보(Open) 등 3개 등급으로 분류함\n\n② 데이터 보안 등급 분류에 따른 위험을 식별하고 보안 대책 대상을 선정하며, 보안 통제 항목의 선택 및 구현 계획 등 구체적인 보안 대책을 마련함",
+        "reference_date": "2026-06-11",
+        "published_at": "2026-06-11",
+        "region": "대한민국",
+        "period": null,
+        "metric_name": null,
+        "metric_value": null,
+        "metric_unit": null,
+        "final_score": 0.6183503586387634,
+        "retrieval_source": "dataset",
+        "source_type": "official_report",
+        "summary_only": false,
+        "allow_grounded_claim": true,
+        "reference_only": true,
+        "organization": "한국지능정보사회진흥원",
+        "document_title": "공공부문 AI 도입·활용 가이드(`26.5월 기준)",
+        "page_or_section": "리스크 및 사전 고려 요소 점검",
+        "short_summary": "④ 리스크 및 사전 고려 요소 점검\n\n- AI의 기술적 특성을 고려하여 편향성, 권리 침해, 환각 현상(Hallucination) 등 잠재적 위험 요소를 검토한다.\n\n- 개인정보 보호, 디지털 소외계층 배려, 지역 불균형 해소 등 사회적 수용성 이슈를 사전에 점검한다.\n\n- 서비스 운영의 지속 가능성, 성능 유지 방안, 예산 대비 효율성 등을 종합적으로 검"
+      }
+    ],
+    "claims": [
+      {
+        "claim_id": "claim_1",
+        "text": "고령자와 장애인이 공공서비스 정보를 찾는 과정에서 접근성 장벽을 겪는다는 문제는 명확하게 정의되어 있으며, 이는 공모전의 목적과 부합합니다.",
+        "claim_type": "expert_judgment",
+        "evidence_refs": []
+      },
+      {
+        "claim_id": "claim_2",
+        "text": "접근성 지원 대화형 안내와 개인정보 최소수집 원칙을 적용한 해결 방식은 사용자에게 실질적인 가치를 제공할 것으로 예상됩니다.",
+        "claim_type": "expert_judgment",
+        "evidence_refs": []
+      },
+      {
+        "claim_id": "claim_3",
+        "text": "2025년 디지털정보격차 실태조사에 따르면, 장애인과 고령층의 디지털 접근성 문제가 심각하므로, 이 서비스는 실제로 필요한 해결책이 될 수 있습니다.",
+        "claim_type": "document_fact",
+        "evidence_refs": [
+          "E5"
+        ]
+      }
+    ],
+    "claim_evidence_links": [
+      {
+        "claim_id": "claim_3",
+        "evidence_refs": [
+          "E5"
+        ],
+        "chunk_ids": [
+          "CHUNK-NIA-DIGITAL-DIVIDE-SURVEY-2025-01"
+        ]
+      }
+    ],
+    "linked_external_evidence_refs": [
+      "CHUNK-NIA-DIGITAL-DIVIDE-SURVEY-2025-01"
+    ],
+    "reviewed_target_refs": [],
+    "linked_criteria_refs": [],
+    "expert_judgment_without_external_evidence": [
+      "claim_1",
+      "claim_2"
+    ],
+    "final_utterance": "문서에서 확인되는 사실로, 2025년 디지털정보격차 실태조사에 따르면, 장애인과 고령층의 디지털 접근성 문제가 심각하므로, 이 서비스는 실제로 필요한 해결책이 될 수 있습니다. 이 기준을 현재 아이디어에 적용하면, 이 아이디어는 고령자와 장애인을 위한 공공 AI 민원 안내 서비스로, 문제 정의와 대상 사용자가 명확합니다. 다만, 기술적 접근 방식과 MVP 범위에 대한 구체성이 부족하므로 주의가 필요합니다. 개발 전문가와의 논의를 통해 이 부분을 보완할 수 있기를 바랍니다.",
+    "ui_external_evidence": [
+      {
+        "title": "2025년 디지털정보격차 실태조사",
+        "publisher": "한국지능정보사회진흥원",
+        "published_at": "2026-03-27",
+        "source_url": "https://www.nia.or.kr/site/nia_kor/ex/bbs/View.do?bcIdx=29168&cbIdx=81623&parentSeq=29168",
+        "chunk_id": "CHUNK-NIA-DIGITAL-DIVIDE-SURVEY-2025-01"
+      }
+    ],
+    "ui_target_titles": [],
+    "evidence_status": "partially_grounded",
+    "evidence_funnel": {
+      "query": "2026 공공기관 AI 혁신 챌린지 공공기관의 AI 활용 혁신과 국민 체감형 서비스 발굴 실증 가능성, 타 기관 확산 가능성, 대국민 체감 효과와 안전한 AI 활용 고령자·장애인을 위한 공공 AI 민원 안내 서비스 고령자와 장애인이 복잡한 공공서비스 정보를 찾고 신청하는 과정에서 접근성 장벽을 겪는다. 디지털 접근에 어려움을 겪는 고령자와 장애인 접근성 지원 대화형 안내와 개인정보 최소수집 원칙을 적용하고, 제한된 민원 분야에서 실증한다. 공모 목적 평가 항목 해결 대상과 수요 정책 적합성 대국민 기관 체감 효과 차별성 지속 가능성 실증 계획 제출 문서 요구사항",
+      "retry_query": null,
+      "retry_count": 0,
+      "criteria_chunk_count": null,
+      "counts": {
+        "criteria": {
+          "retrieved": 3,
+          "cited": 0,
+          "grounded": 0,
+          "displayed": 0
+        },
+        "external": {
+          "retrieved": 2,
+          "cited": 1,
+          "grounded": 1,
+          "displayed": 1
+        },
+        "target": {
+          "retrieved": 1,
+          "cited": 0,
+          "grounded": 0,
+          "displayed": 0
+        }
+      },
+      "retrieved_top_k": [
+        {
+          "ref": "E1",
+          "chunk_id": "chk_de31edfc6f5ca332",
+          "title": "붙임1._「2026_공공기관_AI_혁신_챌린지」_공고문_FF.hwpx",
+          "role": "criteria",
+          "score": 0.5875074684619903
+        },
+        {
+          "ref": "E2",
+          "chunk_id": "chk_cf4e23329a508c00",
+          "title": "HOME > 알림마당 > NIA 알림 > 공지사항 | \r\n        \r\n    \r\n      한국지능정보사회진흥원",
+          "role": "criteria",
+          "score": 0.4960304796695709
+        },
+        {
+          "ref": "E3",
+          "chunk_id": "chk_b34dccf872ae8362",
+          "title": "붙임2._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_실증·PoC_F.hwpx",
+          "role": "criteria",
+          "score": 0.6930978536605835
+        },
+        {
+          "ref": "E4",
+          "chunk_id": "chk_2e48cc456b09483f",
+          "title": "[선택한 아이디어] 고령자·장애인을 위한 공공 AI 민원 안내 서비스",
+          "role": "target",
+          "score": 0.6199997216463089
+        },
+        {
+          "ref": "E5",
+          "chunk_id": "CHUNK-NIA-DIGITAL-DIVIDE-SURVEY-2025-01",
+          "title": "2025년 디지털정보격차 실태조사",
+          "role": "official_statistics",
+          "score": 0.6418721241521835
+        },
+        {
+          "ref": "E6",
+          "chunk_id": "chk_00d9cef55db7c47d",
+          "title": "AI 정부 서비스 사례집",
+          "role": "official_report",
+          "score": 0.6198234547662734
+        }
+      ],
+      "cited_refs": [
+        "E5"
+      ],
+      "grounded_refs": [
+        "CHUNK-NIA-DIGITAL-DIVIDE-SURVEY-2025-01"
+      ],
+      "rejected_refs": [],
+      "linked_criteria_refs": [],
+      "linked_external_evidence_refs": [
+        "CHUNK-NIA-DIGITAL-DIVIDE-SURVEY-2025-01"
+      ],
+      "reviewed_target_refs": [],
+      "expert_judgment_count": 2
+    }
+  },
+  "technical": {
+    "retrieved_external_evidence": [
+      {
+        "source_id": "NIA-AI-GOV-SERVICE-CASES-2026",
+        "document_id": "NIA-AI-GOV-SERVICE-CASES-2026:6ac3e4a265a5ac8e",
+        "chunk_id": "chk_00d9cef55db7c47d",
+        "title": "AI 정부 서비스 사례집",
+        "evidence_type": "research_report",
+        "publisher": "행정안전부·한국지능정보사회진흥원",
+        "source_url": "https://www.nia.or.kr/site/nia_kor/ex/bbs/View.do?bcIdx=29161&cbIdx=37989",
+        "domain": "competition",
+        "matched_criteria": [],
+        "quote": "0.7%\n\n- (사용자 의견) 전체적인 화면 구성 및 검색결과는 대체로 만족하나, 생성형 AI를통해 판례ㆍ해석례 등 다양한 법령정보 제공 필요, 검색방법 가이드 등 보완 필요 <출처 : 대국민서비스 생성형 AI 법령정보 서비스 자료> ・\t사용자 의견 : 검색 결과에 대한 전반적인 만족도는 높으나, 판례·행정해석례 등 보다 다양한 법령 정보 제공과 검색 가이드 보완 필요성 제기 ・\t민원 담당 공무원 : 법령 용어나 서식 명칭을 정확히 알지 못하더라도 관련 법령·서식을 쉽게 검색할 수 있어 민원 처리 효율성 향상 ▶ 2단계 기대 효과 (생성형 AI 법령검색 서비스)\n\n・\t접근성 : 법령·판례·해석례를 국민 이용 편의에 맞게 정리·제공하여, 국민 누구나 무료로 AI 기반 법률 정보를 이용 가능 ・\t공동활용 : 법령정보 AI 모델을 표준화하여 타 부처 AI 시스템과 연계 → 행정 전반으로 확산 ・\t정확성 : 법령 분야 특화 소규모 언어모델(sLLM)과 RAG 기술을 도입해 환각(오류) 최소화 신뢰도 83.7%, 국민이 체감한 법률검색의 변화 추진 성과",
+        "reference_date": "2026-03-25",
+        "published_at": "2026-03-25",
+        "region": "대한민국",
+        "period": null,
+        "metric_name": null,
+        "metric_value": null,
+        "metric_unit": null,
+        "final_score": 0.6191126306343079,
+        "retrieval_source": "dataset",
+        "source_type": "official_report",
+        "summary_only": false,
+        "allow_grounded_claim": true,
+        "reference_only": true,
+        "organization": "행정안전부·한국지능정보사회진흥원",
+        "document_title": "AI 정부 서비스 사례집",
+        "page_or_section": "7%",
+        "short_summary": "0.7%\n\n- (사용자 의견) 전체적인 화면 구성 및 검색결과는 대체로 만족하나, 생성형 AI를통해 판례ㆍ해석례 등 다양한 법령정보 제공 필요, 검색방법 가이드 등 보완 필요 <출처 : 대국민서비스 생성형 AI 법령정보 서비스 자료> ・\t사용자 의견 : 검색 결과에 대한 전반적인 만족도는 높으나, 판례·행정해석례 등 보다 다양한 법령 정보 제공과 검색 가이"
+      },
+      {
+        "source_id": "NIA-PUBLIC-AI-GUIDE-2026-FULL",
+        "document_id": "NIA-PUBLIC-AI-GUIDE-2026-FULL:1e28806b2a124468",
+        "chunk_id": "chk_e39f7db8316dd88e",
+        "title": "공공부문 AI 도입·활용 가이드(`26.5월 기준)",
+        "evidence_type": "guideline",
+        "publisher": "한국지능정보사회진흥원",
+        "source_url": "https://www.nia.or.kr/site/nia_kor/ex/bbs/View.do?bcIdx=29526&cbIdx=37989",
+        "domain": "competition",
+        "matched_criteria": [],
+        "quote": "④ 리스크 및 사전 고려 요소 점검\n\n- AI의 기술적 특성을 고려하여 편향성, 권리 침해, 환각 현상(Hallucination) 등 잠재적 위험 요소를 검토한다.\n\n- 개인정보 보호, 디지털 소외계층 배려, 지역 불균형 해소 등 사회적 수용성 이슈를 사전에 점검한다.\n\n- 서비스 운영의 지속 가능성, 성능 유지 방안, 예산 대비 효율성 등을 종합적으로 검토한다.\n\n- 고영향 AI * 의 경우, 관련 법령에 따라 체계적인 리스크 관리를 수행한다.\n\n* 「인공지능 발전과 신뢰 기반 조성 등에 관한 기본법」 제2조 제4호에 따른 고영향 인공지능을 의미 나. 보안 등급 설정\n\n○ 기관의 업무 정보 및 정보 서비스 현황 식별·분석 등 기초 정보를 토대로, 도입 대상 업무에 대한 데이터 보안 등급을 중요도에 따라 구분한다.\n\n[그림 1] 업무 정보에 대한 C/S/O 분류 기준 출처:국가정보원, 국가망 보안체계 보안 가이드라인 1.0, 2025. 23면\n\n① 업무 중요도에 따라 기밀정보(Classified), 민감정보(Sensitive), 공개정보(Open) 등 3개 등급으로 분류함\n\n② 데이터 보안 등급 분류에 따른 위험을 식별하고 보안 대책 대상을 선정하며, 보안 통제 항목의 선택 및 구현 계획 등 구체적인 보안 대책을 마련함",
+        "reference_date": "2026-06-11",
+        "published_at": "2026-06-11",
+        "region": "대한민국",
+        "period": null,
+        "metric_name": null,
+        "metric_value": null,
+        "metric_unit": null,
+        "final_score": 0.6188684213495255,
+        "retrieval_source": "dataset",
+        "source_type": "official_report",
+        "summary_only": false,
+        "allow_grounded_claim": true,
+        "reference_only": true,
+        "organization": "한국지능정보사회진흥원",
+        "document_title": "공공부문 AI 도입·활용 가이드(`26.5월 기준)",
+        "page_or_section": "리스크 및 사전 고려 요소 점검",
+        "short_summary": "④ 리스크 및 사전 고려 요소 점검\n\n- AI의 기술적 특성을 고려하여 편향성, 권리 침해, 환각 현상(Hallucination) 등 잠재적 위험 요소를 검토한다.\n\n- 개인정보 보호, 디지털 소외계층 배려, 지역 불균형 해소 등 사회적 수용성 이슈를 사전에 점검한다.\n\n- 서비스 운영의 지속 가능성, 성능 유지 방안, 예산 대비 효율성 등을 종합적으로 검"
+      },
+      {
+        "source_id": "NIA-DIGITAL-DIVIDE-SURVEY-2024-FULL",
+        "document_id": "NIA-DIGITAL-DIVIDE-SURVEY-2024-FULL:021a56a9adf4c984",
+        "chunk_id": "chk_bc7ac5928b27aea0",
+        "title": "2024 디지털정보격차 실태조사 보고서",
+        "evidence_type": "statistics",
+        "publisher": "한국지능정보사회진흥원",
+        "source_url": "https://www.nia.or.kr/site/nia_kor/ex/bbs/View.do?bcIdx=27832&cbIdx=81623",
+        "domain": "competition",
+        "matched_criteria": [],
+        "quote": "2024년 디지털정보격차 실태조사 보고서 CONTENT 목차 방y $8 1 조사개요 1. 조사 목적 3 2. 법적 근거 3 3. 조사 연` 3 4. 조사 설계 4 5. 조사 항목 6 6. 표본 오차 7. 조사대상별 주요변수의 표본오차 9 8. 표본 특성 Il. 디지털정보화 수준 1. 디지털정보화 수준 개요 21 1) 개념 및 구성 체계 21 2) 부문별 산출방식 22 2. 디지털정보화 수준 산출 결과 23 1) 종합 결과 23 2) 부문별  결과 25 3. 문항별 결과 31 1) 디지털정보화 접근 수준 31 2) 디지털정보화 역량 수준 33 3) 디지털정보화 활용 수준 34 계층별 조사결과 1 장애인 43 2. 고령증 85 3. 저소득층 127 4 농어민 169 5.  북한이주주민 211 6. 결혼이민자 253 부록1 . 인공지능(A) 서비스 관련 295 부록2. 용어정의 307 부록3. 설문지 317 부록4. 통계표 343 과학기술정보통신부 NIA 한국지능정보사회진홍원 Ministry of Science and ICT NATIONALINFORMATION SOCIETY AGENCY",
+        "reference_date": "2025-03-27",
+        "published_at": "2025-03-27",
+        "region": "대한민국",
+        "period": null,
+        "metric_name": null,
+        "metric_value": null,
+        "metric_unit": null,
+        "final_score": 0.6135675586032868,
+        "retrieval_source": "dataset",
+        "source_type": "official_statistics",
+        "summary_only": false,
+        "allow_grounded_claim": true,
+        "reference_only": true,
+        "organization": "한국지능정보사회진흥원",
+        "document_title": "2024 디지털정보격차 실태조사 보고서",
+        "page_or_section": 1,
+        "short_summary": "2024년 디지털정보격차 실태조사 보고서 CONTENT 목차 방y $8 1 조사개요 1. 조사 목적 3 2. 법적 근거 3 3. 조사 연` 3 4. 조사 설계 4 5. 조사 항목 6 6. 표본 오차 7. 조사대상별 주요변수의 표본오차 9 8. 표본 특성 Il. 디지털정보화 수준 1. 디지털정보화 수준 개요 21 1) 개념 및 구성 체계 21 2) 부문별 산"
+      }
+    ],
+    "claims": [
+      {
+        "claim_id": "claim_1",
+        "text": "2025년 디지털정보격차 실태조사에 따르면, 장애인과 고령층의 디지털 접근성 문제가 심각하므로, 이 서비스는 실제로 필요한 해결책이 될 수 있습니다.",
+        "claim_type": "document_fact",
+        "evidence_refs": [
+          "E5"
+        ]
+      },
+      {
+        "claim_id": "claim_2",
+        "text": "AI 정부 서비스 사례집에 따르면, 접근성 문제를 해결하기 위한 AI 기반 서비스의 필요성이 강조되고 있습니다.",
+        "claim_type": "document_fact",
+        "evidence_refs": [
+          "E6"
+        ]
+      }
+    ],
+    "claim_evidence_links": [],
+    "linked_external_evidence_refs": [],
+    "reviewed_target_refs": [],
+    "linked_criteria_refs": [],
+    "expert_judgment_without_external_evidence": [
+      "claim_1",
+      "claim_2"
+    ],
+    "final_utterance": "기획 전문가가 언급한 기술적 접근 방식의 구체성이 부족한 점은 실제 구현에 있어 중요한 요소입니다. RAG 기반 정보 검색과 접근권한 통제는 유용하지만, 구체적인 기술 스택이나 알고리즘에 대한 설명이 필요합니다. 또한, MVP 범위가 제한적이라는 점은 초기 검증의 신뢰성을 낮출 수 있으므로, 다양한 민원 분야에서의 검증을 고려하는 것이 좋습니다. 이러한 부분을 보완하면 더욱 실현 가능성이 높아질 것입니다.",
+    "ui_external_evidence": [],
+    "ui_target_titles": [],
+    "evidence_status": "ungrounded",
+    "evidence_funnel": {
+      "query": "2026 공공기관 AI 혁신 챌린지 공공기관의 AI 활용 혁신과 국민 체감형 서비스 발굴 실증 가능성, 타 기관 확산 가능성, 대국민 체감 효과와 안전한 AI 활용 고령자·장애인을 위한 공공 AI 민원 안내 서비스 고령자와 장애인이 복잡한 공공서비스 정보를 찾고 신청하는 과정에서 접근성 장벽을 겪는다. 디지털 접근에 어려움을 겪는 고령자와 장애인 접근성 지원 대화형 안내와 개인정보 최소수집 원칙을 적용하고, 제한된 민원 분야에서 실증한다. 활용 가능한 데이터 기술 구현 가능성 개인정보 보안 법적 제한 연동 대상 시스템 MVP 범위 공모전 기간 내 구현 가능성 운영 유지보수 성능 검증 방식",
+      "retry_query": null,
+      "retry_count": 0,
+      "criteria_chunk_count": null,
+      "counts": {
+        "criteria": {
+          "retrieved": 3,
+          "cited": 0,
+          "grounded": 0,
+          "displayed": 0
+        },
+        "external": {
+          "retrieved": 2,
+          "cited": 2,
+          "grounded": 0,
+          "displayed": 0
+        },
+        "target": {
+          "retrieved": 1,
+          "cited": 0,
+          "grounded": 0,
+          "displayed": 0
+        }
+      },
+      "retrieved_top_k": [
+        {
+          "ref": "E1",
+          "chunk_id": "chk_7ef36f5aa9c40b36",
+          "title": "붙임2._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_실증·PoC_F.hwpx",
+          "role": "criteria",
+          "score": 0.6177048981189728
+        },
+        {
+          "ref": "E2",
+          "chunk_id": "chk_0a3ab4f35d27830b",
+          "title": "붙임3._「2026_공공기관_AI_혁신_챌린지」_참가_신청_서식_우수사례_F.hwp",
+          "role": "criteria",
+          "score": 0.7252982556819916
+        },
+        {
+          "ref": "E3",
+          "chunk_id": "chk_b55c8bd229855b88",
+          "title": "붙임1._「2026_공공기관_AI_혁신_챌린지」_공고문_FF.hwpx",
+          "role": "criteria",
+          "score": 0.48087479174137115
+        },
+        {
+          "ref": "E4",
+          "chunk_id": "chk_2e48cc456b09483f",
+          "title": "[선택한 아이디어] 고령자·장애인을 위한 공공 AI 민원 안내 서비스",
+          "role": "target",
+          "score": 0.65937060713768
+        },
+        {
+          "ref": "E5",
+          "chunk_id": "chk_00d9cef55db7c47d",
+          "title": "AI 정부 서비스 사례집",
+          "role": "official_report",
+          "score": 0.6191126306343079
+        },
+        {
+          "ref": "E6",
+          "chunk_id": "chk_e39f7db8316dd88e",
+          "title": "공공부문 AI 도입·활용 가이드(`26.5월 기준)",
+          "role": "official_report",
+          "score": 0.6188684213495255
+        }
+      ],
+      "cited_refs": [
+        "E5",
+        "E6"
+      ],
+      "grounded_refs": [],
+      "rejected_refs": [
+        {
+          "claim_id": "claim_1",
+          "evidence_refs": [
+            "E5"
+          ],
+          "reason": "evidence_missing_numeric_detail"
+        },
+        {
+          "claim_id": "claim_2",
+          "evidence_refs": [
+            "E6"
+          ],
+          "reason": "claim_asserts_finding_not_in_evidence"
+        }
+      ],
+      "linked_criteria_refs": [],
+      "linked_external_evidence_refs": [],
+      "reviewed_target_refs": [],
+      "expert_judgment_count": 0
+    }
+  },
+  "success_conditions": {
+    "rag007_cited_by_at_least_one_expert": true,
+    "ui_contains_only_cited_external_evidence": true,
+    "target_is_reviewed_not_external": true,
+    "dpg_summary_only_not_linked": true,
+    "raw_chunk_not_exposed_in_utterance": true
+  },
+  "all_success": true
+}

@@ -540,6 +540,72 @@ def test_valid_empty_plan_skips_freeform_expert_generation_when_grounding_is_act
 # ---------------------------------------------------------------------------
 
 
+def test_external_evidence_overrides_valid_empty_internal_plan():
+    def empty_plan_factory(persona_id, effective_issue, retrieved_evidence, runtime_scope, shadow_history):
+        return {
+            "plan_id": "EP-valid-empty-with-external",
+            "policy_version": "test-v1",
+            "persona_id": persona_id,
+            "issue": {
+                "issue_id": effective_issue["issue_id"],
+                "title": effective_issue["title"],
+                "query": effective_issue.get("query", ""),
+            },
+            "eligible_evidence_count": 0,
+            "grounded_claim_required": False,
+            "expert_judgment_required": True,
+            "selected_evidence": [],
+            "empty_plan_reason": "no_issue_relevant_internal_evidence",
+            "validation": {"valid": True, "errors": []},
+        }
+
+    def external_lookup(persona_id: str, query: str) -> dict:
+        return {
+            "external_evidence": [
+                {
+                    "source_id": "NAVER-BIAS-1",
+                    "document_id": "NEWS-BIAS-1",
+                    "chunk_id": "NEWS-BIAS-CHUNK-1",
+                    "title": "AI 편향성 조사 사례",
+                    "publisher": "example.com",
+                    "source_url": "https://example.com/ai-bias",
+                    "reference_date": "2026-07-20",
+                    "quote": "특정 집단에서 오류율 차이가 확인돼 모델을 재검증했다.",
+                    "provider": "naver_api_hub",
+                }
+            ],
+            "used_dataset_search": False,
+            "used_public_api_search": True,
+            "warnings": [],
+        }
+
+    llm = _ClaimAwareLLM()
+    state = start_ideation_conversation(
+        session_id="S-P2-VALID-EMPTY-EXTERNAL",
+        notice_and_criteria=NOTICE_AND_CRITERIA,
+        user_idea=USER_IDEA,
+        llm_call=llm,
+        evidence_lookup=_multi_item_lookup(),
+        evidence_planner=_FakeActiveEvidencePlanner(
+            plan_factory=empty_plan_factory,
+            active=True,
+        ),
+        ground_claims=_real_ground_claims(),
+        external_evidence_lookup=external_lookup,
+    )
+
+    prompt = _first_discussion_prompt(llm)
+    assert "특정 집단에서 오류율 차이" in prompt
+    first = next(
+        message
+        for message in state["messages"]
+        if message["speaker_id"] in ("planning_expert", "dev_expert")
+    )
+    assert first["structured"]["evidence_first_skipped"] is False
+    assert "문서 근거를 찾지 못해" not in first["content"]
+    assert any(item.get("provider") == "naver_api_hub" for item in first["evidence"])
+
+
 def test_prompt_and_grounding_share_same_selected_evidence_and_ref_resolves_to_chunk_id():
     lookup = _multi_item_lookup()
     planner = _FakeActiveEvidencePlanner(active=True)  # target 하나만 선택
@@ -588,7 +654,12 @@ def test_active_turn_without_llm_claims_is_replaced_by_grounded_evidence_anchor(
     assert first["structured"]["evidence_first_fallback"] is True
     assert first["linked_evidence_refs"] == ["CHUNK-TARGET-1"]
     assert first["grounded_claim_count"] == 1
-    assert "근거 자료에는" in first["content"]
+    # 용준/Claude(2026-07-29, 실측 버그 수정: 사용자 화면에 "근거 자료에는 '<결격사유>...'"
+    # 처럼 파싱 기호가 섞인 문서 원문이 그대로 노출됐다) — spoken_text(=content)는 더 이상
+    # 원문을 그대로 인용하지 않는다. 근거 quote 자체는 claims[0]["text"]에만 남아 grounding은
+    # 그대로 성립한다.
+    assert "근거 자료에는" not in first["content"]
+    assert first["claims"][0]["text"]
 
 
 def test_criteria_and_target_evidence_both_link_when_selected():

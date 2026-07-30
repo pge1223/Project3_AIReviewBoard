@@ -39,6 +39,17 @@ DEFAULT_IDEATION_EXTERNAL_DOMAIN = "competition"
 
 DEFAULT_TOP_K = 3
 
+_SOURCE_TYPE_BY_EVIDENCE_TYPE = {
+    "statistics": "official_statistics",
+    "public_data": "official_statistics",
+    "news": "news",
+    "policy": "official_report",
+    "guideline": "official_report",
+    "law": "official_report",
+    "research_report": "official_report",
+    "market": "external_other",
+}
+
 
 def resolve_external_reviewer_role(persona_id: str) -> str:
     """ExternalResearchRequest.reviewer_role에 넘길 값. resolve_ideation_role_id가 아는
@@ -64,12 +75,13 @@ def _has_confirmed_source(result: Any) -> bool:
 
 
 def _result_to_dict(result: Any) -> dict:
+    evidence_type = result.evidence_type.value if hasattr(result.evidence_type, "value") else result.evidence_type
     return {
         "source_id": result.source_id,
         "document_id": result.document_id,
         "chunk_id": result.chunk_id,
         "title": result.title,
-        "evidence_type": result.evidence_type.value if hasattr(result.evidence_type, "value") else result.evidence_type,
+        "evidence_type": evidence_type,
         "publisher": result.publisher,
         "source_url": result.source_url,
         "domain": result.domain,
@@ -84,9 +96,20 @@ def _result_to_dict(result: Any) -> dict:
         "metric_unit": result.metric_unit,
         "final_score": result.final_score,
         "retrieval_source": result.retrieval_source,
+        "source_type": result.source_type or _SOURCE_TYPE_BY_EVIDENCE_TYPE.get(evidence_type, "external_other"),
+        "summary_only": result.summary_only,
+        "allow_grounded_claim": result.allow_grounded_claim,
         # RAG-007 결과는 항상 참고 자료다(ExternalEvidenceResult.reference_only=True) —
         # LLM이 이 값을 확정적 평가 근거로 오해하지 않도록 프롬프트/화면에도 그대로 넘긴다.
         "reference_only": True,
+        # 용준/Claude(2026-07-29, 요청: target/criteria/외부근거 분리 — 외부 근거 카드
+        # metadata) — 기존 필드(publisher/title/section/page)를 그대로 유지한 채, 프론트
+        # 근거 카드가 요구하는 이름으로도 접근 가능하게 추가만 한다(지어낸 필드 없음,
+        # ExternalEvidenceResult에 실제로 있는 값만 재노출).
+        "organization": result.publisher,
+        "document_title": result.title,
+        "page_or_section": getattr(result, "section", None) or getattr(result, "page", None),
+        "short_summary": (result.quote or "")[:200] if getattr(result, "quote", None) else None,
     }
 
 

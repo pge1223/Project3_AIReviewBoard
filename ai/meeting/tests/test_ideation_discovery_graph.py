@@ -499,6 +499,23 @@ class DiscoveryScriptedLLM:
                 ensure_ascii=False,
             )
 
+        if "[specification_completion" in prompt:
+            # 용준/Claude(2026-07-30, 요청: specification_completion 흐름 추가) — 이 stub을
+            # 공유하는 기존 테스트 다수가 provisional_from_merge/provisional_selection을
+            # 거쳐 idea_validation까지 도달한다. 새로 끼어든 이 단계도 유효한 필드 초안을
+            # 반환해 기존 테스트의 나머지 흐름(검증/확정 등)이 그대로 이어지게 한다 —
+            # 구체적인 필드 내용 자체를 검증하는 테스트는
+            # test_ideation_specification_completion.py에서 별도로 다룬다.
+            return json.dumps(
+                {
+                    "value": ["기본 초안 항목 1", "기본 초안 항목 2"],
+                    "claim_type": "expert_judgment",
+                    "evidence_refs": [],
+                    "reason": "테스트 스텁 기본 응답",
+                },
+                ensure_ascii=False,
+            )
+
         raise AssertionError(f"예상하지 못한 프롬프트입니다: {prompt[:200]}")
 
 

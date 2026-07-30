@@ -549,6 +549,60 @@ def test_user_answer_target_fact_linked_to_user_answer_chunk():
     assert result["linked_evidence_refs"] == ["A1"]
 
 
+def test_evaluative_recommendation_about_target_is_rejected_not_grounded():
+    """용준/Claude(2026-07-30, 요청: "target을 문서 근거처럼 연결하면 안 됨" — 실측:
+    "정기적인 설문조사 후 그 결과를 기반으로 방법론을 조정하는 것이 바람직합니다"가
+    선택 아이디어 target 청크에 user_provided_fact로 그라운딩됐다) — 위원 자신의 평가·
+    개선 제안은 target evidence_ref로 연결되면 안 되고 expert_judgment로 남아야 한다."""
+    evidence = [
+        {
+            "chunk_id": "T1",
+            "document_id": "ideation-target::P1::S1::combined-direction_revised_1",
+            "document_role": "target",
+            "ideation_source_type": "ideation_candidate",
+            "text": "정기적인 설문조사 및 인터뷰를 통해 피드백을 수집하여 솔루션 개선에 활용합니다.",
+        }
+    ]
+    claims = [
+        {
+            "claim_id": "claim_1",
+            "text": "정기적인 설문조사 후에 그 결과를 기반으로 그 방법론을 조정하는 것이 바람직합니다.",
+            "claim_type": "user_provided_fact",
+            "evidence_refs": ["T1"],
+        }
+    ]
+    result = ground_claims(claims, evidence)
+    assert result["linked_evidence_refs"] == []
+    assert result["grounded_claim_count"] == 0
+    assert result["unsupported_claims"][0]["reason"] == "target_evaluative_overreach"
+
+
+def test_descriptive_target_claim_still_grounds_despite_shared_wording():
+    """회귀 방지 — 평가 마커 없이 아이디어에 실제 적힌 내용을 설명하는 claim은 계속
+    target evidence_ref로 연결돼야 한다(항목 B/C 테스트와 동일 원칙, 이번 규칙이 정상
+    케이스까지 막지 않는지 확인)."""
+    evidence = [
+        {
+            "chunk_id": "T1",
+            "document_id": "ideation-target::P1::S1::combined-direction_revised_1",
+            "document_role": "target",
+            "ideation_source_type": "ideation_candidate",
+            "text": "정기적인 설문조사 및 인터뷰를 통해 피드백을 수집하여 솔루션 개선에 활용합니다.",
+        }
+    ]
+    claims = [
+        {
+            "claim_id": "claim_1",
+            "text": "선택 아이디어는 정기적인 설문조사 및 인터뷰를 통해 피드백을 수집하는 방식을 포함합니다.",
+            "claim_type": "user_provided_fact",
+            "evidence_refs": ["T1"],
+        }
+    ]
+    result = ground_claims(claims, evidence)
+    assert result["linked_evidence_refs"] == ["T1"]
+    assert result["grounded_claim_count"] == 1
+
+
 def test_technical_fact_not_in_target_is_expert_judgment_not_fabricated_link():
     """target에는 없는 기술 사실(예: 데이터 전송 지연 처리 방식) — expert_judgment로만
     표현되고, 존재하지 않는 chunk_id로 근거가 있는 것처럼 표시되지 않는다(항목 D)."""
@@ -680,6 +734,35 @@ def test_claim_evidence_links_excludes_claims_with_unknown_ref():
     assert result["claim_evidence_links"] == []
 
 
+def test_summary_only_official_page_cannot_ground_document_fact():
+    evidence = [
+        {
+            "ref": "E1",
+            "chunk_id": "DPG-SUMMARY-1",
+            "document_id": "DPG-SUMMARY",
+            "document_name": "DPG official page summary",
+            "text": "The official page introduces 110 public AI demonstration cases.",
+            "source_type": "official_page_summary",
+            "summary_only": True,
+            "allow_grounded_claim": False,
+        }
+    ]
+    claims = [
+        {
+            "claim_id": "claim_1",
+            "text": "The report contains 110 public AI demonstration cases.",
+            "claim_type": "document_fact",
+            "evidence_refs": ["E1"],
+        }
+    ]
+
+    result = ground_claims(claims, evidence)
+
+    assert result["linked_evidence_refs"] == []
+    assert result["claim_evidence_links"] == []
+    assert result["unsupported_claims"][0]["reason"] == "summary_only_not_grounded_claim"
+
+
 def test_claim_evidence_links_excludes_expert_judgment_without_refs():
     claims = [
         {
@@ -759,3 +842,86 @@ def test_claim_covering_only_unrelated_fragments_of_two_refs_stays_ungrounded():
         "evidence_not_relevant",
         "insufficient_claim_coverage",
     }
+
+
+# 용준/Claude(2026-07-30, 요청: RAG-007 색인 청크 품질 정제 — claim-evidence 정합성
+# 검증) — 아래 테스트들은 실측(reports/rag007_e2e_20260730/validation_e2e.json)에서
+# 확인된 "evidence_ref는 있지만 claim이 근거에 없는 결론을 주장하는" 문제를 그대로
+# fixture화한 것이다.
+
+def test_claim_asserts_finding_not_in_external_evidence_is_blocked():
+    evidence = [
+        {
+            "chunk_id": "EXT-SURVEY-1",
+            "source_type": "official_statistics",
+            "text": (
+                "2025년 디지털정보격차 실태조사는 일반국민 7,000명과 장애인·저소득층·농어민 "
+                "각 2,200명을 대상으로 디지털 접근·역량·활용 수준을 조사했다. 보고서는 "
+                "장애인, 고령층, 저소득층별 결과와 인공지능 서비스 관련 조사 항목을 포함한다."
+            ),
+        }
+    ]
+    claims = [
+        {
+            "claim_id": "claim_1",
+            "text": (
+                "2025년 디지털정보격차 실태조사에 따르면, 장애인과 고령층의 디지털 접근성이 "
+                "낮아 공공 AI 서비스의 필요성이 강조된다."
+            ),
+            "claim_type": "document_fact",
+            "evidence_refs": ["EXT-SURVEY-1"],
+        }
+    ]
+    result = ground_claims(claims, evidence)
+    assert result["linked_evidence_refs"] == []
+    assert result["unsupported_claims"][0]["reason"] == "claim_asserts_finding_not_in_evidence"
+
+
+def test_claim_matching_actual_finding_in_external_evidence_is_supported():
+    """false positive 방지 — 근거가 실제로 그 결론을 (같은 표현으로) 담고 있으면
+    차단되지 않아야 한다. 이 검사는 활용형까지 전부 흡수하는 형태소 분석이 아니라
+    문자열 포함 매칭이므로(요청 원칙: "명확한 범위 확대만 결정적으로 차단"), 근거
+    문장이 claim과 동일한 마커 표현("낮다")을 그대로 쓰는 경우로 확인한다."""
+    evidence = [
+        {
+            "chunk_id": "EXT-SURVEY-2",
+            "source_type": "official_statistics",
+            "text": "2025년 실태조사 결과 장애인과 고령층의 디지털 접근성이 낮다고 확인됐다.",
+        }
+    ]
+    claims = [
+        {
+            "claim_id": "claim_1",
+            "text": "2025년 실태조사에 따르면 장애인과 고령층의 디지털 접근성이 낮다.",
+            "claim_type": "document_fact",
+            "evidence_refs": ["EXT-SURVEY-2"],
+        }
+    ]
+    result = ground_claims(claims, evidence)
+    assert result["linked_evidence_refs"] == ["EXT-SURVEY-2"]
+    assert result["evidence_status"] == "grounded"
+
+
+def test_claim_citing_evidence_with_different_year_is_blocked_by_numeric_check():
+    """연도가 다른 자료를 인용하는 경우는 이 작업에서 새 규칙을 추가하지 않았다 —
+    claim이 언급한 숫자(연도 포함)가 인용한 근거 전체에 없으면 기존
+    evidence_missing_numeric_detail 검사가 이미 차단한다(claim_asserts_finding_
+    not_in_evidence와 별개 경로, 회귀 고정용)."""
+    evidence = [
+        {
+            "chunk_id": "EXT-LAW-1",
+            "source_type": "official_report",
+            "text": "2019년 신뢰할 수 있는 AI 실현 전략에 따르면 공공기관은 안전성 검증 절차를 마련해야 한다.",
+        }
+    ]
+    claims = [
+        {
+            "claim_id": "claim_1",
+            "text": "2024년 신뢰할 수 있는 AI 실현 전략에 따르면 공공기관은 안전성 검증 절차를 마련해야 한다.",
+            "claim_type": "document_fact",
+            "evidence_refs": ["EXT-LAW-1"],
+        }
+    ]
+    result = ground_claims(claims, evidence)
+    assert result["linked_evidence_refs"] == []
+    assert result["unsupported_claims"][0]["reason"] == "evidence_missing_numeric_detail"

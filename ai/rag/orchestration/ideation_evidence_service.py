@@ -25,6 +25,7 @@ import re
 from typing import Callable, Optional
 
 from ai.rag.domain.document_types import normalize_document_type, preferred_document_types
+from ai.rag.evidence_linking.relevance import calculate_relevance_score, extract_keywords
 from ai.rag.integration.meeting_evidence_adapter import build_meeting_retrieved_evidence
 from ai.rag.integration.schemas import PersonaRoleSearchResponse
 from ai.rag.role_retrieval.service import RoleAwareRetrievalService
@@ -52,17 +53,118 @@ def resolve_ideation_role_id(persona_id: str) -> Optional[str]:
 # document_role은 backend/app/models/document.py 기준 "criteria"(공고문·평가기준)와
 # "target"(평가 대상 문서/기획서) 두 값만 실제로 쓰인다("domain"/"similar_case"는 이
 # 색인 파이프라인에 존재하지 않는 값이라 임의로 가정하지 않는다 — 요청 사항 그대로).
-# planning_expert는 공고문·평가기준(criteria)을 우선 참고하고, dev_expert는 사용자가 이미
-# 밝힌 아이디어/자료(target)를 우선 참고하되 criteria의 실현 가능성 관련 항목도 일부
-# 참고한다 — top_k=5 기준 쿼터.
+# 두 위원 모두 공고문·평가기준(criteria)을 먼저 참고하고, 현재 아이디어(target)는 구조
+# 확인용으로 1건만 참고한다. 외부 근거 2건은 compose_ideation_evidence_pool()이 별도
+# 슬롯으로 추가한다.
 _DOCUMENT_ROLE_QUOTAS: dict[str, dict[str, int]] = {
-    "planning_expert": {"criteria": 3, "target": 2},
-    "dev_expert": {"target": 3, "criteria": 2},
+    "planning_expert": {"criteria": 3, "target": 1},
+    "dev_expert": {"criteria": 3, "target": 1},
 }
 # 쿼터 계산을 위해 검색해 둘 후보 풀 크기 배수 — top_k보다 넉넉히 검색해야 role별로
 # 나눠 담을 후보가 부족하지 않다(정확한 candidate_k는 RoleAwareRetrievalService 자체
 # 기본값을 그대로 따르되, 여기서는 role 필터링을 위해 한 번 더 넉넉한 top_k를 요청한다).
 _CANDIDATE_POOL_MULTIPLIER = 4
+
+# 용준/Claude(2026-07-29, 요청: target/criteria/외부근거/전문가판단 분리) — RAG-007
+# (ai/rag/external_research, ExternalEvidenceResult.evidence_type)과 RAG-006
+# (ai/rag/similar_cases)을 이 서비스가 구성하는 근거 풀에 실제로 합치기 위한 태깅 규칙.
+# document_role(target/criteria)과는 별개의 축이다 — project 문서는 document_role을 그대로
+# source_type으로 쓰고, 외부 자료는 evidence_type/출처 종류에 따라 source_type을 매긴다.
+# 매핑에 없는 evidence_type은 "external_other"로 두고 news보다 우선순위를 높이지 않는다
+# (요청: 뉴스가 공식 문서/통계를 앞지르면 안 됨 — 미분류를 news보다 낮은 자리에 둔다).
+_EXTERNAL_SOURCE_TYPE_BY_EVIDENCE_TYPE: dict[str, str] = {
+    "statistics": "official_statistics",
+    "public_data": "official_statistics",
+    "law": "official_report",
+    "policy": "official_report",
+    "guideline": "official_report",
+    "research_report": "official_report",
+    "market": "official_report",
+    "press_release": "press_release",
+    "news": "news",
+}
+_SIMILAR_CASE_SOURCE_TYPE = "similar_case"
+# 요청 우선순위: 공모전 공식문서(criteria, 이 함수 밖 role-quota에서 이미 최우선 처리) >
+# 정부·공공기관 공식 보고서·통계 > 유사 공공서비스 사례 > 공식 보도자료 > 일반 뉴스 >
+# 미분류.
+_EXTERNAL_SOURCE_TYPE_PRIORITY: dict[str, int] = {
+    "official_statistics": 0,
+    "official_report": 1,
+    "similar_case": 2,
+    "press_release": 3,
+    "news": 4,
+    "external_other": 5,
+    "official_page_summary": 6,
+}
+_DEFAULT_MAX_EXTERNAL_EVIDENCE = 2
+
+
+def classify_external_source_type(item: dict) -> str:
+    """RAG-006(ideation_similar_case_service._result_to_dict가 붙이는 "_source":
+    "similar_case" 마커) 결과와 RAG-007(evidence_type 필드) 결과를 하나의 source_type
+    축으로 정규화한다. 두 값 다 없으면(예: project target/criteria 항목이 실수로 들어온
+    경우) "external_other"로 보수적으로 분류한다 — 임의로 criteria/target을 사칭하지
+    않는다."""
+    if item.get("_source") == "similar_case":
+        return _SIMILAR_CASE_SOURCE_TYPE
+    if item.get("summary_only") or item.get("source_type") == "official_page_summary":
+        return "official_page_summary"
+    evidence_type = item.get("evidence_type")
+    return _EXTERNAL_SOURCE_TYPE_BY_EVIDENCE_TYPE.get(evidence_type, "external_other")
+
+
+def compose_ideation_evidence_pool(
+    project_items: list[dict],
+    external_items: list[dict],
+    similar_case_items: list[dict],
+    *,
+    max_external_evidence: int = _DEFAULT_MAX_EXTERNAL_EVIDENCE,
+) -> list[dict]:
+    """search_ideation_evidence()가 이미 구성한 project_items(document_role=target/criteria,
+    role-quota 적용 완료)의 개수·순서는 전혀 건드리지 않고, RAG-007/RAG-006 후보를 "추가
+    슬롯"으로만 얹는다 — 기존 document_fact_query·role-quota 경로 회귀를 방지한다.
+
+    external_items/similar_case_items는 우선순위(_EXTERNAL_SOURCE_TYPE_PRIORITY) +
+    final_score(없으면 score) 내림차순으로 정렬해 상위 max_external_evidence개만 남긴다.
+    관련 있는 후보가 그보다 적으면 있는 만큼만 반환한다 — 무관한 자료로 자리를 채우지
+    않는다(요청: quota를 억지로 채우지 않음). 이 함수는 I/O를 하지 않는 순수 병합
+    함수이며, ai.rag는 ai.meeting을 import하지 않는 기존 경계를 유지한다 — 실제 검색은
+    호출자가 이미 마친 결과를 받는다.
+
+    각 반환 항목에는 source_type이 태깅된다: project_items는 document_role 그대로,
+    external/similar_case 항목은 classify_external_source_type() 결과. 반환 리스트는
+    MeetingRetrievedEvidence TypedDict를 엄격히 만족하지 않을 수 있다(외부 항목은
+    organization/published_at/source_url 등 추가 필드를 갖는 plain dict) — retrieved/
+    turn_evidence는 원래도 TypedDict로 런타임 강제되지 않는 plain dict 리스트이므로
+    하위 호환이다. ref 부여는 이 함수의 책임이 아니다(호출자의 기존 "E{n}" 로직 재사용)."""
+    tagged_project: list[dict] = []
+    for item in project_items:
+        tagged = dict(item)
+        tagged.setdefault("source_type", item.get("document_role"))
+        tagged_project.append(tagged)
+
+    tagged_external: list[dict] = []
+    for item in external_items:
+        tagged = dict(item)
+        tagged["source_type"] = classify_external_source_type(tagged)
+        tagged.setdefault("document_role", None)
+        tagged_external.append(tagged)
+    for item in similar_case_items:
+        tagged = dict(item)
+        tagged["_source"] = "similar_case"
+        tagged["source_type"] = _SIMILAR_CASE_SOURCE_TYPE
+        tagged.setdefault("document_role", None)
+        tagged_external.append(tagged)
+
+    tagged_external.sort(
+        key=lambda item: (
+            _EXTERNAL_SOURCE_TYPE_PRIORITY.get(item.get("source_type"), 9),
+            -(item.get("final_score") or item.get("score") or 0.0),
+        )
+    )
+    selected_external = tagged_external[: max(0, max_external_evidence)]
+
+    return tagged_project + selected_external
 
 # 긴 아이디어/역할별 query는 target 검색에는 유리하지만, 공모전 평가표의 짧은 세부 문항은
 # 의미가 희석돼 Top-5 밖으로 밀릴 수 있다. 현재 쟁점 제목을 topic_query에서 꺼내 한 번 더
@@ -93,6 +195,41 @@ _PRE_TARGET_PHASES = frozenset(
     }
 )
 _CURRENT_ISSUE_PATTERN = re.compile(r"(?:^|\|)\s*현재 쟁점:\s*([^|]+)")
+
+# 용준/Claude(2026-07-29, 요청: B05 회귀 — "최종 확정한 방향이 뭔가요" 질문에서 아직 검토
+# 중인 후보 목록 chunk("현재 활성 해결 방향(...)으로 검증을 진행합니다")가 실제 확정된
+# 아이디어보다 앞서 top_k 안에 들어, 위원이 후보를 최종안으로 오인하는 문제가 실측됐다
+# (Ragas Context Precision=0.0, Faithfulness=0.0). 항목을 삭제하지 않고 순서만 바꾼다 —
+# quota가 남으면 후보 목록도 여전히 포함될 수 있다.
+_FINAL_DIRECTION_QUERY_RE = re.compile(r"최종|확정된|확정한|확정 여부|선택한 아이디어|선택된 아이디어")
+_CONFIRMATION_TEXT_RE = re.compile(r"최종 확정합니다|이 방향으로 확정")
+_PROVISIONAL_CANDIDATE_TEXT_RE = re.compile(r"현재 활성 해결 방향")
+
+
+def _is_final_direction_query(topic_query: str) -> bool:
+    return bool(_FINAL_DIRECTION_QUERY_RE.search(topic_query or ""))
+
+
+def _prioritize_final_direction(items: list[dict], topic_query: str) -> list[dict]:
+    """"최종/확정" 질문일 때만 순서를 조정한다(그 외 질문은 그대로 반환). 우선순위:
+    0) ideation_source_type=="ideation_candidate"(선택된 아이디어 문서 자체) 1) "이 방향으로
+    최종 확정합니다" 류 확정 발언 2) 그 외 3) "현재 활성 해결 방향(...)으로 검증을
+    진행합니다" 류 검토 중 후보 목록(맨 뒤로 미룸). sorted()는 안정 정렬이라 같은 순위 내
+    원래 상대 순서는 유지된다."""
+    if not _is_final_direction_query(topic_query):
+        return items
+
+    def _rank(item: dict) -> int:
+        text = item.get("text") or ""
+        if item.get("ideation_source_type") == "ideation_candidate":
+            return 0
+        if _CONFIRMATION_TEXT_RE.search(text):
+            return 1
+        if _PROVISIONAL_CANDIDATE_TEXT_RE.search(text):
+            return 3
+        return 2
+
+    return sorted(items, key=_rank)
 
 
 def _build_issue_focused_query(topic_query: str) -> str | None:
@@ -234,6 +371,36 @@ def _scope_target_evidence(
     return scoped
 
 
+def _diversify_by_document(candidates: list[dict], quota: int) -> tuple[list[dict], list[dict]]:
+    """용준/Claude(2026-07-30, 요청 7번 — "하나의 URL 본문 청크가 top-k를 전부 차지하지 않게
+    하세요") — candidates(final_score 내림차순 정렬 유지)에서 quota 자리를 채울 때, 같은
+    document_id(공고 URL 본문 하나 또는 첨부파일 하나)의 청크가 먼저 나온 순서 그대로 quota를
+    모두 차지하지 않도록 서로 다른 document_id를 한 번씩 우선 채운다. 서로 다른 문서 수가
+    quota보다 적으면(다양화할 후보 자체가 부족) 남은 자리는 점수 순으로 그대로 채운다 —
+    존재하지 않는 문서를 억지로 만들어 채우지 않는다.
+
+    반환값: (선택된 항목, 다양화로 밀려난 나머지 — 기존 leftover 보충 경로에 합류시킨다)."""
+    selected: list[dict] = []
+    seen_documents: set[str] = set()
+    leftover: list[dict] = []
+    for item in candidates:
+        if len(selected) >= quota:
+            leftover.append(item)
+            continue
+        document_id = item.get("document_id", "")
+        if document_id and document_id in seen_documents:
+            leftover.append(item)
+            continue
+        selected.append(item)
+        if document_id:
+            seen_documents.add(document_id)
+    if len(selected) < quota and leftover:
+        remaining_needed = quota - len(selected)
+        selected.extend(leftover[:remaining_needed])
+        leftover = leftover[remaining_needed:]
+    return selected, leftover
+
+
 def _compose_by_document_role(
     items: list[dict], *, persona_id: str, top_k: int, phase: Optional[str] = None
 ) -> tuple[list[dict], list[str]]:
@@ -268,13 +435,25 @@ def _compose_by_document_role(
     used_ids: set[tuple[str, str]] = set()
     leftover: list[dict] = []
     for role, quota in quotas.items():
-        taken = buckets[role][:quota]
-        leftover.extend(buckets[role][quota:])
+        # criteria는 공고 URL 본문/URL 첨부파일/직접 업로드가 한 project에 섞여 색인되므로
+        # document_id 다양성을 적용한다. target은 보통 선택된 아이디어 문서 하나뿐이라
+        # 다양화할 대상이 없어 기존 점수 순 그대로 둔다.
+        if role == "criteria":
+            taken, remainder = _diversify_by_document(buckets[role], quota)
+        else:
+            taken, remainder = buckets[role][:quota], buckets[role][quota:]
+        leftover.extend(remainder)
         for item in taken:
             key = (item.get("document_id", ""), item.get("chunk_id", ""))
             if key not in used_ids:
                 used_ids.add(key)
                 composed.append(item)
+
+    # 위원 발언은 criteria 최대 3건·target 최대 1건이라는 역할별 상한을 그대로 지킨다.
+    # 한 버킷이 부족하다고 다른 버킷으로 빈자리를 채우면 target이 검토 대상 이상의
+    # 영향력을 갖거나 한 문서 역할이 후보 풀을 독점할 수 있다.
+    if persona_id in _DOCUMENT_ROLE_QUOTAS:
+        return composed[: sum(quotas.values())], missing_document_roles
 
     # 쿼터를 채우지 못한 role이 있으면(예: target 후보가 2개뿐이라 3개 쿼터를 못 채움)
     # 다른 role의 남은 후보나 미분류 후보로 top_k까지 채운다 — "관련 없는 공고문으로 전부
@@ -340,6 +519,233 @@ def _search_candidate_target_direct(
     return [dict(item) for item in items if item.get("document_id") == document_id]
 
 
+def _raw_question_component(topic_query: str) -> str:
+    """topic_query는 ai/meeting의 _topic_query()가 항상 "idea_summary(사용자 질문/아이디어
+    원문) | 현재 쟁점: ... | 검토 관점: ..." 순서로 조립한다(순서가 계약이다 — _topic_query
+    docstring 참고). 그 첫 " | " 이전 구간만 뽑으면 쟁점/역할 관점 텍스트 없이 사용자 질문
+    원문만 남는다."""
+    if not topic_query:
+        return topic_query
+    return topic_query.split(" | ", 1)[0].strip()
+
+
+def _reciprocal_rank_fusion(*ranked_lists: list[dict], k: int = 60) -> list[dict]:
+    """용준/Claude(2026-07-29, 요청: RAG 품질 개선 3단계 — dual-query 방식) — 여러 순위
+    목록을 병합한다(Reciprocal Rank Fusion). 특정 리스트에만 있는 항목도 버려지지 않고,
+    여러 리스트에 공통으로 높은 순위인 항목이 위로 올라온다. 항목 동일성은
+    (document_id, chunk_id)로 판단하고, 같은 키가 여러 리스트에 있으면 먼저 등장한 dict의
+    메타데이터를 그대로 쓴다(내용은 어느 리스트에서 와도 같은 chunk)."""
+    scores: dict[tuple[str, str], float] = {}
+    first_seen: dict[tuple[str, str], dict] = {}
+    for ranked in ranked_lists:
+        for rank, item in enumerate(ranked, start=1):
+            key = (item.get("document_id", ""), item.get("chunk_id", ""))
+            scores[key] = scores.get(key, 0.0) + 1.0 / (k + rank)
+            first_seen.setdefault(key, item)
+    ordered_keys = sorted(scores.keys(), key=lambda key: scores[key], reverse=True)
+    return [first_seen[key] for key in ordered_keys]
+
+
+# 용준/Claude(2026-07-29, 요청: 생성 품질 개선 3단계 — document_fact_query 전용 검색).
+# ai/meeting/graph/ideation_conv_nodes.py::_QUERY_TYPE_KEYWORDS["document_fact_query"]와
+# 같은 키워드 세트를 그대로 옮겼다(값 자체를 공유 모듈로 빼지 않는 이유는 위
+# _FINAL_DIRECTION_QUERY_RE와 같다 — ai/meeting과 ai/rag는 프로덕션 코드에서 서로 import하지
+# 않는다). A04 전용 키워드나 chunk_id는 여기 없다 — 일반화된 세트 그대로다.
+_DOCUMENT_FACT_QUERY_MIN_SCORE = 3
+_DOCUMENT_FACT_QUERY_KEYWORDS: dict[str, int] = {
+    "결격": 3, "결격 사유": 4,
+    "배점": 4, "배점 기준": 4, "신청 자격": 4, "참가 자격": 4, "참여 자격": 4,
+    "제출 서류": 4, "제출서류": 4, "제출해야": 2, "일정": 2, "마감": 3,
+    "공고문": 2, "몇 점": 3, "기한": 2, "요건": 2, "어떻게 되나요": 1,
+    "어떤 내용": 1, "무엇을 작성": 2,
+    # 용준/Claude(2026-07-29) — "~에 어떤 내용을 작성해야 하나요" 류 신청서식/보고서 작성
+    # 항목 질문 일반화(요청 §3 "작성할 내용을 묻는 경우" 범주). A04 하나만을 위한 키워드가
+    # 아니라 신청서식·수행보고서 작성 항목을 묻는 질문 전반에 적용된다.
+    "작성해야": 3, "작성 방법": 3, "작성 요령": 3,
+    # 용준/Claude(2026-07-29, 요청: B02 회귀 — 수치·규모형 공식 문서 질문 일반화). "몇 개
+    # 과제가 선정되나요" 같은 질문은 B02 전용이 아니라 이 범주 전체(몇 개/몇 건/몇 명,
+    # 선정·모집·지원 규모, 금액/횟수)에 적용된다 — ai/meeting/graph/ideation_conv_nodes.py::
+    # _QUERY_TYPE_KEYWORDS["document_fact_query"]와 동일 가중치.
+    "몇 개": 4, "몇 건": 4, "몇 명": 4, "선정 규모": 4, "선정 개수": 4,
+    "선정 수": 4, "모집 수": 4, "모집 규모": 4, "지원 규모": 4, "지원 금액": 4,
+    "금액": 3, "횟수": 3,
+}
+# document_fact_query 재정렬 보조 가산점(요청: 하드코딩 chunk_id 없이 일반 규칙화).
+_WRITING_INTENT_RE = re.compile(r"작성|기재")
+_WRITING_MARKER_RE = re.compile(r"작성\s*요령|작성\s*항목|기재")
+_SCALE_INTENT_RE = re.compile(r"선정|배점|규모|개수|몇\s*개|몇\s*점")
+_DIGIT_RE = re.compile(r"\d")
+_ELIGIBILITY_INTENT_RE = re.compile(r"자격|결격|제외")
+_ELIGIBILITY_MARKER_RE = re.compile(r"자격|결격|제외|참가\s*대상|참여\s*기관")
+# planner의 MIN_ISSUE_RELEVANCE_SCORE(ideation_evidence_planner.py)와 동일한 임계값을
+# 재사용한다 — "이 근거가 이 질문에 실제로 답하는가"를 관대하지 않게 보는 목적이 같다.
+_DOCUMENT_FACT_SUFFICIENCY_THRESHOLD = 0.15
+_DOCUMENT_FACT_CANDIDATE_TOP_K = 15
+_DOCUMENT_FACT_CANDIDATE_K = 45
+
+
+def _is_document_fact_query(topic_query: str) -> bool:
+    """LLM 미사용, 결정론적. 임계값 미만이면 False → 기존 role-quota 경로 그대로."""
+    haystack = _raw_question_component(topic_query) or topic_query or ""
+    score = sum(weight for keyword, weight in _DOCUMENT_FACT_QUERY_KEYWORDS.items() if keyword in haystack)
+    return score >= _DOCUMENT_FACT_QUERY_MIN_SCORE
+
+
+def _search_document_fact_candidates(
+    role_retrieval_service: RoleAwareRetrievalService,
+    *,
+    persona_id: str,
+    topic_query: str,
+    project_id: str,
+) -> list[dict]:
+    """역할 쿼터를 타지 않는 넓은 후보 풀 검색 — Query A(질문 원문) + Query B(topic_query
+    전체, 쟁점 텍스트 포함)를 role_id=None으로 각각 top_k=15(candidate_k=45)까지 뽑고
+    RRF로 합친다. role_id=None이면 role_score가 항상 0이라(reranker.py::compute_role_score)
+    사실상 semantic + 중복제거 + 섹션 다양성만 적용된 순수 후보 풀이다."""
+
+    def _search(query: str) -> list[dict]:
+        if not query:
+            return []
+        try:
+            response = role_retrieval_service.search_by_role(
+                query=query,
+                project_id=project_id,
+                role_id=None,
+                top_k=_DOCUMENT_FACT_CANDIDATE_TOP_K,
+                candidate_k=_DOCUMENT_FACT_CANDIDATE_K,
+            )
+        except Exception:
+            logger.exception(
+                "[IDEATION_DOCUMENT_FACT_SEARCH_FAILED] persona_id=%s project_id=%s query=%s",
+                persona_id,
+                project_id,
+                query[:80],
+            )
+            return []
+        return [
+            dict(item)
+            for item in build_meeting_retrieved_evidence(
+                [PersonaRoleSearchResponse(persona_id=persona_id, response=response, role_id=None)]
+            )
+        ]
+
+    query_a_items = _search(_raw_question_component(topic_query))
+    query_b_items = _search(topic_query)
+    return _reciprocal_rank_fusion(query_a_items, query_b_items)
+
+
+def _document_fact_auxiliary_boost(item: dict, topic_query: str) -> float:
+    """요청 §3 규칙 — semantic 점수 하나로만 최종 순위를 정하지 않도록, 질문 의도별로
+    관련 마커가 있는 청크에 소폭 가산한다(0~0.3, calculate_relevance_score와 같은 0~1
+    스케일에 얹을 수 있도록 작게 유지)."""
+    text = (item.get("text") or "") + " " + (item.get("section") or "")
+    boost = 0.0
+    if _WRITING_INTENT_RE.search(topic_query) and _WRITING_MARKER_RE.search(text):
+        boost += 0.15
+    if _SCALE_INTENT_RE.search(topic_query) and _DIGIT_RE.search(text):
+        boost += 0.1
+    if _ELIGIBILITY_INTENT_RE.search(topic_query) and _ELIGIBILITY_MARKER_RE.search(text):
+        boost += 0.15
+    return min(boost, 0.3)
+
+
+def _section_title_keyword_boost(item: dict, topic_query: str) -> float:
+    """요청 §3 "질문 핵심어와 section 제목의 일치". 같은 신청서식 문서 안의 형제 섹션들은
+    "< 작성 요령 >" 같은 보일러플레이트 문구를 전부 공유해 calculate_relevance_score의
+    content_overlap만으로는 서로 잘 구분되지 않는다(실측: A04에서 이 보일러플레이트 공유
+    때문에 정답 섹션이 형제 섹션들보다 낮은 점수를 받았다) — section 제목에 질문 핵심어가
+    그대로 등장하는지를 별도의 강한 신호로 추가한다."""
+    section = item.get("section") or ""
+    if not section:
+        return 0.0
+    keywords = extract_keywords(_raw_question_component(topic_query))
+    hits = sum(1 for keyword in keywords if len(keyword) >= 2 and keyword[:2] in section)
+    return min(hits * 0.25, 0.5)
+
+
+def _rerank_document_fact_candidates(items: list[dict], topic_query: str, top_k: int) -> list[dict]:
+    """semantic_score와 calculate_relevance_score(재사용, 새 lexical overlap 구현 안 함)를
+    가중 결합하고, section 제목 일치·의도별 보조 가산점을 더해 재정렬한다. RRF 순위나
+    semantic 점수 단독으로 최종 순위를 정하지 않는다(요청 그대로).
+
+    용준/Claude(2026-07-29) — 애초에 이 전용 경로를 만든 이유가 "semantic 유사도만으로는
+    같은 문서 안의 형제 섹션(각자 다른 '작성 요령'을 담은 항목)을 구분 못 한다"였다(A04
+    실측: 형제 섹션들이 semantic 점수가 서로 비슷하고, 게다가 "< 작성 요령 >" 보일러플레이트
+    문구를 전부 공유해 calculate_relevance_score의 content_overlap조차 형제 섹션을 잘
+    구분하지 못했다). 그래서 relevance 비중을 semantic과 동등 이상으로 두고,
+    section 제목 일치를 별도의 강한 신호로 더한다."""
+    scored: list[tuple[float, dict]] = []
+    for item in items:
+        semantic = item.get("semantic_score")
+        semantic = semantic if isinstance(semantic, (int, float)) else (item.get("score") or 0.0)
+        relevance = calculate_relevance_score(
+            topic_query,
+            item.get("text") or "",
+            item.get("section"),
+            item.get("document_name"),
+        )
+        combined = (
+            0.35 * semantic
+            + 0.35 * relevance
+            + _section_title_keyword_boost(item, topic_query)
+            + _document_fact_auxiliary_boost(item, topic_query)
+        )
+        scored.append((combined, item))
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [item for _, item in scored[:top_k]]
+
+
+def _assess_document_fact_sufficiency(items: list[dict], topic_query: str) -> bool:
+    """최상위 항목이 질문과 실제로 관련 있는지(개수/점수 임계값이 아니라 질의-내용 일치)를
+    본다 — evidence_sufficiency 패키지는 개수/점수 임계값 게이트라 이 목적에는 안 맞아
+    재사용하지 않는다(계획에서 확인)."""
+    if not items:
+        return False
+    top = items[0]
+    score = calculate_relevance_score(topic_query, top.get("text") or "", top.get("section"), top.get("document_name"))
+    return score >= _DOCUMENT_FACT_SUFFICIENCY_THRESHOLD
+
+
+def _rewrite_document_fact_query(topic_query: str) -> str:
+    """1회만 재검색할 축약 질의 — 핵심 키워드만 남긴다(extract_keywords 재사용, 새 축약
+    로직 안 만듦)."""
+    keywords = extract_keywords(_raw_question_component(topic_query))
+    return " ".join(sorted(keywords)) if keywords else topic_query
+
+
+def _search_document_fact_evidence(
+    role_retrieval_service: RoleAwareRetrievalService,
+    *,
+    persona_id: str,
+    topic_query: str,
+    project_id: str,
+    top_k: int,
+) -> list[dict]:
+    fused = _search_document_fact_candidates(
+        role_retrieval_service, persona_id=persona_id, topic_query=topic_query, project_id=project_id
+    )
+    reranked = _rerank_document_fact_candidates(fused, topic_query, top_k)
+    if _assess_document_fact_sufficiency(reranked, topic_query):
+        return reranked
+
+    rewritten_query = _rewrite_document_fact_query(topic_query)
+    if rewritten_query == topic_query:
+        return reranked
+    logger.info(
+        "[IDEATION_DOCUMENT_FACT_INSUFFICIENT_RETRY] persona_id=%s project_id=%s rewritten_query=%s",
+        persona_id,
+        project_id,
+        rewritten_query[:80],
+    )
+    fused_retry = _search_document_fact_candidates(
+        role_retrieval_service, persona_id=persona_id, topic_query=rewritten_query, project_id=project_id
+    )
+    reranked_retry = _rerank_document_fact_candidates(fused_retry, topic_query, top_k)
+    # 재검색 결과가 원래보다 못하면(빈 결과 등) 원래 결과를 유지한다 — 재시도가 있던 근거를
+    # 지우지 않는다.
+    return reranked_retry if reranked_retry else reranked
+
+
 def search_ideation_evidence(
     persona_id: str,
     topic_query: str,
@@ -368,7 +774,37 @@ def search_ideation_evidence(
     확인됐다(실 사이트 로그: target_count=0). selected_candidate_document_id가 있으면
     project-wide 검색과 별도로 그 document_id를 직접 검색해(_search_candidate_target_direct)
     병합한다 — 직접 검색 결과를 우선 순위에 두되, project-wide 검색이 이미 찾은 target/
-    criteria 결과를 대체하거나 가짜로 채우지 않는다(실제 Chroma 검색 결과만 병합)."""
+    criteria 결과를 대체하거나 가짜로 채우지 않는다(실제 Chroma 검색 결과만 병합).
+
+    용준/Claude(2026-07-29, 요청: RAG 품질 개선 3단계 — dual-query 방식) — topic_query에
+    쟁점/역할 관점 텍스트가 붙으면(정상적인 아이디어 논의 검색어 구성) 짧고 구체적인 사용자
+    질문이 임베딩 유사도에서 희석되는 문제가 실측됐다(예: "결격 사유가 뭔가요"가 "기술
+    구조와 구현 가능성..." 같은 훨씬 긴 역할 설명에 묻힘). 특정 키워드가 있을 때만 예외
+    처리하는 대신(그 목록에 없는 표현은 여전히 희석됨 — 실측: "몇 개 과제가 선정되나요"),
+    매 호출마다 항상 두 검색을 병행한다 — Query A(topic_query의 " | " 앞부분=사용자 질문
+    원문만, role_id=None plain 검색)와 Query B(topic_query 전체, 역할 확장 검색). 두 결과를
+    (document_id, chunk_id) 기준 중복 제거 후 Reciprocal Rank Fusion으로 합친다."""
+    # 용준/Claude(2026-07-29, 요청: 생성 품질 개선 3단계) — document_fact_query는 "위원 역할
+    # 적합성"이 아니라 "질문과 문서의 직접 관련성"이 기준이므로 _DOCUMENT_ROLE_QUOTAS 등
+    # 아래 role-quota 파이프라인을 전혀 타지 않고 별도 경로로 처리한다. 판정이 False면
+    # (session_state_query/expert_analysis_query/일반 discussion) 이 함수의 나머지는 100%
+    # 기존 그대로 실행된다.
+    if _is_document_fact_query(topic_query):
+        composed = _search_document_fact_evidence(
+            role_retrieval_service,
+            persona_id=persona_id,
+            topic_query=topic_query,
+            project_id=project_id,
+            top_k=top_k,
+        )
+        logger.info(
+            "[IDEATION_DOCUMENT_FACT_SEARCH] persona_id=%s project_id=%s result_count=%d",
+            persona_id,
+            project_id,
+            len(composed),
+        )
+        return composed
+
     role_id = resolve_ideation_role_id(persona_id)
     candidate_k = top_k * _CANDIDATE_POOL_MULTIPLIER if persona_id in _DOCUMENT_ROLE_QUOTAS else None
     try:
@@ -378,7 +814,7 @@ def search_ideation_evidence(
             role_id=role_id,
             top_k=candidate_k or top_k,
         )
-        plain_items = [
+        query_b_items = [
             dict(item)
             for item in build_meeting_retrieved_evidence(
                 [PersonaRoleSearchResponse(persona_id=persona_id, response=role_response, role_id=role_id)]
@@ -391,22 +827,25 @@ def search_ideation_evidence(
             role_id,
             project_id,
         )
-        plain_items = []
+        query_b_items = []
 
-    raw_target_count = sum(1 for item in plain_items if item.get("document_role") == "target")
+    query_a_items = _search_plain_query_candidates(
+        role_retrieval_service,
+        persona_id=persona_id,
+        topic_query=_raw_question_component(topic_query),
+        project_id=project_id,
+        top_k=candidate_k or top_k,
+    )
+
+    fused_items = _reciprocal_rank_fusion(query_a_items, query_b_items)
+
+    raw_target_count = sum(1 for item in fused_items if item.get("document_role") == "target")
     scoped_items = _scope_target_evidence(
-        plain_items, session_id=session_id, selected_candidate_document_id=selected_candidate_document_id
+        fused_items, session_id=session_id, selected_candidate_document_id=selected_candidate_document_id
     )
     scoped_target_count = sum(1 for item in scoped_items if item.get("document_role") == "target")
 
     issue_focused_criteria_items = _search_issue_focused_criteria(
-        role_retrieval_service,
-        persona_id=persona_id,
-        topic_query=topic_query,
-        project_id=project_id,
-        top_k=top_k,
-    )
-    plain_query_items = _search_plain_query_candidates(
         role_retrieval_service,
         persona_id=persona_id,
         topic_query=topic_query,
@@ -426,13 +865,14 @@ def search_ideation_evidence(
             top_k=top_k,
         )
 
-    priority_items = candidate_direct_items + issue_focused_criteria_items + plain_query_items
+    priority_items = candidate_direct_items + issue_focused_criteria_items
     priority_keys = {(item.get("document_id", ""), item.get("chunk_id", "")) for item in priority_items}
     merged_items = priority_items + [
         item for item in scoped_items if (item.get("document_id", ""), item.get("chunk_id", "")) not in priority_keys
     ]
 
     merged_items = _rank_by_document_type(merged_items, topic_query)
+    merged_items = _prioritize_final_direction(merged_items, topic_query)
     composed, missing_document_roles = _compose_by_document_role(
         merged_items,
         persona_id=persona_id,
@@ -539,4 +979,6 @@ __all__ = [
     "resolve_ideation_role_id",
     "search_ideation_evidence",
     "make_ideation_evidence_lookup",
+    "classify_external_source_type",
+    "compose_ideation_evidence_pool",
 ]

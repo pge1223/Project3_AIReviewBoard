@@ -1,0 +1,316 @@
+{
+  "staging_smoke": [
+    {
+      "query": "공공기관 AI 서비스의 개인정보 보호 위험",
+      "results": [
+        {
+          "rank": 1,
+          "title": "공공부문 AI 도입·활용 가이드(`26.5월 기준)",
+          "source_type": "guideline",
+          "score": 0.626144,
+          "section": "공공 AI 서비스 도입 절차",
+          "page": 9,
+          "allow_grounded_claim": true
+        },
+        {
+          "rank": 2,
+          "title": "생성형 인공지능(AI) 개발·활용을 위한 개인정보 처리 안내서",
+          "source_type": "guideline",
+          "score": 0.619666,
+          "section": "개인정보 보호위원회",
+          "page": null,
+          "allow_grounded_claim": true
+        }
+      ]
+    },
+    {
+      "query": "고령자와 장애인의 디지털 접근성 문제",
+      "results": [
+        {
+          "rank": 1,
+          "title": "생성형 인공지능(AI) 개발·활용을 위한 개인정보 처리 안내서",
+          "source_type": "guideline",
+          "score": 0.601063,
+          "section": "개인정보 보호위원회",
+          "page": null,
+          "allow_grounded_claim": true
+        },
+        {
+          "rank": 2,
+          "title": "공공부문 AI 도입·활용 가이드(`26.5월 기준)",
+          "source_type": "guideline",
+          "score": 0.592859,
+          "section": null,
+          "page": 45,
+          "allow_grounded_claim": true
+        },
+        {
+          "rank": 3,
+          "title": "2024 디지털정보격차 실태조사 보고서",
+          "source_type": "statistics",
+          "score": 0.590384,
+          "section": null,
+          "page": 1,
+          "allow_grounded_claim": true
+        }
+      ]
+    },
+    {
+      "query": "공공부문 AI 도입 시 필요한 안전성과 윤리 기준",
+      "results": [
+        {
+          "rank": 1,
+          "title": "공공부문 AI 도입·활용 가이드(`26.5월 기준)",
+          "source_type": "guideline",
+          "score": 0.61541,
+          "section": null,
+          "page": 2,
+          "allow_grounded_claim": true
+        },
+        {
+          "rank": 2,
+          "title": "생성형 인공지능(AI) 개발·활용을 위한 개인정보 처리 안내서",
+          "source_type": "guideline",
+          "score": 0.602753,
+          "section": "개인정보 보호위원회",
+          "page": null,
+          "allow_grounded_claim": true
+        },
+        {
+          "rank": 3,
+          "title": "공공부문 AI 도입·활용 가이드(`26.5월 기준)",
+          "source_type": "guideline",
+          "score": 0.588585,
+          "section": "이용 계약 : 공통기반 활용을 위한 계약 절차 안내",
+          "page": null,
+          "allow_grounded_claim": true
+        }
+      ]
+    },
+    {
+      "query": "공공 AI 서비스의 실증 및 확산 사례",
+      "results": [
+        {
+          "rank": 1,
+          "title": "공공부문 AI 도입·활용 가이드(`26.5월 기준)",
+          "source_type": "guideline",
+          "score": 0.648463,
+          "section": null,
+          "page": 3,
+          "allow_grounded_claim": true
+        },
+        {
+          "rank": 2,
+          "title": "생성형 인공지능(AI) 개발·활용을 위한 개인정보 처리 안내서",
+          "source_type": "guideline",
+          "score": 0.600658,
+          "section": "개인정보 보호위원회",
+          "page": null,
+          "allow_grounded_claim": true
+        }
+      ]
+    }
+  ],
+  "production": [
+    {
+      "query": "공공기관 AI 서비스의 개인정보 보호 위험",
+      "results": [
+        {
+          "rank": 1,
+          "title": "공공부문 AI 도입·활용 가이드(`26.5월 기준)",
+          "source_type": "guideline",
+          "score": 0.626144,
+          "section": "공공 AI 서비스 도입 절차",
+          "page": 9,
+          "allow_grounded_claim": true
+        },
+        {
+          "rank": 2,
+          "title": "생성형 인공지능(AI) 개발·활용을 위한 개인정보 처리 안내서",
+          "source_type": "guideline",
+          "score": 0.619666,
+          "section": "개인정보 보호위원회",
+          "page": null,
+          "allow_grounded_claim": true
+        },
+        {
+          "rank": 3,
+          "title": "안전한 인공지능(AI) 데이터 활용을 위한 AI 프라이버시 리스크 관리 모델",
+          "source_type": "guideline",
+          "score": 0.614676,
+          "section": "개인정보 보호위원회",
+          "page": null,
+          "allow_grounded_claim": true
+        },
+        {
+          "rank": 4,
+          "title": "생성형 인공지능 개발·활용을 위한 개인정보 처리 안내서",
+          "source_type": "guideline",
+          "score": 0.613899,
+          "section": "생성형 AI 수명주기별 개인정보 보호 고려사항",
+          "page": null,
+          "allow_grounded_claim": true
+        },
+        {
+          "rank": 5,
+          "title": "인공지능(AI) 개발·서비스를 위한 공개된 개인정보 처리 안내서",
+          "source_type": "guideline",
+          "score": 0.608736,
+          "section": "개인정보 보호위원회",
+          "page": null,
+          "allow_grounded_claim": true
+        }
+      ]
+    },
+    {
+      "query": "고령자와 장애인의 디지털 접근성 문제",
+      "results": [
+        {
+          "rank": 1,
+          "title": "생성형 인공지능(AI) 개발·활용을 위한 개인정보 처리 안내서",
+          "source_type": "guideline",
+          "score": 0.604287,
+          "section": "-",
+          "page": null,
+          "allow_grounded_claim": true
+        },
+        {
+          "rank": 2,
+          "title": "인공지능(AI) 개발·서비스를 위한 공개된 개인정보 처리 안내서",
+          "source_type": "guideline",
+          "score": 0.599468,
+          "section": "-",
+          "page": null,
+          "allow_grounded_claim": true
+        },
+        {
+          "rank": 3,
+          "title": "안전한 인공지능(AI) 데이터 활용을 위한 AI 프라이버시 리스크 관리 모델",
+          "source_type": "guideline",
+          "score": 0.599297,
+          "section": "-",
+          "page": null,
+          "allow_grounded_claim": true
+        },
+        {
+          "rank": 4,
+          "title": "2025년 디지털정보격차 실태조사",
+          "source_type": "statistics",
+          "score": 0.598637,
+          "section": "조사 개요 및 목차",
+          "page": null,
+          "allow_grounded_claim": true
+        },
+        {
+          "rank": 5,
+          "title": "공공부문 AI 도입·활용 가이드(`26.5월 기준)",
+          "source_type": "guideline",
+          "score": 0.59286,
+          "section": null,
+          "page": 45,
+          "allow_grounded_claim": true
+        }
+      ]
+    },
+    {
+      "query": "공공부문 AI 도입 시 필요한 안전성과 윤리 기준",
+      "results": [
+        {
+          "rank": 1,
+          "title": "공공부문 AI 도입·활용 가이드(`26.5월 기준)",
+          "source_type": "guideline",
+          "score": 0.612963,
+          "section": "인공지능 관련 가이드라인",
+          "page": 5,
+          "allow_grounded_claim": true
+        },
+        {
+          "rank": 2,
+          "title": "생성형 인공지능(AI) 개발·활용을 위한 개인정보 처리 안내서",
+          "source_type": "guideline",
+          "score": 0.602753,
+          "section": "개인정보 보호위원회",
+          "page": null,
+          "allow_grounded_claim": true
+        },
+        {
+          "rank": 3,
+          "title": "AI 정부 서비스 사례집",
+          "source_type": "research_report",
+          "score": 0.600842,
+          "section": null,
+          "page": 111,
+          "allow_grounded_claim": true
+        },
+        {
+          "rank": 4,
+          "title": "안전한 인공지능(AI) 데이터 활용을 위한 AI 프라이버시 리스크 관리 모델",
+          "source_type": "guideline",
+          "score": 0.597763,
+          "section": "개인정보 보호위원회",
+          "page": null,
+          "allow_grounded_claim": true
+        },
+        {
+          "rank": 5,
+          "title": "인공지능(AI) 개발·서비스를 위한 공개된 개인정보 처리 안내서",
+          "source_type": "guideline",
+          "score": 0.591823,
+          "section": "개인정보 보호위원회",
+          "page": null,
+          "allow_grounded_claim": true
+        }
+      ]
+    },
+    {
+      "query": "공공 AI 서비스의 실증 및 확산 사례",
+      "results": [
+        {
+          "rank": 1,
+          "title": "공공부문 AI 도입·활용 가이드(`26.5월 기준)",
+          "source_type": "guideline",
+          "score": 0.645473,
+          "section": null,
+          "page": 3,
+          "allow_grounded_claim": true
+        },
+        {
+          "rank": 2,
+          "title": "공공부문 AI 도입·활용 가이드(2026년 5월 기준)",
+          "source_type": "guideline",
+          "score": 0.623274,
+          "section": "공공부문 AI 도입·활용 가이드 주요 내용",
+          "page": null,
+          "allow_grounded_claim": true
+        },
+        {
+          "rank": 3,
+          "title": "AI 정부 서비스 사례집",
+          "source_type": "research_report",
+          "score": 0.61902,
+          "section": null,
+          "page": 111,
+          "allow_grounded_claim": true
+        },
+        {
+          "rank": 4,
+          "title": "생성형 인공지능(AI) 개발·활용을 위한 개인정보 처리 안내서",
+          "source_type": "guideline",
+          "score": 0.600658,
+          "section": "개인정보 보호위원회",
+          "page": null,
+          "allow_grounded_claim": true
+        },
+        {
+          "rank": 5,
+          "title": "안전한 인공지능(AI) 데이터 활용을 위한 AI 프라이버시 리스크 관리 모델",
+          "source_type": "guideline",
+          "score": 0.595668,
+          "section": "개인정보 보호위원회",
+          "page": null,
+          "allow_grounded_claim": true
+        }
+      ]
+    }
+  ]
+}

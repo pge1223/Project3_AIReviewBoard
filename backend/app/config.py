@@ -128,6 +128,15 @@ class Settings(BaseSettings):
     # generation/facilitator/synthesis 노드에는 적용되지 않는다.
     ENABLE_IDEATION_EVIDENCE_PLANNER_DISCUSSION: bool = False
 
+    # 용준/Claude(2026-07-30, 요청: "claim-evidence 의미 정합성 2차 검사 — shadow mode"):
+    # ground_claims()의 키워드 stem 겹침 검사를 통과한 (claim, evidence) 쌍에 배치 LLM
+    # judge를 한 번 더 돌려 entailed/partially_entailed/topic_only/contradicted를
+    # 판정한다. 기본값 False — 꺼져 있으면 judge용 llm_call 자체를 만들지 않아 grounding
+    # 결과·API 응답·추가 LLM 호출이 기존과 100% 동일하다. 켜져 있어도(True) 판정 결과는
+    # trace 로그(IDEATION_CLAIM_EVIDENCE_ALIGNMENT_SHADOW)로만 남을 뿐 근거 표시·claim
+    # 강등/차단에는 전혀 쓰이지 않는다(적용 순서 5단계에서 별도 플래그로 활성화 예정).
+    ENABLE_IDEATION_CLAIM_ALIGNMENT_SHADOW: bool = False
+
     # 가은/Claude(2026-07-23, 요청: LangSmith 트레이싱 연결): LangGraph 노드(위원 리뷰/
     # 위원장 종합/아이디어 회의)와 backend 라우트가 만드는 OpenAI 호출을 LangSmith
     # 대시보드에서 추적할지 여부. 기본값 False — 켜지 않으면 기존 동작과 100% 동일하고

@@ -51,3 +51,23 @@ def test_call_evidence_lookup_with_runtime_scope_still_assigns_refs():
 
     result = call_evidence_lookup(lookup, "dev_expert", "query", runtime_scope={"session_id": "S1"})
     assert result[0]["ref"] == "E1"
+
+
+def test_call_evidence_lookup_excludes_user_session_answer_chunks():
+    """용준/Claude(2026-07-30, 요청: "사용자 답변은 문서 기반 grounded evidence로 사용하지
+    마세요") — ideation_source_type="user_session_answer"인 항목은 검색 결과 최상위에
+    있어도(top-1) 이 지점에서 제외돼야, 이후 프롬프트의 retrieved_evidence/turn_evidence·
+    ground_claims 검증 대상·claim_evidence_links·evidence 버킷 어디에도 등장하지 않는다."""
+
+    def lookup(persona_id, query):
+        return [
+            {"chunk_id": "chk_answer1", "document_role": "target", "ideation_source_type": "user_session_answer", "text": "사용자 답변 원문"},
+            {"chunk_id": "chk_candidate1", "document_role": "target", "ideation_source_type": "ideation_candidate", "text": "선택 아이디어"},
+            {"chunk_id": "chk_criteria1", "document_role": "criteria", "text": "공고문 조항"},
+        ]
+
+    result = call_evidence_lookup(lookup, "planning_expert", "query")
+    chunk_ids = [item["chunk_id"] for item in result]
+    assert "chk_answer1" not in chunk_ids
+    assert chunk_ids == ["chk_candidate1", "chk_criteria1"]
+    assert [item["ref"] for item in result] == ["E1", "E2"]
