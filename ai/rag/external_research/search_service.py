@@ -416,6 +416,16 @@ class ExternalResearchService:
             if criterion.strip().lower() in candidate_criteria_norm
         ]
 
+        # 용준/Claude(2026-07-30, 요청: RAG-007 검색 후보 품질 게이트) — page/section이
+        # 둘 다 없는 청크는 어느 부분을 인용했는지 근거를 되짚어 확인할 방법이 없다.
+        # 색인 자체에서 걸러지지 않은(구버전 색인 등) 레코드가 검색에 섞여도, 여기서
+        # allow_grounded_claim을 강제로 False로 낮춰 document_fact 근거로 쓰이지
+        # 않게 한다 — 개수를 맞추기 위해 결과 자체를 억지로 채우지 않고, 그냥 신뢰도
+        # 표시만 낮춘다(기존 summary_only 정책과 동일한 방식).
+        allow_grounded_claim = bool(candidate.metadata.get("allow_grounded_claim", True))
+        if candidate.page is None and not (candidate.section or "").strip():
+            allow_grounded_claim = False
+
         return ExternalEvidenceResult(
             source_id=candidate.source_id,
             document_id=candidate.document_id,
@@ -439,12 +449,21 @@ class ExternalResearchService:
             metric_unit=candidate.metric_unit,
             page=candidate.page,
             section=candidate.section,
+            file_hash=candidate.metadata.get("file_hash"),
+            page_start=candidate.metadata.get("page_start"),
+            page_end=candidate.metadata.get("page_end"),
+            content_level=candidate.metadata.get("content_level"),
+            url_verified=candidate.metadata.get("url_verified"),
+            direct_file_url=candidate.metadata.get("direct_file_url"),
             semantic_score=semantic_score,
             role_score=role_score,
             criteria_score=criteria_score,
             freshness_score=freshness_score,
             final_score=final_score,
             retrieval_source=candidate.retrieval_source,
+            source_type=candidate.metadata.get("source_type"),
+            summary_only=bool(candidate.metadata.get("summary_only", False)),
+            allow_grounded_claim=allow_grounded_claim,
         )
 
 

@@ -1,0 +1,126 @@
+[
+  {
+    "source_id": "NIA-PUBLIC-AI-GUIDE-2026-FULL",
+    "title": "공공부문 AI 도입·활용 가이드(`26.5월 기준)",
+    "publisher": "한국지능정보사회진흥원",
+    "evidence_type": "guideline",
+    "source_url": "https://www.nia.or.kr/site/nia_kor/ex/bbs/View.do?bcIdx=29526&cbIdx=37989",
+    "published_at": "2026-06-11",
+    "supported_roles": ["planning", "technology"],
+    "evaluation_criteria": ["정책 적합성", "실현 가능성", "보안성", "확산 가능성"]
+  },
+  {
+    "source_id": "DPG-GENAI-GUIDE-AND-CASES-2025",
+    "title": "공공부문 초거대 AI 도입·활용 가이드라인 2.0 및 공공 AI 서비스 실증 사례집",
+    "publisher": "디지털플랫폼정부위원회",
+    "evidence_type": "guideline",
+    "source_type": "official_page_summary",
+    "summary_only": true,
+    "allow_grounded_claim": false,
+    "source_url": "https://www.dpg.go.kr/DPG/contents/DPG03020000.do?id=20250416154050742370&schM=view",
+    "published_at": "2025-04-16",
+    "supported_roles": ["planning", "technology"],
+    "evaluation_criteria": ["정책 적합성", "실현 가능성", "안전성", "확산 가능성"],
+    "fallback_content": "디지털플랫폼정부위원회는 중앙부처, 지방자치단체, 공공기관이 초거대 AI를 효과적으로 도입·활용할 수 있도록 「공공부문 초거대 AI 도입·활용 가이드라인 2.0」과 「공공 AI 서비스 실증 사례집」을 공개했다. 가이드라인은 공공부문 초거대 AI 추진방향, 분야별·해외 활용사례, 도입 절차와 고려사항, AI 성과관리 방안을 다룬다. 실증 사례집은 2022년부터 추진한 대표 실증 사례 110건을 사회문제 해결 54건, 대국민 서비스 혁신 37건, 일하는 방식 개선 19건으로 구성한다."
+  },
+  {
+    "source_id": "NIA-TRUSTWORTHY-AI-GUIDE-2019",
+    "title": "공공기관 신뢰가능 AI 구현 실용가이드",
+    "publisher": "한국지능정보사회진흥원",
+    "evidence_type": "guideline",
+    "source_url": "https://www.nia.or.kr/site/nia_kor/ex/bbs/View.do?bcIdx=21664&cbIdx=82618",
+    "published_at": "2019-12-23",
+    "supported_roles": ["planning", "technology"],
+    "evaluation_criteria": ["안전성", "윤리성", "보안성"]
+  },
+  {
+    "source_id": "NIA-AI-GOV-SERVICE-CASES-2026",
+    "title": "AI 정부 서비스 사례집",
+    "publisher": "행정안전부·한국지능정보사회진흥원",
+    "evidence_type": "research_report",
+    "source_url": "https://www.nia.or.kr/site/nia_kor/ex/bbs/View.do?bcIdx=29161&cbIdx=37989",
+    "published_at": "2026-03-25",
+    "supported_roles": ["planning", "technology"],
+    "evaluation_criteria": ["실현 가능성", "대국민 체감 효과", "확산 가능성"]
+  },
+  {
+    "source_id": "LAW-AI-DATA-ADMINISTRATION-2026",
+    "title": "인공지능 및 데이터 기반 행정 활성화에 관한 법률",
+    "publisher": "국가법령정보센터",
+    "evidence_type": "law",
+    "source_url": "https://www.law.go.kr/LSW/lsInfoP.do?lsiSeq=283735",
+    "published_at": "2026-02-27",
+    "supported_roles": ["planning", "technology"],
+    "evaluation_criteria": ["정책 적합성", "안전성", "보안성"]
+  },
+  {
+    "source_id": "LAW-PERSONAL-INFORMATION-PROTECTION-2026",
+    "title": "개인정보 보호법",
+    "publisher": "국가법령정보센터",
+    "evidence_type": "law",
+    "source_url": "https://www.law.go.kr/LSW/lsInfoP.do?lsiSeq=270351",
+    "published_at": "2026-03-10",
+    "supported_roles": ["planning", "technology"],
+    "evaluation_criteria": ["개인정보 보호", "안전성", "보안성"]
+  },
+  {
+    "source_id": "LAW-PERSONAL-INFORMATION-ENFORCEMENT-2026",
+    "title": "개인정보 보호법 시행령",
+    "publisher": "국가법령정보센터",
+    "evidence_type": "law",
+    "source_url": "https://www.law.go.kr/LSW/lsInfoP.do?ancYnChk=0&chrClsCd=010202&efYd=20260519&lsiSeq=286175&urlMode=lsInfoP",
+    "published_at": "2026-05-19",
+    "supported_roles": ["planning", "technology"],
+    "evaluation_criteria": ["개인정보 보호", "안전성", "보안성"]
+  },
+  {
+    "source_id": "PIPC-PUBLIC-PERSONAL-DATA-GUIDE-2024",
+    "title": "인공지능(AI) 개발·서비스를 위한 공개된 개인정보 처리 안내서",
+    "publisher": "개인정보보호위원회",
+    "evidence_type": "guideline",
+    "source_url": "https://www.pipc.go.kr/np/cop/bbs/selectBoardArticle.do?bbsId=BS217&mCode=D010030000.Updated&nttId=10375",
+    "published_at": "2024-07-19",
+    "supported_roles": ["planning", "technology"],
+    "evaluation_criteria": ["개인정보 보호", "안전성", "보안성"]
+  },
+  {
+    "source_id": "PIPC-GENAI-PRIVACY-GUIDE-2025-FULL",
+    "title": "생성형 인공지능(AI) 개발·활용을 위한 개인정보 처리 안내서",
+    "publisher": "개인정보보호위원회",
+    "evidence_type": "guideline",
+    "source_url": "https://www.pipc.go.kr/np/cop/bbs/selectBoardArticle.do?bbsId=BS217&mCode=G010030000&nttId=11439",
+    "published_at": "2025-08-22",
+    "supported_roles": ["planning", "technology"],
+    "evaluation_criteria": ["개인정보 보호", "윤리성", "안전성"]
+  },
+  {
+    "source_id": "PIPC-AI-PRIVACY-RISK-MODEL-2025",
+    "title": "안전한 인공지능(AI) 데이터 활용을 위한 AI 프라이버시 리스크 관리 모델",
+    "publisher": "개인정보보호위원회",
+    "evidence_type": "guideline",
+    "source_url": "https://www.pipc.go.kr/np/cop/bbs/selectBoardArticle.do?bbsId=BS217&mCode=G010030020&nttId=11014",
+    "published_at": "2025-02-21",
+    "supported_roles": ["planning", "technology"],
+    "evaluation_criteria": ["개인정보 보호", "안전성", "보안성"]
+  },
+  {
+    "source_id": "NIA-DIGITAL-DIVIDE-SURVEY-2024-FULL",
+    "title": "2024 디지털정보격차 실태조사 보고서",
+    "publisher": "한국지능정보사회진흥원",
+    "evidence_type": "statistics",
+    "source_url": "https://www.nia.or.kr/site/nia_kor/ex/bbs/View.do?bcIdx=27832&cbIdx=81623",
+    "published_at": "2025-03-27",
+    "supported_roles": ["planning", "technology"],
+    "evaluation_criteria": ["접근성", "공공 수요", "정책 적합성", "대국민 체감 효과"]
+  },
+  {
+    "source_id": "NIA-DIGITAL-DIVIDE-SURVEY-2023-FULL",
+    "title": "2023년 디지털정보격차 실태조사 보고서",
+    "publisher": "한국지능정보사회진흥원",
+    "evidence_type": "statistics",
+    "source_url": "https://www.nia.or.kr/site/nia_kor/ex/bbs/View.do?bcIdx=26517&cbIdx=81623",
+    "published_at": "2024-03-29",
+    "supported_roles": ["planning", "technology"],
+    "evaluation_criteria": ["접근성", "공공 수요", "정책 적합성"]
+  }
+]

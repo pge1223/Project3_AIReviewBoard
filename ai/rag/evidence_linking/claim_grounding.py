@@ -45,8 +45,69 @@ _ASSERTED_CAPABILITY_TERMS = (
     "확보", "보장", "가능", "효과", "절감", "최적화", "구현", "운영",
 )
 _ALIGNMENT_GENERIC_TERMS = frozenset(
-    {"측면", "검토", "필요", "중요", "사항", "부분", "관점", "대상", "현재"}
+    {
+        "측면", "검토", "필요", "중요", "사항", "부분", "관점", "대상", "현재",
+        # 용준/Claude(2026-07-30, 요청: "흔한 단어만으로 관련성 통과 금지" — 실측:
+        # "AI 정부 서비스 사례집"/"공공부문 AI 도입·활용 가이드" 근거가 "AI"·"문서"·
+        # "판단"·"서비스" 같은 범용 단어만 겹쳐서 실제로는 결론 방향이 다른 claim과
+        # 연결됐다) — 이 단어들은 claim과 근거가 진짜 같은 주장을 다루는지 판별하는 데
+        # 쓸모가 없으므로 _keyword_stems 커버리지 계산에서 제외한다.
+        "AI", "문서", "판단", "활용", "서비스", "사용자", "방식", "공공기관",
+    }
 )
+
+# 용준/Claude(2026-07-30, 요청: "target을 문서 근거처럼 연결하면 안 됨" — 실측: "정기적인
+# 설문조사 후 그 결과를 기반으로 방법론을 조정하는 것이 바람직합니다" 같은 전문가의 평가·
+# 개선 제안이 선택 아이디어 target 청크에 user_provided_fact로 그라운딩됐다) — target
+# evidence_ref는 선택 아이디어에 "실제로 적힌 내용을 설명"하는 claim에만 허용한다. 아래
+# 마커는 그 내용이 사실 서술이 아니라 위원 자신의 평가·권고·제안임을 나타내는 표현이다.
+# claim 텍스트가 evidence 원문을 거의 그대로 옮긴 경우(claim_text가 evidence_text의
+# 부분 문자열)는 평가 마커가 섞여 있어도 실제 인용이므로 예외로 둔다.
+_TARGET_EVALUATIVE_JUDGMENT_TERMS = (
+    "검증이 필요", "확인이 필요", "필요합니다", "바람직", "조정해야", "조정하는 것이",
+    "강화해야", "강화하는 것이", "개선해야", "개선하는 것이", "보완해야", "보완하는 것이",
+    "효과적인지", "타당한지", "적절한지", "권장", "제안합니다", "고려해야",
+)
+
+# 용준/Claude(2026-07-30, 요청: RAG-007 색인 청크 품질 정제 — claim-evidence 정합성
+# 검증) — "2025년 디지털정보격차 실태조사에 따르면 ...낮아 필요성이 강조된다"처럼,
+# 근거(evidence_item)가 조사 설계·범위만 설명할 뿐 실제로는 그 "낮다/강조된다" 같은
+# 결론·정도를 진술하지 않는 case가 실측 확인됐다(reports/rag007_e2e_20260730/
+# validation_e2e.json claim_3). document_role(target/criteria) 정합성만 보던 기존
+# 검사와 달리, 이 검사는 external_research(RAG-007) 근거를 대상으로 한다 — 근거
+# 자체가 무엇에 관한 것인지(주제)와 무엇을 실제로 진술하는지(내용)를 구분한다.
+#
+# 참고: "연도가 다른 문서를 인용" 같은 순수 숫자 불일치는 이미 아래 `_normalized_
+# numbers` 기반 검사(evidence_missing_numeric_detail, ground_claims 본문)가
+# claim이 인용한 숫자(연도 포함)가 근거에 없으면 이 함수까지 오기 전에 먼저
+# 걸러낸다 — 그래서 연도 전용 규칙을 별도로 두지 않는다(중복 로직 방지).
+#
+# 이 휴리스틱은 정규식/문자열 매칭 기반이라 완벽하지 않다(위 `_claim_evidence_
+# alignment_failure` docstring의 "그런 명확한 범위 확대만 결정적으로 차단하고,
+# 애매한 의미 추론은 사람이 검수하는 오프라인 평가에 남긴다" 원칙과 동일 — false
+# negative(놓치는 경우)는 있을 수 있지만, 아래 조건에 걸리면 실제로 근거에 없는
+# 내용일 가능성이 높다).
+_EXTERNAL_EVIDENCE_SOURCE_TYPES = frozenset(
+    {"official_statistics", "official_report", "similar_case", "press_release", "news", "external_other"}
+)
+# claim이 근거의 정도/결론을 스스로 판단해 덧붙였는지 보는 마커. 활용형까지 나열해
+# 문자열 포함 매칭만으로 충분히 특정되게 한다(형태소 분석기를 새로 도입하지 않는다).
+_CONCLUSION_ASSERTION_TERMS = (
+    "낮다", "낮아", "낮은", "높다", "높아", "높은",
+    "부족하다", "부족해", "부족한", "충분하다", "충분해", "충분한",
+    "심각하다", "심각해", "심각한", "강조된다", "강조한다", "강조합니다",
+    "시사한다", "시사합니다", "보여준다", "보여줍니다", "확인된다", "확인됩니다",
+    "필요성이", "우려된다", "우려됩니다",
+)
+
+
+def _claim_asserts_finding_not_in_evidence(claim_text: str, evidence_text: str) -> bool:
+    """claim에 등장한 결론/정도 마커가 evidence 원문에는 전혀 없으면 True. claim에
+    결론/정도 마커가 아예 없으면(사실 나열만 하는 claim) 검사하지 않는다."""
+    claim_markers = {marker for marker in _CONCLUSION_ASSERTION_TERMS if marker in claim_text}
+    if not claim_markers:
+        return False
+    return not any(marker in evidence_text for marker in claim_markers)
 
 
 def _normalized_numbers(text: str) -> set[str]:
@@ -74,12 +135,30 @@ def _claim_evidence_alignment_failure(claim: Claim, evidence_item: dict) -> str 
     document_role = evidence_item.get("document_role")
     claim_type = claim["claim_type"]
 
+    if (
+        evidence_item.get("summary_only")
+        or evidence_item.get("source_type") == "official_page_summary"
+        or evidence_item.get("allow_grounded_claim") is False
+    ):
+        return "summary_only_not_grounded_claim"
     if claim_type == "expert_judgment":
         return "expert_judgment_cannot_be_document_grounded"
     if document_role == "criteria" and claim_type == "user_provided_fact":
         return "claim_type_document_role_mismatch"
     if document_role == "target" and claim_type == "document_fact":
         return "claim_type_document_role_mismatch"
+
+    # target evidence_ref는 선택 아이디어에 실제 적힌 내용을 설명하는 claim에만 허용한다.
+    # claim이 검증 필요성·개선 제안·바람직함 같은 위원 자신의 평가·권고를 담고 있고, 그
+    # 문장 자체가 evidence 원문을 그대로 옮긴 인용이 아니면(claim_text가 evidence_text의
+    # 부분 문자열이 아니면) 이는 "아이디어에 적힌 사실"이 아니라 expert_judgment다.
+    if (
+        document_role == "target"
+        and claim_type == "user_provided_fact"
+        and claim_text.strip() not in evidence_text
+        and any(term in claim_text for term in _TARGET_EVALUATIVE_JUDGMENT_TERMS)
+    ):
+        return "target_evaluative_overreach"
 
     # "AI 기술 활용 여부를 평가하는가?" 같은 criteria 문장은 AI가 실제로 문제를 해결하거나
     # 성능을 낸다는 사실을 증명하지 않는다. 문서의 평가/요건 자체를 설명하는 주장만 허용한다.
@@ -91,6 +170,18 @@ def _claim_evidence_alignment_failure(claim: Claim, evidence_item: dict) -> str 
         and not any(term in claim_text for term in _CRITERIA_SCOPE_TERMS)
     ):
         return "criteria_scope_overreach"
+
+    # 용준/Claude(2026-07-30, 요청: RAG-007 색인 청크 품질 정제 — claim-evidence
+    # 정합성 검증) — target/criteria가 아닌 external_research 근거를 인용하는
+    # document_fact claim만 대상으로 한다(target/criteria는 위에서 이미 별도 규칙으로
+    # 다룬다).
+    source_type = evidence_item.get("source_type")
+    if (
+        claim_type == "document_fact"
+        and source_type in _EXTERNAL_EVIDENCE_SOURCE_TYPES
+        and _claim_asserts_finding_not_in_evidence(claim_text, evidence_text)
+    ):
+        return "claim_asserts_finding_not_in_evidence"
 
     return None
 

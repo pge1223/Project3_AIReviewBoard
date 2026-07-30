@@ -25,6 +25,36 @@ class ContestWorkRepository:
             candidates = await self._pick_diverse_by_contest(category, "candidate", remaining)
         return winners + candidates
 
+    async def find_rag_candidates(self, category: str, limit: int = 24) -> list[dict]:
+        """사례 전용 벡터 컬렉션을 처음 채울 공개 사례 후보를 반환한다.
+
+        출처 URL이 있고 제목 또는 OCR 본문이 있는 자료만 사용한다. 같은 공모전의
+        항목만 과도하게 색인되지 않도록 contest_title 기준으로 분산한다.
+        """
+        collection = self.get_collection()
+        query = {
+            "category": category,
+            "source_url": {"$nin": [None, ""]},
+            "$or": [
+                {"ocr_text": {"$nin": [None, ""]}},
+                {"work_title": {"$nin": [None, ""]}},
+                {"contest_title": {"$nin": [None, ""]}},
+            ],
+        }
+        cursor = collection.find(query).sort("selection_status", -1)
+        results: list[dict] = []
+        seen_contests: set[str] = set()
+        async for doc in cursor:
+            contest_title = str(doc.get("contest_title") or "").strip()
+            if contest_title and contest_title in seen_contests:
+                continue
+            if contest_title:
+                seen_contests.add(contest_title)
+            results.append(doc)
+            if len(results) >= limit:
+                break
+        return results
+
     async def _pick_diverse_by_contest(self, category: str, selection_status: str, count: int) -> list[dict]:
         collection = self.get_collection()
         seen_titles = set()

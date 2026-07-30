@@ -18,7 +18,12 @@ domain을 참조하는 것은 되지만, domain이 embedding/retrieval을 참조
 # 2026-07-28: v5 HNSW segment also became unreadable after the live backend and
 # an offline evaluator opened the same Windows PersistentClient directory.
 # Preserve v5 for diagnosis and rebuild into a clean collection.
-DEFAULT_COLLECTION_NAME: str = "project_documents_kure_v6"
+# 2026-07-30: two local uvicorn processes were listening on port 8000 while v6
+# was being written.  Its HNSW reader now fails before every get/upsert with
+# "Error loading hnsw index".  Keep the damaged collection for diagnosis and
+# move live indexing to a clean collection; MongoDB remains the source of truth
+# and failed documents can be re-indexed from their saved source/parsed_text.
+DEFAULT_COLLECTION_NAME: str = "project_documents_kure_v7"
 
 # Chroma 컬렉션 이름 규칙 (chromadb 실제 검증 메시지 기준: 3~512자, [a-zA-Z0-9._-], 시작/끝은 영숫자)
 COLLECTION_NAME_PATTERN: str = r"^[a-zA-Z0-9][a-zA-Z0-9._-]{1,510}[a-zA-Z0-9]$"

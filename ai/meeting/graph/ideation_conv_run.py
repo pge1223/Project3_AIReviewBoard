@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -18,12 +19,15 @@ from prompts import build_ideation_conv_form_draft_prompt
 from .application_form_draft import apply_application_form_draft_patch, remaining_content_fields
 from .ideation_conv_build import _ENTRY_NODES, assemble_ideation_conversation_graph
 from .ideation_conv_discovery import MAX_CANDIDATE_REGENERATIONS, is_regenerate_request
+from .ideation_conv_instruction import parse_current_user_instruction
 from .ideation_conv_problem import _select_areas_by_action_payload
 from .ideation_conv_nodes import (
     PHASE_TO_PENDING_PERSONA,
     REVISION_TRIGGER_STANCES,
+    _most_recent_message_by,
     _route_next_expert_turn,
     _runtime_scope_for,
+    classify_query_type,
     conversation_context_for,
     generate_expert_delegation_facilitator_recommendation,
     generate_expert_delegation_proposal,
@@ -40,6 +44,7 @@ from .ideation_conv_state import (
     ConvMessage,
     IdeationCancelled,
     IdeationConvState,
+    _extract_initial_idea_text,
     apply_user_answer,
     contains_pre_lock_banned_content,
     initial_conv_state,
@@ -321,6 +326,73 @@ def _reply_message_type_for(previous_state: IdeationConvState) -> str:
     return "answer"
 
 
+# 용준/Claude(2026-07-30, 요청: "실제 선택지가 없는데 1번/2번을 선택하라고 요구하는 문제" —
+# 사용자가 진행자의 번호 선택지에 혼란/이의를 제기하는 표현을 결정적으로 감지한다. LLM을
+# 쓰지 않는다 — awaiting_user_decision 자체가 이미 자유 발언으로 취급돼 어떤 게이트도 거치지
+# 않았던 phase이므로(PHASE_TO_PENDING_PERSONA에 없음, 아래 참고), 이 표현이 다음 회의 턴의
+# LLM에게 그대로 "사용자의 답변"으로 넘어가 임의 해석·다음 쟁점 진행을 유발했다.
+_DECISION_CLARIFICATION_PATTERNS = (
+    re.compile(r"선택지.{0,6}(안\s*(보이|보여)|없)"),
+    re.compile(r"옵션.{0,6}(안\s*(보이|보여)|없)"),
+    re.compile(r"(뭐|무엇|뭘)\s*(를|을)?\s*고르"),
+    re.compile(r"\d\s*번.{0,10}\d\s*번.{0,10}(뭔데|무엇|뭐)"),
+    re.compile(r"다시\s*(보여|알려)"),
+    re.compile(r"안\s*(보이는데|보여)"),
+)
+
+
+def _is_decision_choice_clarification_request(text: str) -> bool:
+    """진행자가 방금 번호 선택지를 제시했는데(phase=="awaiting_user_decision"), 사용자가
+    "선택지가 안 보여"/"1번과 2번이 뭔데?"/"뭐를 고르라는 거야?"/"옵션이 없는데?"/"다시
+    보여줘" 류로 되묻는 표현인지 결정적으로 판별한다. True면 이 메시지를 선택 응답으로
+    소비하지 않고 같은 선택지를 다시 보여준다(요청 3번)."""
+    normalized = (text or "").strip()
+    if not normalized:
+        return False
+    return any(pattern.search(normalized) for pattern in _DECISION_CLARIFICATION_PATTERNS)
+
+
+def _resend_decision_choices_state(
+    *, previous_state: IdeationConvState, user_message: str
+) -> IdeationConvState | None:
+    """사용자의 선택지 관련 clarification 요청에 대해, 마지막 진행자 메시지의 선택지
+    (structured.choices/decision_options)를 그대로 다시 보여주는 새 진행자 메시지를 만든다.
+    active_issue_id/phase/pending_question 등은 전혀 바꾸지 않는다(요청: "active_issue 및
+    phase 자동 진행 금지" — 사용자가 아직 원래 선택지에 답하지 않았을 뿐이다). 재표시할
+    선택지 자체가 없으면(구버전 세션 등, structured.choices가 비어 있으면) None을 반환해
+    호출부가 기존 경로(자유 발언 처리)로 안전하게 폴백하게 한다."""
+    last_facilitator = _most_recent_message_by(previous_state["messages"], "ideation_facilitator")
+    if last_facilitator is None:
+        return None
+    last_structured = last_facilitator.get("structured") or {}
+    choices = last_structured.get("choices") or []
+    if not choices:
+        return None
+
+    answer_message = _new_user_message(user_message, previous_state["round"], message_type="interjection")
+    reclarification_message = ConvMessage(
+        message_id=f"MSG-{uuid.uuid4().hex[:10]}",
+        speaker_id="ideation_facilitator",
+        speaker_name="진행자",
+        role="진행자",
+        round=previous_state["round"],
+        message_type="question",
+        content="선택지를 다시 안내해 드릴게요. 아래 중 하나를 선택해 주세요.",
+        referenced_message_ids=[],
+        evidence=[],
+        created_at=datetime.now(timezone.utc).isoformat(),
+        structured={**last_structured, "choices": choices},
+    )
+    return IdeationConvState(
+        **{
+            **previous_state,
+            "messages": previous_state["messages"] + [answer_message, reclarification_message],
+            # phase/active_issue_id/pending_question 등은 그대로 유지 — 사용자는 아직 원래
+            # 질문에 답하지 않았다.
+        }
+    )
+
+
 def _new_facilitator_message(content: str, round_number: int) -> ConvMessage:
     """후보 재생성 상한 안내와 같이 그래프 노드를 거치지 않고 바로
     반환해야 하는 진행자 메시지를 만든다."""
@@ -496,6 +568,37 @@ def _drive_graph(
     return final_state
 
 
+# 용준/Claude(2026-07-29, 요청: 생성 품질 개선 5단계 — 최상위 요청 라우터). document_fact_query/
+# session_state_query는 위원 발언 1건으로 답이 끝나야 한다(요청: "회의 라운드 없이 direct
+# answer"). 새 정지 메커니즘을 만들지 않고 아바타 페이싱용으로 이미 검증된
+# _drive_graph(stop_after_expert_turn=True)를 재사용한다 — 다만 그 메커니즘의 원래 의도는
+# "한 번에 하나씩 재생하고 다음 요청에서 이어감"(세션이 expert_discussion phase에 일시정지로
+# 남음)이라, 우리가 원하는 "완전히 끝남"과 다르다. 그래서 _drive_graph가 반환한 뒤 phase만
+# 후처리로 덮어쓴다 — 그래프 구조(_route_entry/엣지)는 손대지 않는다.
+#
+# 용준/Claude(2026-07-29, 요청: expert_analysis_query 전용 단일 응답 경로). expert_analysis_query
+# ("구현 가능성과 MVP 위험을 분석해 주세요" 같은 전문가 판단 질문)도 같은 이유로 여기 추가한다
+# — 기존에는 classify_query_type이 이 값을 올바르게 분류해도 이 집합에 없어 그대로 일반
+# ideation_discussion_request 다회 라운드 경로로 흘러갔다(요청 이슈: "14개 메시지의 기존 다회
+# 회의 흐름을 그대로 실행"). 사용자가 명시적으로 "회의"/"토론"을 요청하는 문장은
+# classify_query_type이 애초에 expert_analysis_query로 분류하지 않고(fallback인
+# ideation_discussion_request로 떨어짐) 이 집합에 들어오지 않으므로, 기존 다회 흐름은 그대로
+# 유지된다.
+_SINGLE_TURN_REQUEST_TYPES = frozenset(
+    {"document_fact_query", "session_state_query", "expert_analysis_query"}
+)
+
+
+def _finalize_single_turn_request(state: IdeationConvState) -> IdeationConvState:
+    """document_fact_query/session_state_query로 정지된 결과의 phase를 "일시정지"가 아니라
+    "완전히 끝남"으로 마무리한다. stop_after_expert_turn이 실제로 멈춘 경우만
+    phase=="expert_discussion"이므로 그때만 덮어쓴다 — 이미 "failed" 등 다른 종결 상태로
+    끝난 경우는 건드리지 않는다."""
+    if state.get("phase") == "expert_discussion":
+        return IdeationConvState(**{**state, "phase": "discussion_complete"})
+    return state
+
+
 def start_ideation_conversation(
     *,
     session_id: str,
@@ -508,9 +611,12 @@ def start_ideation_conversation(
     index_target_evidence: IndexTargetEvidenceFn | None = None,
     evidence_planner=None,
     external_evidence_lookup=None,
+    similar_case_lookup=None,
+    compose_evidence_pool=None,
     on_progress: IdeationConvProgressCallback | None = None,
     on_snapshot: IdeationConvSnapshotCallback | None = None,
     application_form_items: list[dict] | None = None,
+    initial_state_overrides: dict[str, Any] | None = None,
 ) -> IdeationConvState:
     """세션을 시작해 기획 전문가의 첫 질문 하나만 만들고 멈춘다(요청 목표 흐름 1~3번).
 
@@ -519,7 +625,14 @@ def start_ideation_conversation(
 
     용준/Claude(2026-07-27, RAG-007 연결): external_evidence_lookup도 순수 추가 파라미터다
     (기본값 None) — problem_discovery, candidate_planning/candidate_feasibility,
-    idea_validation 노드에 전달된다."""
+    idea_validation 노드에 전달된다.
+
+    용준/Claude(2026-07-29, 요청: RAG 품질 개선 3단계 — 오프라인 평가 하네스가 실제 확정된
+    세션 state를 재현). initial_state_overrides도 순수 추가 파라미터다(기본값 None) —
+    initial_conv_state()가 만든 state에 이 dict를 얕게 덮어쓴다. 오프라인 평가(ai/rag/
+    evaluation/rag_quality/)가 candidate_selection 노드를 거치지 않고도 "이 세션은 이미
+    후보를 확정했다"는 state(idea_locked/selected_idea 등)를 재현할 때 쓴다 — 일반 호출부는
+    이 값을 넘기지 않아 기존과 완전히 동일하게 동작한다."""
     graph = assemble_ideation_conversation_graph(
         llm_call,
         evidence_lookup=evidence_lookup,
@@ -527,13 +640,36 @@ def start_ideation_conversation(
         index_target_evidence=index_target_evidence,
         evidence_planner=evidence_planner,
         external_evidence_lookup=external_evidence_lookup,
+        similar_case_lookup=similar_case_lookup,
+        compose_evidence_pool=compose_evidence_pool,
     )
     state = initial_conv_state(
         session_id, notice_and_criteria, user_idea, max_rounds=max_rounds,
         application_form_items=application_form_items,
     )
+    if initial_state_overrides:
+        state = {**state, **initial_state_overrides}
+    # 용준/Claude(2026-07-29, 요청: 생성 품질 개선 5단계 — 최상위 요청 라우터). _drive_graph
+    # 호출 전 딱 한 번, 사용자 원문(초기 아이디어 설명)으로 분류한다 — 그래프 시작 노드는
+    # 이 값을 다시 계산하지 않고 state["request_type"]을 그대로 읽는다(중복 분류 없음).
+    initial_user_input = _extract_initial_idea_text(user_idea)
+    request_type = classify_query_type(initial_user_input)
+    # 용준/Claude(2026-07-29, 요청: B05 실제 운영 경로 버그 수정) — request_type과 같은
+    # 원문을 current_user_input에도 그대로 저장한다. 결정론적 session_state 답변
+    # (_deterministic_session_state_answer)이 _topic_query(user_idea+active_issue 조합)
+    # 대신 "이번 턴 사용자가 실제로 물은 문장"을 보게 하기 위함이다.
+    current_user_instruction = parse_current_user_instruction(initial_user_input)
+    state = {
+        **state,
+        "request_type": request_type,
+        "current_user_input": initial_user_input,
+        "current_user_instruction": current_user_instruction,
+    }
     baseline_message_count = len(state["messages"])
-    result_state = _drive_graph(graph, state, on_progress, on_snapshot)
+    single_turn = request_type in _SINGLE_TURN_REQUEST_TYPES
+    result_state = _drive_graph(graph, state, on_progress, on_snapshot, stop_after_expert_turn=single_turn)
+    if single_turn:
+        result_state = _finalize_single_turn_request(result_state)
     return _guard_pre_lock_messages(result_state, baseline_message_count)
 
 
@@ -553,6 +689,8 @@ def retry_failed_ideation_conversation_node(
     index_target_evidence: IndexTargetEvidenceFn | None = None,
     evidence_planner=None,
     external_evidence_lookup=None,
+    similar_case_lookup=None,
+    compose_evidence_pool=None,
     on_progress: IdeationConvProgressCallback | None = None,
     on_snapshot: IdeationConvSnapshotCallback | None = None,
 ) -> IdeationConvState:
@@ -575,6 +713,8 @@ def retry_failed_ideation_conversation_node(
         index_target_evidence=index_target_evidence,
         evidence_planner=evidence_planner,
         external_evidence_lookup=external_evidence_lookup,
+        similar_case_lookup=similar_case_lookup,
+        compose_evidence_pool=compose_evidence_pool,
     )
     retry_state = IdeationConvState(**{**previous_state, "phase": retry_phase, "failed_node": None})
     baseline_message_count = len(retry_state.get("messages") or [])
@@ -933,6 +1073,8 @@ def reply_ideation_conversation(
     index_target_evidence: IndexTargetEvidenceFn | None = None,
     evidence_planner=None,
     external_evidence_lookup=None,
+    similar_case_lookup=None,
+    compose_evidence_pool=None,
     on_progress: IdeationConvProgressCallback | None = None,
     on_snapshot: IdeationConvSnapshotCallback | None = None,
     stop_after_expert_turn: bool = False,
@@ -1042,12 +1184,29 @@ def reply_ideation_conversation(
             index_target_evidence=index_target_evidence,
             evidence_planner=evidence_planner,
             external_evidence_lookup=external_evidence_lookup,
+            similar_case_lookup=similar_case_lookup,
+            compose_evidence_pool=compose_evidence_pool,
         )
         restart_baseline = len(restart_state["messages"])
         restart_result = _drive_graph(
             graph, restart_state, on_progress, on_snapshot, stop_after_expert_turn=stop_after_expert_turn
         )
         return _guard_pre_lock_messages(restart_result, restart_baseline)
+
+    # 용준/Claude(2026-07-30, 요청: "실제 선택지가 없는데 1번/2번을 선택하라고 요구하는
+    # 문제") — awaiting_user_decision은 PHASE_TO_PENDING_PERSONA에 없어 아래 sufficiency
+    # 게이트를 거치지 않고 곧바로 apply_user_answer로 넘어갔다(자유 발언 취급). 사용자가
+    # 방금 진행자가 제시한 선택지에 대해 "안 보인다"/"뭘 고르라는 거야" 류로 되물으면, 그
+    # 자유 발언 취급 규칙을 그대로 적용하지 않고 같은 선택지를 다시 보여준다 — active_issue/
+    # phase를 그대로 두고, 이 메시지를 선택값으로 저장하거나 다음 쟁점으로 넘기지 않는다.
+    if previous_state["phase"] == "awaiting_user_decision" and _is_decision_choice_clarification_request(
+        user_message
+    ):
+        resend_state = _resend_decision_choices_state(previous_state=previous_state, user_message=user_message)
+        if resend_state is not None:
+            if on_progress is not None:
+                on_progress(_progress(resend_state))
+            return resend_state
 
     pending_persona = PHASE_TO_PENDING_PERSONA.get(previous_state["phase"])
     extra_message: ConvMessage | None = None
@@ -1100,6 +1259,35 @@ def reply_ideation_conversation(
         # 방어적 점검 — apply_user_answer()는 항상 그래프 진입 가능한 phase로만 전이시키므로
         # 정상 흐름에서는 절대 여기 도달하지 않는다.
         raise AssertionError(f"apply_user_answer가 진입 불가능한 phase를 반환했습니다: {state['phase']!r}")
+    # 용준/Claude(2026-07-29, 요청: 생성 품질 개선 5단계 — 최상위 요청 라우터). 방금 도착한
+    # user_message 원문으로 _drive_graph 호출 전 딱 한 번 분류한다 — start_ideation_conversation
+    # 과 동일한 단일 지점 원칙(중복 분류 없음). document_fact_query/session_state_query면
+    # 클라이언트가 넘긴 stop_after_expert_turn 값과 무관하게(OR) 위원 발언 1건에서 정지시킨다.
+    request_type = classify_query_type(user_message)
+    # 용준/Claude(2026-07-29, 요청: B05 실제 운영 경로 버그 수정) — start와 동일하게
+    # current_user_input을 함께 갱신한다(이전 턴 값을 누적하지 않고 매 턴 덮어씀).
+    current_user_instruction = parse_current_user_instruction(user_message)
+    state = {
+        **state,
+        "request_type": request_type,
+        "current_user_input": user_message,
+        "current_user_instruction": current_user_instruction,
+    }
+    # 용준/Claude(2026-07-30, 요청: "주요 기능은 뭐가있을까?라고 했는데 왜 그냥 지 말만
+    # 하냐" 실측 버그) — apply_user_answer()는 previous_state["phase"]만 보고
+    # forced_next_speaker="facilitator"를 심는다(awaiting_user_decision이었다면 "사용자가
+    # 진행자 질문에 답했다"고 가정) — 이 판단은 current_user_instruction을 전혀 모르는
+    # 시점(apply_user_answer 호출은 이 블록보다 위에서 이미 끝남)에 내려진 것이다. 사용자가
+    # 실제로는 진행자 질문에 답한 게 아니라 새 주제를 지정/전환했다면(interrupt_active_issue),
+    # 이 강제 진입을 그대로 두면 discussion_facilitator가 그 새 요청을 자기 질문에 대한
+    # "답변"으로 오해해 엉뚱한 요약만 내놓고 실제 요청(예: "주요 기능")에는 응답하지 않는다.
+    # forced_next_speaker를 지워 일반 진입 경로(_ENTRY_NODES["expert_discussion"] ==
+    # "planning_expert_discussion")를 타게 하면, resolve_effective_issue의 interrupt
+    # 분기가 이번 턴 쟁점을 사용자가 지정한 주제로 정확히 잡는다.
+    if state.get("forced_next_speaker") == "facilitator" and current_user_instruction.get("interrupt_active_issue"):
+        state = {**state, "forced_next_speaker": None}
+    single_turn = request_type in _SINGLE_TURN_REQUEST_TYPES
+    effective_stop_after_expert_turn = stop_after_expert_turn or single_turn
     graph = assemble_ideation_conversation_graph(
         llm_call,
         evidence_lookup=evidence_lookup,
@@ -1107,9 +1295,15 @@ def reply_ideation_conversation(
         index_target_evidence=index_target_evidence,
         evidence_planner=evidence_planner,
         external_evidence_lookup=external_evidence_lookup,
+        similar_case_lookup=similar_case_lookup,
+        compose_evidence_pool=compose_evidence_pool,
     )
     reply_baseline = len(state["messages"])
-    result_state = _drive_graph(graph, state, on_progress, on_snapshot, stop_after_expert_turn=stop_after_expert_turn)
+    result_state = _drive_graph(
+        graph, state, on_progress, on_snapshot, stop_after_expert_turn=effective_stop_after_expert_turn
+    )
+    if single_turn:
+        result_state = _finalize_single_turn_request(result_state)
 
     if result_state.get("forced_next_speaker") is not None:
         # 2026-07-26 라운드테이블 재설계: apply_user_answer가 awaiting_user_decision 직후
@@ -1131,6 +1325,8 @@ def continue_ideation_expert_turn(
     index_target_evidence: IndexTargetEvidenceFn | None = None,
     evidence_planner=None,
     external_evidence_lookup=None,
+    similar_case_lookup=None,
+    compose_evidence_pool=None,
     on_progress: IdeationConvProgressCallback | None = None,
     on_snapshot: IdeationConvSnapshotCallback | None = None,
 ) -> IdeationConvState:
@@ -1208,6 +1404,8 @@ def continue_ideation_expert_turn(
         index_target_evidence=index_target_evidence,
         evidence_planner=evidence_planner,
         external_evidence_lookup=external_evidence_lookup,
+        similar_case_lookup=similar_case_lookup,
+        compose_evidence_pool=compose_evidence_pool,
     )
     turn_baseline = len(state["messages"])
     result_state = _drive_graph(graph, state, on_progress, on_snapshot, stop_after_expert_turn=True)

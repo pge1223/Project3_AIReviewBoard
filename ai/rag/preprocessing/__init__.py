@@ -15,12 +15,28 @@ LLM 호출 없이 동작하며, 원본 WebPageContent는 수정하지 않는다.
         # cleaned.cleaned_blocks -> 이후 청킹 모듈 입력
 """
 
+from ai.rag.preprocessing.boilerplate_detection import (
+    extract_boundary_lines,
+    find_repeated_boundary_texts,
+    is_boilerplate_text,
+)
+from ai.rag.preprocessing.content_hashing import (
+    compute_chunk_content_hash,
+    compute_normalized_content_hash,
+    compute_source_content_hash,
+    deduplicate_chunks,
+    normalize_for_content_hash,
+)
 from ai.rag.preprocessing.html_cleaner import clean_page_content
 from ai.rag.preprocessing.schemas import (
     CleanedWebContent,
     RemovedBlock,
     RemovalReason,
     CleaningMethod,
+)
+from ai.rag.preprocessing.short_chunk_policy import (
+    ShortChunkResult,
+    merge_or_filter_short_chunks,
 )
 
 __all__ = [
@@ -29,4 +45,14 @@ __all__ = [
     "RemovedBlock",
     "RemovalReason",
     "CleaningMethod",
+    "extract_boundary_lines",
+    "find_repeated_boundary_texts",
+    "is_boilerplate_text",
+    "compute_chunk_content_hash",
+    "compute_normalized_content_hash",
+    "compute_source_content_hash",
+    "deduplicate_chunks",
+    "normalize_for_content_hash",
+    "ShortChunkResult",
+    "merge_or_filter_short_chunks",
 ]

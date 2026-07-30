@@ -141,6 +141,20 @@ class ExternalEvidenceRepository:
             "metric_unit": document.metric_unit,
             "page": document.page,
             "section": document.section,
+            # 용준/Claude(2026-07-30, 요청: RAG-007 색인 청크 품질 정제) — 신규 1급
+            # 필드도 metadata로 함께 저장한다(ExternalEvidenceDocument.metadata dict가
+            # 아니라 스키마 필드에서 직접 읽어야 색인 스크립트가 값을 빠뜨려도 여기서
+            # None으로라도 항상 채워진다).
+            "file_hash": document.file_hash,
+            "source_content_hash": document.source_content_hash,
+            "chunk_content_hash": document.chunk_content_hash,
+            "normalized_content_hash": document.normalized_content_hash,
+            "page_start": document.page_start,
+            "page_end": document.page_end,
+            "content_level": document.content_level,
+            "url_verified": document.url_verified,
+            "direct_file_url": document.direct_file_url,
+            "allow_grounded_claim": document.allow_grounded_claim,
         }
         for key, value in document.metadata.items():
             raw_metadata.setdefault(key, value)

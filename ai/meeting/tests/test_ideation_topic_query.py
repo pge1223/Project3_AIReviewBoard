@@ -13,10 +13,16 @@ MEETING_DIR = Path(__file__).resolve().parents[1]  # ai/meeting
 
 sys.path.insert(0, str(MEETING_DIR))
 
+from graph.ideation_conv_instruction import parse_current_user_instruction  # noqa: E402
 from graph.ideation_conv_nodes import (  # noqa: E402
     _active_issue_title,
+    _answers_requested_outputs,
+    _deterministic_final_direction_prefix,
+    _deterministic_session_state_answer,
+    _discussion_retry_note,
     _idea_core_summary,
     _topic_query,
+    classify_query_type,
     resolve_effective_issue,
     resolve_retrieval_issue,
 )
@@ -159,6 +165,149 @@ def test_resolve_retrieval_issue_prefers_unresolved_issues_over_topic_priority()
     assert resolve_retrieval_issue(state, "planning_expert") == "시민 알림의 실행 가능성"
 
 
+def test_resolve_effective_issue_anchors_expert_analysis_query_to_current_question():
+    """용준/Claude(2026-07-29, 실측 버그 수정) — 실 사이트에서 expert_analysis_query
+    ("MVP 구현 시 가장 큰 기술 위험 3개를 데이터/개인정보/음성 기능에 한정해서 답해달라")
+    응답에 이전 턴들이 남긴 unresolved_issues 누적 문구("'None'은 문서 근거만으로
+    확정할 수 없어...", "'로드맵'은...")가 그대로 노출됐다. active_issue_id가 비어 있어도
+    expert_analysis_query는 canonical 주제 로테이션이나 unresolved_issues 누적 문구가 아니라
+    이번 사용자 질문 원문 자체를 쟁점으로 삼아야 한다."""
+    state = _state_without_active_issue()
+    state["request_type"] = "expert_analysis_query"
+    state["current_user_input"] = (
+        "현재 확정된 아이디어만 기준으로, MVP 구현 시 가장 큰 기술 위험 3개와 각각의 대응 "
+        "방법을 제시해 주세요. 데이터 확보, 개인정보 보호, 음성·쉬운 문장 기능 구현 "
+        "가능성에 한정해서 답해 주세요."
+    )
+    state["unresolved_issues"] = [
+        "planning_expert: 'None'은 문서 근거만으로 확정할 수 없어 전문가 판단(가정)으로 진행합니다 — ...",
+        "dev_expert: '로드맵'은 문서 근거만으로 확정할 수 없어 전문가 판단(가정)으로 진행합니다 — ...",
+    ]
+    issue = resolve_effective_issue(state, "planning_expert")
+    assert issue["source"] == "current_user_input"
+    assert "None" not in issue["title"]
+    assert "로드맵" not in issue["title"]
+    assert issue["title"] == state["current_user_input"]
+
+
+def test_resolve_effective_issue_ignores_current_user_input_for_other_request_types():
+    """expert_analysis_query가 아니면 기존 unresolved_issues 우선순위 동작이 그대로
+    유지돼야 한다(회귀 없음 — 위 새 분기는 expert_analysis_query에만 적용)."""
+    state = _state_without_active_issue()
+    state["current_user_input"] = "아무 질문"
+    state["unresolved_issues"] = ["시민 알림의 실행 가능성"]
+    issue = resolve_effective_issue(state, "planning_expert")
+    assert issue["source"] == "unresolved_issues"
+    assert issue["title"] == "시민 알림의 실행 가능성"
+
+
+def test_resolve_effective_issue_prefers_current_user_input_over_stale_active_issue():
+    """용준/Claude(2026-07-30, 요청: "이전 '성공 지표' 쟁점이 query를 지배하면 안 됨" — 실측
+    버그) — active_issue_id가 이미 채워진 상태(예: 이전 라운드의 "성공 지표" 쟁점)에서도,
+    사용자가 이번 턴에 expert_analysis_query로 명시적으로 다른 주제를 요청하면 그 원문이
+    active_issue_id보다 우선해야 한다. 기존에는 active_issue_id를 먼저 검사해 current_user_input
+    분기에 아예 도달하지 못했다."""
+    state = _state_with_issue(issue_id="success_metrics", issue_title="성공 지표")
+    state["request_type"] = "expert_analysis_query"
+    state["current_user_input"] = "주요 기능, 필요한 데이터, 기술 구현 방향, MVP에 대해 회의해줘"
+
+    issue = resolve_effective_issue(state, "planning_expert")
+
+    assert issue["source"] == "current_user_input"
+    assert issue["title"] == state["current_user_input"]
+    assert "성공 지표" not in issue["title"]
+
+    query = _topic_query(state, "planning_expert")
+    assert "주요 기능" in query
+    assert "성공 지표" not in query
+
+
+def test_parse_current_user_instruction_extracts_excluded_topic_and_override():
+    """실측 사례(회의 화면 스크린샷) 재현 — "다음 논의 주제를 AI 활용 방식으로 잡지말고,
+    나머지 구현되지 못한 기능들에 대해 논의해주세요"."""
+    instruction = parse_current_user_instruction(
+        "다음 논의 주제를 AI 활용 방식으로 잡지말고, 나머지 구현되지 못한 기능들에 대해 논의해주세요"
+    )
+    assert instruction["excluded_topics"] == ["AI 활용 방식"]
+    assert instruction["interrupt_active_issue"] is True
+    assert instruction["instruction_provenance"] == "direct_user_message"
+    assert "AI 활용 방식" not in (instruction["topic_override"] or "")
+
+
+def test_parse_current_user_instruction_extracts_requested_outputs():
+    instruction = parse_current_user_instruction(
+        "AI 활용 방식으로 잡지 말고 주요 기능, 필요한 데이터, 기술 구현 방향과 MVP를 논의해 주세요"
+    )
+    assert instruction["requested_outputs"] == [
+        "main_features",
+        "required_data",
+        "technical_approach",
+        "mvp_scope",
+    ]
+    assert instruction["excluded_topics"] == ["AI 활용 방식"]
+
+
+def test_requested_main_features_must_be_answered_directly():
+    instruction = parse_current_user_instruction(
+        "모르겠고 일단 주요 기능에 대해서 설명해 봐"
+    )
+
+    assert _answers_requested_outputs(
+        "교육 프로그램의 효과를 측정할 명확한 지표가 필요합니다.",
+        instruction,
+    ) is False
+    assert _answers_requested_outputs(
+        "주요 기능은 맞춤형 교육, 질의응답, 진도 관리, 효과 측정입니다.",
+        instruction,
+    ) is True
+
+
+def test_requested_output_retry_note_demands_direct_answer():
+    note = _discussion_retry_note("spoken_text_missing_requested_output")
+
+    assert "사용자가 직접 요청한 항목" in note
+    assert "주요 기능은" in note
+
+
+def test_parse_current_user_instruction_empty_for_plain_continuation():
+    """신호가 없는 일반 응답은 완전히 빈 값을 반환해 기존 동작에 영향을 주지 않는다."""
+    for text in ["네 좋습니다 계속 진행해주세요", "이 아이디어에 대해 어떻게 생각하세요", ""]:
+        instruction = parse_current_user_instruction(text)
+        assert instruction["interrupt_active_issue"] is False
+        assert instruction["excluded_topics"] == []
+        assert instruction["topic_override"] is None
+
+
+def test_resolve_effective_issue_prefers_interrupt_over_active_issue():
+    """G.1/G.2 — request_type이 expert_analysis_query가 아니어도(예: 기본
+    ideation_discussion_request) current_user_instruction.interrupt_active_issue가 true면
+    active_issue_id보다 우선한다."""
+    state = _state_with_issue(issue_id="ai_usage_method", issue_title="AI 활용 방식")
+    state["current_user_input"] = (
+        "다음 논의 주제를 AI 활용 방식으로 잡지말고, 나머지 구현되지 못한 기능들에 대해 논의해주세요"
+    )
+    state["current_user_instruction"] = parse_current_user_instruction(state["current_user_input"])
+
+    issue = resolve_effective_issue(state, "planning_expert")
+
+    assert issue["source"] == "current_user_instruction"
+    assert "AI 활용 방식" not in issue["title"]
+    assert issue["title"] == state["current_user_instruction"]["topic_override"]
+
+
+def test_resolve_effective_issue_ignores_empty_current_user_instruction():
+    """G.7 — 신호 없는 current_user_instruction(빈 값)은 interrupt_active_issue=False라
+    기존 active_issue_id 우선순위 동작에 전혀 영향을 주지 않는다(회귀 없음)."""
+    state = _state_with_issue(issue_id="success_metrics", issue_title="성공 지표")
+    state["current_user_input"] = "네 좋습니다 계속 진행해주세요"
+    state["current_user_instruction"] = parse_current_user_instruction(state["current_user_input"])
+
+    issue = resolve_effective_issue(state, "planning_expert")
+
+    assert issue["source"] == "active_issue_id"
+    assert issue["title"] == "성공 지표"
+
+
 def test_resolve_retrieval_issue_skips_resolved_topics():
     state = _state_without_active_issue()
     state["resolved_topics"] = ["problem", "target_user", "core_value", "contest_fit"]
@@ -251,3 +400,224 @@ def test_idea_core_summary_empty_fields_are_skipped_without_duplication():
     summary = _idea_core_summary(idea, "planning_expert")
     # "T"가 title과 solution에 중복으로 들어 있어도 한 번만 포함된다.
     assert summary.count("T") == 1
+
+
+# ---------------------------------------------------------------------------
+# 용준/Claude(2026-07-29, 요청: RAG 품질 개선 3단계 — dual-query 방식으로 전환) — 2단계에서는
+# 키워드 목록에 매칭되는 질문만 topic_query에서 쟁점/역할 관점을 뺐는데, 목록에 없는 표현은
+# 여전히 희석됐다(B02 실측). 이제 topic_query는 항상 "idea_summary | 현재 쟁점 | 검토 관점"
+# 형식을 유지하고(사용자 질문 원문이 항상 맨 앞), 희석 문제는 RAG 쪽(
+# ai/rag/orchestration/ideation_evidence_service.py)이 " | " 앞부분만 별도로 plain 검색해
+# 역할 확장 검색과 rank fusion으로 합치는 dual-query 방식으로 해결한다 — 여기서는 topic_query
+# 조립 자체(순서·형식)만 검증한다.
+# ---------------------------------------------------------------------------
+
+
+def _state_with_description_only(description: str, *, issue_id="problem", issue_title="문제 정의"):
+    state = initial_conv_state(
+        session_id="S1",
+        notice_and_criteria={"competition_name": "테스트 공모전"},
+        user_idea={"description": description},
+    )
+    state["active_issue_id"] = issue_id
+    state["open_issues"] = [
+        {
+            "issue_id": issue_id,
+            "title": issue_title,
+            "status": "open",
+            "planning_position": None,
+            "development_position": None,
+            "resolution": None,
+            "turns": 0,
+        }
+    ]
+    return state
+
+
+def test_admin_fact_question_still_includes_issue_and_role_focus():
+    """3단계에서는 키워드 기반 예외 처리를 없앴다 — 행정 사실 질문도 다른 질문과 동일하게
+    쟁점/역할 관점이 붙는다(희석 문제는 RAG 쪽 dual-query가 담당)."""
+    state = _state_with_description_only("이 공모전에서 결격 사유에는 어떤 것들이 있나요?")
+    query = _topic_query(state, "dev_expert")
+    assert query.startswith("이 공모전에서 결격 사유에는 어떤 것들이 있나요?")
+    assert "현재 쟁점: 문제 정의" in query
+    assert "검토 관점" in query
+
+
+def test_topic_query_always_puts_raw_question_first():
+    """RAG 쪽이 topic_query.split(" | ", 1)[0]로 사용자 질문 원문만 뽑아 별도 plain 검색에
+    쓴다(dual-query Query A) — 이 계약이 깨지지 않는지 검증한다."""
+    state = _state_with_description_only("참가 자격 요건이 어떻게 되나요?")
+    query = _topic_query(state, "dev_expert")
+    assert query.split(" | ", 1)[0] == "참가 자격 요건이 어떻게 되나요?"
+
+
+# ---------------------------------------------------------------------------
+# 용준/Claude(2026-07-29, 요청: RAG 품질 개선 3단계 — 정확한 상태값은 코드가 결정적으로
+# 출력) — "최종 확정한 아이디어가 뭔가요" 질문에서 LLM이 재구성하다 명칭을 바꾸거나 검토
+# 중인 후보를 확정안으로 착각하는 문제(B05 회귀)를 코드 레벨에서 막는다.
+# ---------------------------------------------------------------------------
+
+
+def test_deterministic_prefix_none_for_non_final_direction_query():
+    state = _state_with_description_only("결격 사유가 뭔가요?")
+    assert _deterministic_final_direction_prefix(state, "결격 사유가 뭔가요?") is None
+
+
+def test_deterministic_prefix_uses_exact_title_when_locked():
+    state = _state_with_description_only("최종 확정한 아이디어가 뭔가요?")
+    state["idea_locked"] = True
+    state["selected_idea"] = {"title": "상대적 기준 검토 방식", "problem": "P"}
+    prefix = _deterministic_final_direction_prefix(state, "최종 확정한 아이디어가 뭔가요?")
+    assert prefix == "사용자가 최종 확정한 아이디어는 '상대적 기준 검토 방식'입니다."
+
+
+def test_deterministic_prefix_says_not_confirmed_when_idea_not_locked():
+    state = _state_with_description_only("최종 확정한 아이디어가 뭔가요?")
+    state["idea_locked"] = False
+    state["selected_idea"] = None
+    prefix = _deterministic_final_direction_prefix(state, "최종 확정한 아이디어가 뭔가요?")
+    assert prefix == "아직 최종 확정된 아이디어가 없습니다."
+
+
+def test_deterministic_prefix_says_not_confirmed_when_locked_but_title_missing():
+    """idea_locked=True인데 title이 비어 있으면(데이터 이상) 빈 문자열을 정답인 것처럼
+    내보내지 않고 "없다"고 말한다 — 값을 지어내지 않는다."""
+    state = _state_with_description_only("최종 확정한 아이디어가 뭔가요?")
+    state["idea_locked"] = True
+    state["selected_idea"] = {"title": "", "problem": "P"}
+    prefix = _deterministic_final_direction_prefix(state, "최종 확정한 아이디어가 뭔가요?")
+    assert prefix == "아직 최종 확정된 아이디어가 없습니다."
+
+
+# ---------------------------------------------------------------------------
+# 용준/Claude(2026-07-29, 요청: 생성 품질 개선 2단계 — session_state_query 일반화 +
+# 질문 유형 라우팅). _deterministic_final_direction_prefix는 문구·동작 그대로 유지되므로
+# (위 4개 테스트) 여기서는 새로 추가한 idea_locked/current_phase/provisional 분기와
+# classify_query_type만 검증한다.
+# ---------------------------------------------------------------------------
+
+
+def test_session_state_answer_falls_back_to_final_direction_first():
+    state = _state_with_description_only("최종 확정한 아이디어가 뭔가요?")
+    state["idea_locked"] = True
+    state["selected_idea"] = {"title": "제목", "problem": "P"}
+    assert (
+        _deterministic_session_state_answer(state, "최종 확정한 아이디어가 뭔가요?")
+        == "사용자가 최종 확정한 아이디어는 '제목'입니다."
+    )
+
+
+def test_session_state_answer_idea_locked_query():
+    state = _state_with_description_only("아이디어가 확정됐나요?")
+    state["idea_locked"] = False
+    assert _deterministic_session_state_answer(state, "아이디어가 확정됐나요?") == "아이디어가 아직 최종 확정되지 않았습니다."
+    state["idea_locked"] = True
+    assert _deterministic_session_state_answer(state, "아이디어가 확정됐나요?") == "아이디어가 최종 확정되어 잠겼습니다."
+
+
+def test_session_state_answer_current_phase_query():
+    state = _state_with_description_only("지금 어떤 단계인가요?")
+    state["phase"] = "idea_validation"
+    assert _deterministic_session_state_answer(state, "지금 어떤 단계인가요?") == "현재 회의는 '아이디어 검증' 단계입니다."
+
+
+def test_session_state_answer_provisional_idea_query():
+    state = _state_with_description_only("지금 검토 중인 아이디어가 뭔가요?")
+    state["provisional_idea"] = {"title": "잠정안"}
+    assert (
+        _deterministic_session_state_answer(state, "지금 검토 중인 아이디어가 뭔가요?")
+        == "현재 검증 중인 잠정 후보는 '잠정안'입니다."
+    )
+    state["provisional_idea"] = None
+    assert (
+        _deterministic_session_state_answer(state, "지금 검토 중인 아이디어가 뭔가요?")
+        == "현재 검증 중인 잠정 후보가 없습니다."
+    )
+
+
+def test_session_state_answer_none_for_unrelated_query():
+    state = _state_with_description_only("결격 사유가 뭔가요?")
+    assert _deterministic_session_state_answer(state, "결격 사유가 뭔가요?") is None
+
+
+def test_classify_query_type_document_fact():
+    assert classify_query_type("이 공모전 참가 자격 요건이 어떻게 되나요?") == "document_fact_query"
+    assert classify_query_type("제출 서류는 뭐가 필요한가요?") == "document_fact_query"
+
+
+def test_classify_query_type_session_state():
+    assert classify_query_type("최종 확정한 아이디어가 뭔가요?") == "session_state_query"
+    assert classify_query_type("아이디어가 확정됐나요?") == "session_state_query"
+
+
+def test_classify_query_type_expert_analysis():
+    assert classify_query_type("이 기능의 구현 가능성이 어때요?") == "expert_analysis_query"
+    assert classify_query_type("데이터 확보 방안과 기술 위험을 개선 제안 해주세요") == "expert_analysis_query"
+
+
+def test_classify_query_type_scoped_analysis_request_without_mvp_keyword():
+    """용준/Claude(2026-07-30, 요청: "명시적인 분석 범위가 포함된 사용자 요청을
+    expert_analysis_query로 분류") — "MVP" 키워드 없이도 "주요 기능/필요한 데이터/기술
+    구현 방향"처럼 검토 범위를 구체적으로 지정하면 expert_analysis_query로 분류돼야
+    한다(이전에는 "MVP"가 우연히 포함된 문장만 통과하고, 동등한 표현인데 "MVP"가 빠진
+    문장은 ideation_discussion_request로 잘못 떨어졌다)."""
+    assert (
+        classify_query_type("주요 기능, 필요한 데이터, 기술 구현 방향, MVP에 대해 회의해줘")
+        == "expert_analysis_query"
+    )
+    assert (
+        classify_query_type("주요 기능과 필요한 데이터에 대해 얘기해줘")
+        == "expert_analysis_query"
+    )
+
+
+def test_classify_query_type_fallback_for_ambiguous_text():
+    """용준/Claude(2026-07-29, 요청: 4단계 — fallback 명명) — None 대신 명시적인
+    ideation_discussion_request를 반환한다."""
+    assert classify_query_type("안녕하세요") == "ideation_discussion_request"
+
+
+def test_classify_query_type_ideation_discussion_request_for_discussion_ask():
+    """아이디어를 자유롭게 토론해 달라는 요청은 특정 유형(사실/상태/전문가판단) 신호가
+    없어 ideation_discussion_request(기존 일반 discussion 경로)로 분류된다."""
+    assert classify_query_type("이 아이디어에 대해 자유롭게 토론해 주세요") == "ideation_discussion_request"
+
+
+def test_classify_query_type_document_fact_boosted_by_criteria_evidence():
+    """키워드 신호가 약해도(임계값 미만) evidence의 document_role 구성이 criteria 위주면
+    document_fact_query 쪽으로 점수가 보정된다(요청: "키워드 몇 개만 하드코딩하지 말고
+    구조화 분류")."""
+    evidence = [
+        {"document_role": "criteria", "text": "심사 기준 안내"},
+        {"document_role": "criteria", "text": "제출 안내"},
+        {"document_role": "target", "text": "아이디어 설명"},
+    ]
+    # "요건" 하나만으로는 임계값(3) 미만이라 evidence 보정이 없으면 fallback이어야 한다.
+    assert classify_query_type("요건이 뭔가요", evidence=None) == "ideation_discussion_request"
+    assert classify_query_type("요건이 뭔가요", evidence=evidence) == "document_fact_query"
+
+
+# ---------------------------------------------------------------------------
+# 용준/Claude(2026-07-29, 요청: 4단계 — B02 회귀 수정 검증 + 전체 검증 매트릭스). 실제
+# 6-케이스 평가셋 원문 질의를 그대로 사용해 분류가 요청한 매트릭스와 일치하는지 확인한다.
+# ---------------------------------------------------------------------------
+
+
+def test_classify_query_type_verification_matrix():
+    cases = {
+        # A01/A03/A04/B01/B02 원문 그대로 — document_fact_query여야 한다.
+        "실증·PoC 부문과 우수사례 부문의 평가 항목별 배점은 어떻게 다른가요?": "document_fact_query",
+        "이 공모전에 컨소시엄으로 참여할 때 참여기관 요건은 어떻게 되나요?": "document_fact_query",
+        "실증·PoC 수행보고서에서 데이터 관련 항목은 어떤 내용을 작성해야 하나요?": "document_fact_query",
+        "이 공모전에서 결격 사유에는 어떤 것들이 있나요?": "document_fact_query",
+        "1차 서면심사에서는 몇 개 과제가 선정되나요?": "document_fact_query",
+        # B05
+        "이 회의에서 사용자가 최종적으로 확정한 해결 방향은 무엇인가요?": "session_state_query",
+        # 구현 가능성·MVP 위험 질문
+        "이 기능의 구현 가능성과 MVP 단계 기술 위험이 어느 정도인가요?": "expert_analysis_query",
+        # 자유 토론 요청
+        "이 아이디어를 자유롭게 토론해 주세요": "ideation_discussion_request",
+    }
+    for query, expected in cases.items():
+        assert classify_query_type(query) == expected, f"{query!r} -> expected {expected!r}"

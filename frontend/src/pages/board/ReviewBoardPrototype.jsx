@@ -3,8 +3,8 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   Link2, Upload, FileText, Sparkles,
   CheckCircle2, Circle, AlertCircle, AlertTriangle, Award, Target, ShieldCheck,
-  ArrowRight, TrendingUp, ChevronDown, ChevronUp, ChevronRight, Calendar, X, Trash2,
-  Menu, User, LogOut, ExternalLink, Gift, AlertOctagon, Quote, FileStack,
+  ArrowRight, ChevronDown, ChevronUp, ChevronRight, Calendar, Trash2,
+  Menu, User, LogOut, Gift, AlertOctagon, Quote, FileStack,
 } from "lucide-react";
 import { createProject, getProject, updateProject, getLatestMeeting } from "../../api/projectApi";
 import {
@@ -12,9 +12,9 @@ import {
   uploadDocument,
   getAnnouncementAnalysis,
   getApplicationFormAnalysis,
-  getContestWorksByTitle,
   deleteDocument,
   getDocuments,
+  getDocumentStatus,
   retryDocumentIndexing,
 } from "../../api/documentApi";
 import { analyzeProject, getAnalyzeProgress, getMentorCandidates } from "../../api/projectApi";
@@ -388,6 +388,69 @@ function EntryScreen({ onEnter, onModeSelect, loading, error, projectId, ensureP
   function updateDoc(id, patch) {
     setDocuments((prev) => prev.map((doc) => (doc.id === id ? { ...doc, ...patch } : doc)));
   }
+
+  // 서버에서 재색인이 완료됐는데 브라우저가 이전 실패 상태를 들고 있는 경우를 복구한다.
+  // 실패 행만 확인하므로 정상적인 업로드 폴링과 중복되지 않는다.
+  const failedBackendIds = documents
+    .filter((doc) => doc.status === 'error' && doc.backendId)
+    .map((doc) => `${doc.id}:${doc.backendId}`)
+    .sort()
+    .join('|');
+
+  useEffect(() => {
+    if (!projectId || !failedBackendIds) return undefined;
+
+    let cancelled = false;
+    const reconcile = async () => {
+      const failedDocs = documents.filter((doc) => doc.status === 'error' && doc.backendId);
+      await Promise.all(failedDocs.map(async (doc) => {
+        try {
+          const result = await getDocumentStatus(projectId, doc.backendId);
+          if (cancelled) return;
+          if (result.status === 'indexed') {
+            updateDoc(doc.id, {
+              status: doc.unsupportedLinks?.length ? 'warning' : 'done',
+              progress: 100,
+              meta: doc.unsupportedLinks?.length
+                ? '본문 색인은 완료됐으며 일부 첨부파일은 직접 확인이 필요합니다.'
+                : '벡터 저장이 완료되었습니다.',
+            });
+          } else if (result.status === 'indexed_empty') {
+            updateDoc(doc.id, {
+              status: 'warning',
+              progress: 100,
+              meta: '읽을 수 있는 텍스트가 없어 파일 확인이 필요합니다.',
+            });
+          } else if (result.status === 'indexing') {
+            updateDoc(doc.id, {
+              status: 'embedding',
+              progress: 75,
+              meta: '문서를 다시 색인하는 중...',
+            });
+            pollDocumentIndexing(
+              projectId,
+              doc.backendId,
+              doc.id,
+              doc.unsupportedLinks?.length ? 'warning' : 'done',
+              doc.unsupportedLinks?.length
+                ? '본문 색인은 완료됐으며 일부 첨부파일은 직접 확인이 필요합니다.'
+                : '벡터 저장이 완료되었습니다.',
+              updateDoc,
+            );
+          }
+        } catch {
+          // 일시적인 상태 조회 실패는 기존 오류 안내를 유지한다.
+        }
+      }));
+    };
+
+    reconcile();
+    const timer = setInterval(reconcile, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [projectId, failedBackendIds]);
 
   // 가은/Claude(2026-07-21): 실측 요청 — 잘못 올린 공고문·평가기준 문서를 지울 수 있게.
   // backendId(실제 DB document_id)가 아직 없으면(업로드/색인 중) 서버 삭제는 건너뛰고
@@ -994,7 +1057,10 @@ function AnalysisSummaryCard({ summary, onExpand }) {
 
 function EvaluationCriteriaSummary({ groups, expanded, onToggle }) {
   const allItems = groups.flatMap((g) => g.items);
-  const { itemCount, totalScore } = summarizeCriteria(groups);
+  const { itemCount, totalScore, groupCount, perGroupItemCount } = summarizeCriteria(groups);
+  const hasPocBase95 = groups.some(
+    (group) => /실증.*poc/i.test(group.groupName) && group.totalScore === 95,
+  );
 
   return (
     <div className="card glass cas-section">
@@ -1003,7 +1069,14 @@ function EvaluationCriteriaSummary({ groups, expanded, onToggle }) {
           <div className="cas-card-title"><Award size={15} color="var(--coral)" /> 평가 기준 요약</div>
           {itemCount > 0 && (
             <div className="cas-card-subtitle">
-              {itemCount}개 항목{totalScore != null ? `, 총 ${totalScore}점 만점으로 평가됩니다.` : "으로 평가됩니다."}
+              {groupCount > 1
+                ? `${groupCount}개 공모 부문 · 부문별 ${perGroupItemCount ?? '각기 다른'}개 항목으로 각각 평가됩니다.`
+                : `${itemCount}개 항목${totalScore != null ? `, 총 ${totalScore}점 만점으로 평가됩니다.` : '으로 평가됩니다.'}`}
+              {hasPocBase95 && (
+                <span style={{ display: 'block', marginTop: 3 }}>
+                  실증·PoC는 기본 95점에 가점 5점을 합산해 100점 만점입니다.
+                </span>
+              )}
             </div>
           )}
         </div>
@@ -1060,80 +1133,6 @@ function EvaluationCriteriaSummary({ groups, expanded, onToggle }) {
   );
 }
 
-function SimilarCaseSection({ hasData, works, expanded, onToggle, onWorkClick, loadingWork }) {
-  if (!hasData || works.length === 0) {
-    return (
-      <div className="card glass cas-section">
-        <div className="cas-card-title"><TrendingUp size={15} color="var(--amber)" /> 수상작·유사 사례 분석</div>
-        <div className="cas-empty">
-          {hasData ? "일치하는 유사 사례를 찾지 못했어요." : "수상작 자료 미확보 — 유사 공모전 사례 기반 분석은 아직 지원하지 않아요."}
-        </div>
-      </div>
-    );
-  }
-
-  const firstRow = works.slice(0, 3);
-  const rest = works.slice(3);
-
-  const renderCard = (work, i) => {
-    const clickable = !!work.contest_title && !loadingWork;
-    const Tag = clickable ? "button" : "div";
-    return (
-      <Tag
-        key={i}
-        type={clickable ? "button" : undefined}
-        className="card glass cas-case-card"
-        onClick={clickable ? () => onWorkClick(work) : undefined}
-      >
-        {work.selection_status && (
-          <span className={`badge ${work.selection_status === "winner" ? "green" : "amber"} mono`}>
-            {work.selection_status === "winner" ? (work.award_grade || "수상") : "후보"}
-          </span>
-        )}
-        <div className="cas-case-title">{work.title}</div>
-        {(work.contest_title || work.source_org) && (
-          <div className="cas-case-source">{[work.contest_title, work.source_org].filter(Boolean).join(" · ")}</div>
-        )}
-      </Tag>
-    );
-  };
-
-  return (
-    <div className="card glass cas-section">
-      <div className="cas-section-head">
-        <div>
-          <div className="cas-card-title"><TrendingUp size={15} color="var(--amber)" /> 수상작·유사 사례 분석</div>
-          <div className="cas-card-subtitle">최근 수상작 및 유사 사례 {works.length}건을 분석했습니다.</div>
-        </div>
-        {rest.length > 0 && (
-          <button type="button" className="btn-ghost cas-detail-btn" onClick={onToggle}>
-            {expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />} {expanded ? "접기" : "자세히 보기"}
-          </button>
-        )}
-      </div>
-
-      <div className="cas-case-grid">
-        {firstRow.map((work, i) => renderCard(work, i))}
-        {!expanded && rest.length > 0 && (
-          <button type="button" className="card glass cas-case-card cas-case-more" onClick={onToggle}>
-            +{rest.length}건 더 보기
-          </button>
-        )}
-      </div>
-
-      {rest.length > 0 && (
-        <div className={`cas-collapse ${expanded ? "open" : ""}`}>
-          <div className="cas-collapse-inner">
-            <div className="cas-case-grid" style={{ marginTop: 12 }}>
-              {rest.map((work, i) => renderCard(work, i + 3))}
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
 function ContestDetailTabs({ activeTab, onTabChange, facts, strategy, formAnalysis }) {
   function handleTabKeyDown(e) {
     if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
@@ -1151,18 +1150,31 @@ function ContestDetailTabs({ activeTab, onTabChange, facts, strategy, formAnalys
   const disqualificationRules = facts?.disqualification_rules || [];
   const riskFlags = strategy?.risk_flags || [];
   const formatScheduleDate = (value, weekday, includeYear = true) => {
+    const monthMatch = /^(\d{4})-(\d{2})$/.exec(value || "");
+    if (monthMatch) {
+      return `${includeYear ? `${Number(monthMatch[1])}년 ` : ""}${Number(monthMatch[2])}월 중`;
+    }
     const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value || "");
     if (!match) return value || "";
     const [, year, month, day] = match;
     return `${includeYear ? `${Number(year)}년 ` : ""}${Number(month)}월 ${Number(day)}일${weekday ? `(${weekday})` : ""}`;
   };
   const formatScheduleItem = (item) => {
+    const sourceText = item.source_text || "";
+    const compactSource = sourceText.replace(/\s+/g, "");
+    let label = item.event_label;
+    if (compactSource.includes("발표심사") || compactSource.includes("발표평가")) label = "발표 심사";
+    if (compactSource.includes("개별") && compactSource.includes("시상")) label = "개별 시상식";
+    if (compactSource.includes("통합") && compactSource.includes("시상")) label = "통합 시상식";
     const start = formatScheduleDate(item.start_date, item.start_weekday);
     const sameYear = item.end_date?.slice(0, 4) === item.start_date?.slice(0, 4);
     const end = item.end_date
       ? ` ~ ${formatScheduleDate(item.end_date, item.end_weekday, !sameYear)}`
       : "";
-    return [item.event_label, `${start}${end}`, item.method].filter(Boolean).join(" · ");
+    const deadlineTime = label === "신청 기간" ? sourceText.match(/(\d{1,2})\s*시/)?.[1] : null;
+    const dateText = `${start}${end}${deadlineTime ? ` ${Number(deadlineTime)}시` : ""}`;
+    const method = (item.method || "").replace(/\s*또는\s*빈\s*문자열\s*$/, "").trim();
+    return [label, dateText, method].filter(Boolean).join(" · ");
   };
 
   return (
@@ -1469,15 +1481,10 @@ function AnalysisScreen({ mode, onNext, onBack, projectId }) {
   const [progressPercent, setProgressPercent] = useState(8);
   const [detailOpen, setDetailOpen] = useState(false);
   const [ideaTopic, setIdeaTopic] = useState(null);
-  const [workDetail, setWorkDetail] = useState(null); // { contestTitle, works } | null
-  const [workDetailLoading, setWorkDetailLoading] = useState(false);
-  const [panelWidth, setPanelWidth] = useState(460);
-  const resizingRef = useRef(false);
   // 가은/Claude(2026-07-24, 요청: 공모전 분석 결과 화면 개편) — 새 카드형 레이아웃의
   // 펼침/탭 상태. 전부 표시용 UI 상태라 API 재호출이나 데이터 변형을 일으키지 않는다.
   const [detailTab, setDetailTab] = useState("strategy");
   const [criteriaExpanded, setCriteriaExpanded] = useState(false);
-  const [similarExpanded, setSimilarExpanded] = useState(false);
   const [evidenceExpanded, setEvidenceExpanded] = useState(false);
   const [advancing, setAdvancing] = useState(false);
 
@@ -1491,28 +1498,6 @@ function AnalysisScreen({ mode, onNext, onBack, projectId }) {
     setAdvancing(true);
     onNext();
   }
-
-  // 가은/Claude(2026-07-21): 실측 요청 — 수상작 상세 패널을 마우스로 드래그해 너비를
-  // 조절할 수 있게. 패널이 화면 오른쪽에 고정돼 있어 왼쪽 가장자리를 끌면 그 지점부터
-  // 화면 끝까지가 새 너비가 된다.
-  useEffect(() => {
-    function handleMouseMove(e) {
-      if (!resizingRef.current) return;
-      const next = window.innerWidth - e.clientX;
-      setPanelWidth(Math.min(Math.max(next, 340), Math.min(760, window.innerWidth - 80)));
-    }
-    function handleMouseUp() {
-      if (!resizingRef.current) return;
-      resizingRef.current = false;
-      document.body.style.userSelect = '';
-    }
-    window.addEventListener('mousemove', handleMouseMove);
-    window.addEventListener('mouseup', handleMouseUp);
-    return () => {
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', handleMouseUp);
-    };
-  }, []);
 
   useEffect(() => {
     if (!projectId) {
@@ -1561,23 +1546,6 @@ function AnalysisScreen({ mode, onNext, onBack, projectId }) {
     return () => { cancelled = true; };
   }, [projectId]);
 
-  // 가은/Claude(2026-07-21): 실측 요청 — "수상작·유사사례 경향" 항목을 클릭하면 같은
-  // 공모전의 다른 수상작/후보작을 옆 패널로 보여준다. "볼 게 있을 때만" 열려야 하므로
-  // (자기 자신 하나뿐이고 이미지도 없으면 클릭해도 반응 없음) 먼저 조회하고 나서 연다.
-  async function handleSimilarWorkClick(work) {
-    if (!work.contest_title || workDetailLoading) return;
-    setWorkDetailLoading(true);
-    try {
-      const data = await getContestWorksByTitle(work.contest_title);
-      const hasMore = data.works.length > 1 || data.works.some((w) => w.images.length > 0 || w.ocr_text);
-      if (hasMore) setWorkDetail({ contestTitle: data.contest_title, works: data.works });
-    } catch {
-      // 실측 지침: 데이터가 없거나(조회 실패 포함) 볼 게 없으면 그냥 아무 반응 없이 둔다.
-    } finally {
-      setWorkDetailLoading(false);
-    }
-  }
-
   if (loading) {
     return (
       <div style={{ maxWidth: 820 }}>
@@ -1606,7 +1574,6 @@ function AnalysisScreen({ mode, onNext, onBack, projectId }) {
   // (contest_works)가 생겨서 실제 유사사례를 보여줄 수 있게 됐다 — 백엔드가 매칭을
   // 못 찾으면(팀 공유 DB에 아직 데이터가 안 올라왔거나 이 카테고리에 사례가 없으면)
   // has_similar_case_data가 false로 오므로 그때는 기존 "미확보" 문구를 그대로 보여준다.
-  const similarWorks = analysis?.similar_works || [];
   const criteriaGroups = parseEvaluationCriteria(facts?.evaluation_criteria);
   const criteriaSummary = summarizeCriteria(criteriaGroups);
   const sourceDocCount = analysis?.source_document_names?.length || 0;
@@ -1629,15 +1596,14 @@ function AnalysisScreen({ mode, onNext, onBack, projectId }) {
   if (criteriaSummary.itemCount > 0) {
     statRows.push({
       label: "평가 항목",
-      value: criteriaSummary.totalScore != null
+      value: criteriaSummary.groupCount > 1
+        ? `${criteriaSummary.groupCount}개 부문 · 부문별 ${criteriaSummary.perGroupItemCount ?? '개별'}개 항목`
+        : criteriaSummary.totalScore != null
         ? `${criteriaSummary.itemCount}개 항목 · ${criteriaSummary.totalScore}점`
         : `${criteriaSummary.itemCount}개 항목`,
     });
   }
   if (sourceDocCount > 0) statRows.push({ label: "분석 근거 자료", value: `${sourceDocCount}개 문서` });
-  if (analysis?.has_similar_case_data && similarWorks.length > 0) {
-    statRows.push({ label: "유사 사례", value: `${similarWorks.length}개 분석` });
-  }
 
   return (
     <>
@@ -1779,14 +1745,6 @@ function AnalysisScreen({ mode, onNext, onBack, projectId }) {
                 expanded={criteriaExpanded}
                 onToggle={() => setCriteriaExpanded((v) => !v)}
               />
-              <SimilarCaseSection
-                hasData={!!analysis?.has_similar_case_data}
-                works={similarWorks}
-                expanded={similarExpanded}
-                onToggle={() => setSimilarExpanded((v) => !v)}
-                onWorkClick={handleSimilarWorkClick}
-                loadingWork={workDetailLoading}
-              />
               <CoreRequirementsSection
                 open={detailOpen}
                 onToggle={() => setDetailOpen((v) => !v)}
@@ -1828,63 +1786,6 @@ function AnalysisScreen({ mode, onNext, onBack, projectId }) {
       </div>
     </div>
 
-    {workDetail && (
-      <div
-        className="glass"
-        style={{
-          position: "fixed", top: 0, right: 0, bottom: 0, width: panelWidth, maxWidth: "90vw",
-          padding: 24, overflowY: "auto", zIndex: 40, borderLeft: "1px solid var(--glass-border)",
-          boxShadow: "-8px 0 24px rgba(28,26,46,0.10)",
-        }}
-      >
-        <div
-          onMouseDown={() => { resizingRef.current = true; document.body.style.userSelect = 'none'; }}
-          style={{
-            position: "absolute", left: 0, top: 0, bottom: 0, width: 8,
-            cursor: "col-resize", zIndex: 1,
-          }}
-        />
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16, gap: 8 }}>
-          <div style={{ fontWeight: 700, fontSize: 14, lineHeight: 1.5 }}>{workDetail.contestTitle}</div>
-          <button
-            onClick={() => setWorkDetail(null)}
-            aria-label="닫기"
-            style={{ background: "none", border: "none", padding: 4, cursor: "pointer", color: "var(--text-2)", flexShrink: 0 }}
-          >
-            <X size={16} />
-          </button>
-        </div>
-        {workDetail.works.map((w, i) => (
-          <div key={i} style={{ padding: "14px 0", borderTop: i > 0 ? "1px solid var(--glass-border)" : "none" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
-              <span className={`badge ${w.selection_status === "winner" ? "green" : "amber"} mono`}>
-                {w.selection_status === "winner" ? "수상" : "후보"}
-              </span>
-              {w.award_grade && <span style={{ fontSize: 11.5, color: "var(--text-2)" }}>{w.award_grade}</span>}
-            </div>
-            {w.source_url ? (
-              <a
-                href={w.source_url}
-                target="_blank"
-                rel="noopener noreferrer"
-                style={{
-                  display: "inline-flex", alignItems: "center", gap: 4,
-                  fontSize: 13.5, fontWeight: 600, marginBottom: 6, color: "var(--purple)",
-                }}
-              >
-                {w.work_title} <ExternalLink size={12} />
-              </a>
-            ) : (
-              <div style={{ fontSize: 13.5, fontWeight: 600, marginBottom: 6 }}>{w.work_title}</div>
-            )}
-            {w.images.length > 0 && (
-              <img src={w.images[0]} alt={w.work_title} style={{ width: "100%", borderRadius: 8, marginBottom: 6, display: "block" }} />
-            )}
-            {w.ocr_text && <div style={{ fontSize: 12.5, color: "var(--text-1)", lineHeight: 1.6 }}>{w.ocr_text}</div>}
-          </div>
-        ))}
-      </div>
-    )}
     </>
   );
 }

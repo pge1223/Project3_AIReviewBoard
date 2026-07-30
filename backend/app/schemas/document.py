@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from ai.rag.loaders.schemas import UrlExtractionResult
 
@@ -120,6 +120,10 @@ class SimilarWork(BaseModel):
     # (contest_title)의 다른 수상작/후보작을 옆 패널에서 더 보여준다. 프론트가 그 조회에
     # 쓸 키를 여기서 같이 내려준다.
     contest_title: str = ""
+    source_url: str = ""
+    similarity_score: float | None = None
+    retrieval_method: str = "category_fallback"  # "rag" | "category_fallback"
+    matched_criteria: list[str] = Field(default_factory=list)
 
 
 # 가은/Claude(2026-07-21): SimilarWork 클릭 시 상세 패널 — 같은 contest_title 안에서

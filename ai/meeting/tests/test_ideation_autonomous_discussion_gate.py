@@ -21,6 +21,8 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from graph import start_ideation_conversation  # noqa: E402
 from graph.ideation_conv_nodes import (  # noqa: E402
+    _is_selection_request,
+    _normalize_facilitator_choices,
     classify_user_decision_topic,
     resolve_user_input_gate,
 )
@@ -57,6 +59,26 @@ def _facilitator_payload() -> dict:
         "needs_user_decision": False,
         "user_question": None,
     }
+
+
+def test_selection_request_requires_renderable_choice_buttons():
+    assert _is_selection_request("MVP 범위에 대한 실행 대안 중 하나를 선택해 주세요.")
+    assert not _is_selection_request("MVP 범위를 전문가 검토 결과로 정리했습니다.")
+    assert _normalize_facilitator_choices([]) == []
+    assert _normalize_facilitator_choices([{"id": "a", "label": ""}, "잘못된 값"]) == []
+
+
+def test_facilitator_choices_keep_only_valid_button_items():
+    assert _normalize_facilitator_choices(
+        [
+            {"id": "a", "label": "핵심 기능만 구현", "detail": "2주 내 검증"},
+            {"label": "기능 범위 확대"},
+            {"id": "invalid"},
+        ]
+    ) == [
+        {"id": "a", "label": "핵심 기능만 구현", "detail": "2주 내 검증"},
+        {"id": "choice_2", "label": "기능 범위 확대"},
+    ]
 
 
 def _canvas_payload() -> dict:

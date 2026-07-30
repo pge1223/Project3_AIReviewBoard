@@ -55,6 +55,22 @@ class _FacilitatorLLM:
         )
 
 
+class _EmptyChoiceFacilitatorLLM:
+    def __call__(self, prompt: str) -> str:
+        return json.dumps(
+            {
+                "agreements": ["MVP 범위를 검토했습니다."],
+                "disagreements": [],
+                "facilitator_summary": "MVP 범위 검토 결과를 정리했습니다.",
+                "spoken_text": "MVP 범위에 대한 실행 대안 중 하나를 선택해 주세요.",
+                "needs_user_decision": True,
+                "user_question": "MVP 범위에 대한 실행 대안 중 하나를 선택해 주세요.",
+                "choices": [],
+            },
+            ensure_ascii=False,
+        )
+
+
 def _facilitator_state(*, active_issue_id, open_issues, resolved_issues) -> dict:
     return {
         "session_id": "ROTATE-TEST",
@@ -78,6 +94,62 @@ def _facilitator_state(*, active_issue_id, open_issues, resolved_issues) -> dict
         "resolved_topics": [],
         "llm_calls_used": 0,
     }
+
+
+def test_facilitator_does_not_wait_when_selection_options_are_missing():
+    state = _facilitator_state(
+        active_issue_id="issue_mvp",
+        open_issues=[
+            {
+                "issue_id": "issue_mvp",
+                "title": "MVP 범위",
+                "family": "mvp",
+                "status": "open",
+                "turns": 1,
+            }
+        ],
+        resolved_issues=[],
+    )
+
+    update = make_discussion_facilitator_node(_EmptyChoiceFacilitatorLLM())(state)
+
+    assert update["phase"] == "expert_discussion"
+    assert update["next_route"] == "continue_round"
+    assert update["pending_question"] is None
+    message = update["messages"][0]
+    assert message["structured"]["needs_user_decision"] is False
+    assert message["structured"]["choices"] == []
+    assert "선택해 주세요" not in message["content"]
+
+
+def test_locked_idea_uses_three_refinement_choices_instead_of_open_question():
+    state = _facilitator_state(
+        active_issue_id="issue_data",
+        open_issues=[
+            {
+                "issue_id": "issue_data",
+                "title": "필요한 데이터",
+                "family": "data",
+                "status": "open",
+                "turns": 1,
+            }
+        ],
+        resolved_issues=[],
+    )
+    state["idea_locked"] = True
+
+    update = make_discussion_facilitator_node(_FacilitatorLLM())(state)
+
+    assert update["phase"] == "awaiting_user_decision"
+    assert update["pending_question"] == "다음에 구체화할 항목을 선택해 주세요."
+    message = update["messages"][0]
+    assert message["content"] == "다음에 구체화할 항목을 선택해 주세요."
+    assert [choice["id"] for choice in message["structured"]["choices"]] == [
+        "refine_features",
+        "refine_implementation",
+        "finish_refinement",
+    ]
+    assert "구체적인 사례" not in message["content"]
 
 
 def _capped_data_issue() -> dict:

@@ -1,0 +1,12 @@
+# 앱 conda 환경(review-board)과 완전히 분리된 Ragas 평가 전용 환경. python 버전만 고정하고,
+# 패키지는 이 파일이 아니라 requirements-ragas.txt로 설치한다(레포 루트 기준 상대경로를
+# environment.yml의 pip: -r 항목에 넣으면 conda env create를 실행하는 위치에 따라 경로가
+# 깨지는 문제가 있어, 두 단계로 나눴다 — README.md의 "환경 생성 명령어" 참고).
+#
+# 생성: conda env create -f ai/rag/evaluation/ragas_standalone/environment-ragas.yml
+name: ragas-eval
+channels:
+  - defaults
+dependencies:
+  - python=3.11
+  - pip

@@ -1,0 +1,38 @@
+[
+  {
+    "id": "NIA-PUBLIC-AI-GUIDE-2026-FULL::NIA-PUBLIC-AI-GUIDE-2026-FULL:1e28806b2a124468::chk_1c326907bcc3d3d4",
+    "content": "36 ◈ 공통기반 사용자 구분\n\n○ 범정부 AI 공통기반 사용자는 사용 권한에 따라 일반사용자(공무원 또는 공공기관 직원), 정보시스템 담당자, 정보시스템 개발자로 구분되며, 각 유형에 맞는 로그인 방식을 제공한다.\n\n구분 개발시스템 AI플랫폼 사용자 관리 이용 현황/ 요금 조회 카탈로그/ 이용안내 Chat/ 공통서비스 개발도구 테넌트 관리 일반사용자 * (공무원, 공공직원)",
+    "section": null,
+    "merged_from": null
+  },
+  {
+    "id": "NIA-PUBLIC-AI-GUIDE-2026-FULL::NIA-PUBLIC-AI-GUIDE-2026-FULL:1e28806b2a124468::chk_ab12f0e52ca8a49d",
+    "content": "○ (조회)\n○ (조회)\n\n정보시스템 담당자\n○ (조회)\n○ (조회)\n○ (조회)",
+    "section": "(조회)",
+    "merged_from": "[\"chk_1068bdd50ddfd089\", \"chk_1068bdd50ddfd089\", \"chk_1068bdd50ddfd089\", \"chk_1068bdd50ddfd089\"]"
+  },
+  {
+    "id": "NIA-PUBLIC-AI-GUIDE-2026-FULL::NIA-PUBLIC-AI-GUIDE-2026-FULL:1e28806b2a124468::chk_e2f0bc8706b12f06",
+    "content": "○ (생성/수정/삭제)\n○ (생성/수정/삭제)\n\n정보시스템 개발자",
+    "section": "(생성/수정/삭제)",
+    "merged_from": "[\"chk_ad0ff7aaf9141198\"]"
+  },
+  {
+    "id": "NIA-PUBLIC-AI-GUIDE-2026-FULL::NIA-PUBLIC-AI-GUIDE-2026-FULL:1e28806b2a124468::chk_1068bdd50ddfd089",
+    "content": "○ (조회)\n○ (조회)",
+    "section": "(조회)",
+    "merged_from": "[\"chk_1068bdd50ddfd089\"]"
+  },
+  {
+    "id": "NIA-PUBLIC-AI-GUIDE-2026-FULL::NIA-PUBLIC-AI-GUIDE-2026-FULL:1e28806b2a124468::chk_f669c8430559a264",
+    "content": "○ (생성/수정/삭제)\n\n[표 13] 사용 권한 별 공통기반 사용자 구분\n\n○ 사용 권한과 관계없이 AI 플랫폼 사용 중 발생하는 모든 오류 및 문의 사항은 각 AI 플랫폼별로 마련된 전용 VOC(Voice of Customer) 채널을 활용하여 해결한다.\n\n구분 1선 2선 FabriX 플랫폼 운영자 (플랫폼 내 Q&A게시판 활용)\n\nfabrix.cs@samsung.com CLOVA Studio for GOV 시스템 문의 창구는 없음 (`26년 내 추가 예정)\n\ndl_clovastudio_gov@navercorp.com [표 14] AI 플랫폼별 문의처 이용신청 절차 수행 주체 내용 AI 플랫폼 이용 신청 개발시스템 이용 신청기관\n\n- ­일반사용자로 로그인하여 진입한 공통기반 개발시스템의 카탈로그 관리 혹은 이용 안내 메뉴 하단에서 “AI 플랫폼 이용 신청” 버튼을 클릭\n\n- 이용 방법을 확인한 뒤, 정보시스템 및 관리자 정보를 입력하고 공통기반 이용 계약 등 관련 서류를 첨부하여 저장 신청서류 확인 공통기반 관리자 (개발시스템 관리기관)\n\n- 신청기관의 제출 서류를 확인하고 서비스 이용 충족 여부 확인\n\n- 이용 신청이 반려 * 된 기관에 반려 사유를 신청기관 담당자 이메일로 전달 * 다음 각 호의 어느 하나에 해당하는 경우 신청을 반려할 수 있음\n\n1. AI 플랫폼 이용 대상 또는 대상 업무에 해당하지 않는 경우\n\n2. 계약 및 이용 신청 관련 첨부 등 필수 제출 서류가 누락된 경우",
+    "section": "(생성/수정/삭제)",
+    "merged_from": null
+  },
+  {
+    "id": "NIA-PUBLIC-AI-GUIDE-2026-FULL::NIA-PUBLIC-AI-GUIDE-2026-FULL:1e28806b2a124468::chk_9fa04cab2969aa47",
+    "content": "3. 중복·반복 신청으로 판단되는 경우\n\n해당 정보시스템의 이용 정보 등록 공통기반 관리자 (개발시스템 관리기관)\n\n- 정보시스템의 AI 플랫폼 이용 신청 정보(테넌트 코드, 계약 정보 등)의 등록 및 계정 동기화\n\n- 이용 신청 정보 등록 완료 후 신청기관의 정보시스템 담당자 이메일로 전달 개발시스템 로그인 개발시스템 이용 신청기관\n\n- (공무원) GPKI 인증서나 모바일 공무원증으로 인증 진행. 최초 로그인 시 이메일 추가 인증(최초 등록한 이메일과 일치 할 경우 로그인)\n\n- (공공직원 또는 민간 개발자) 등록된 이메일 계정으로 수신한 OTP 인증번호를 입력하여 인증 후 로그인 AI 서비스 활용 개발시스템 이용 신청기관\n\n- AI 플랫폼 이동 및 담당 정보시스템의 AI 서비스 개발 진행\n\n- 정보시스템 개발자 계정생성 및 권한 부여 [표 15] 정보시스템 이용 신청 절차",
+    "section": "중복·반복 신청으로 판단되는 경우",
+    "merged_from": null
+  }
+]

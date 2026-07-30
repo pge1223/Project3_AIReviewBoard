@@ -24,7 +24,12 @@ from graph import (  # noqa: E402
     reply_ideation_conversation,
     start_ideation_conversation,
 )
-from graph.ideation_conv_nodes import _select_next_issue_family  # noqa: E402
+from graph.ideation_conv_nodes import (  # noqa: E402
+    _build_evidence_funnel,
+    _retrieve_with_criteria_retry,
+    _select_next_issue_family,
+    _topic_query,
+)
 from graph.ideation_conv_problem import (  # noqa: E402
     _route_after_conflict_merge,
     _route_after_idea_validation,
@@ -745,6 +750,139 @@ def test_problem_discovery_uses_planning_news_trends_and_preserves_external_evid
     assert "공공서비스 이용 불편 관련 최신 뉴스" not in state["messages"][0]["content"]
 
 
+def test_problem_discovery_rag_path_runs_planning_then_dev_then_facilitator_and_links_only_grounded_refs():
+    prompts = []
+
+    def llm(prompt):
+        prompts.append(prompt)
+        if "[problem_discovery 기획위원 1회 분석]" in prompt:
+            return json.dumps(
+                {
+                    "spoken_text": "공모 목적과 국민 체감 효과 기준을 확인했습니다.",
+                    "claims": [
+                        {
+                            "claim_id": "planning_claim_1",
+                            "text": "공모문은 대국민 체감 효과를 평가합니다.",
+                            "claim_type": "document_fact",
+                            "evidence_refs": ["P1"],
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            )
+        if "[problem_discovery 개발위원 1회 분석]" in prompt:
+            return json.dumps(
+                {
+                    "spoken_text": "공모 기간 안의 실증 가능성과 개인정보 위험을 검토했습니다.",
+                    "claims": [
+                        {
+                            "claim_id": "technical_claim_1",
+                            "text": "공모문은 실증 가능성을 평가합니다.",
+                            "claim_type": "document_fact",
+                            "evidence_refs": ["D1"],
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            )
+        return json.dumps(
+            {
+                "spoken_text": "두 관점을 종합해 문제 후보를 정리했습니다.",
+                "problem_areas": [
+                    {
+                        "area_id": "area_1",
+                        "problem_title": "공공 AI 서비스의 낮은 체감 효과",
+                        "problem_description": "국민이 실제 변화를 체감하기 어렵습니다.",
+                        "affected_users": "공공서비스 이용 국민",
+                        "planning_view": "대국민 체감 효과를 높일 필요가 있습니다.",
+                        "technical_view": "기간 내 실증 범위를 정해야 합니다.",
+                        "evidence_refs": ["P1", "D1", "X9"],
+                    },
+                    {
+                        "area_id": "area_2",
+                        "problem_title": "개인정보 위험으로 인한 도입 지연",
+                        "problem_description": "안전한 데이터 활용 기준이 불명확합니다.",
+                        "affected_users": "공공기관 담당자",
+                        "planning_view": "전문가 판단: 정책 수용성 검토가 필요합니다.",
+                        "technical_view": "전문가 판단: 최소 수집 설계가 필요합니다.",
+                        "evidence_refs": [],
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        )
+
+    calls = []
+
+    def lookup(persona_id, query, runtime_scope=None):
+        calls.append((persona_id, query, runtime_scope))
+        suffix = "planning" if persona_id == "planning_expert" else "technical"
+        return [
+            {
+                "ref": "E1",
+                "chunk_id": f"chunk-{suffix}",
+                "document_id": f"doc-{suffix}",
+                "document_name": f"{suffix}.pdf",
+                "document_role": "criteria",
+                "source_type": "criteria",
+                "page": 3,
+                "section": "평가기준",
+                "quote": "공모문은 대국민 체감 효과와 실증 가능성을 평가합니다.",
+                "text": "공모문은 대국민 체감 효과와 실증 가능성을 평가합니다.",
+            }
+        ]
+
+    def grounder(persona_id, claims, evidence):
+        claim = claims[0]
+        item = evidence[0]
+        return {
+            "claims": claims,
+            "linked_evidence_refs": [item["chunk_id"]],
+            "claim_evidence_links": [
+                {
+                    "claim_id": claim["claim_id"],
+                    "evidence_refs": claim["evidence_refs"],
+                    "chunk_ids": [item["chunk_id"]],
+                }
+            ],
+            "unsupported_claims": [],
+            "supported_claim_count": 1,
+            "unsupported_claim_count": 0,
+            "accepted_claim_count": 1,
+            "grounded_claim_count": 1,
+            "expert_judgment_count": 0,
+            "linked_evidence_count": 1,
+            "missing_information": [],
+            "evidence_status": "grounded",
+            "prompt_guard": "",
+            "allow_definitive_judgment": True,
+        }
+
+    state = start_ideation_conversation(
+        session_id="PROBLEM-THREE-TURNS",
+        notice_and_criteria=NOTICE_AND_CRITERIA,
+        user_idea={"description": ""},
+        llm_call=llm,
+        evidence_lookup=lookup,
+        ground_claims=grounder,
+    )
+
+    assert [call[0] for call in calls] == ["planning_expert", "dev_expert"]
+    assert len(prompts) == 3
+    assert [message["speaker_id"] for message in state["messages"]] == [
+        "planning_expert",
+        "dev_expert",
+        "ideation_facilitator",
+    ]
+    assert state["phase"] == "awaiting_problem_focus_selection"
+    assert state["messages"][0]["structured"]["problem_discovery"]["retrieval_results"][0]["page"] == 3
+    assert state["messages"][1]["structured"]["problem_discovery"]["retrieval_results"][0]["section"] == "평가기준"
+    assert state["problem_areas"][0]["evidence_refs"] == ["chunk-planning", "chunk-technical"]
+    assert state["messages"][-1]["linked_criteria_refs"] == ["chunk-planning", "chunk-technical"]
+    assert len(state["messages"][-1]["evidence"]) == 2
+    assert all("X9" not in area["evidence_refs"] for area in state["problem_areas"])
+
+
 def _validation_state() -> dict:
     state = initial_conv_state("VALIDATION-TEST", NOTICE_AND_CRITERIA, {"description": ""})
     return {
@@ -820,6 +958,120 @@ def _apply_node_update(state: dict, update: dict) -> dict:
     return merged
 
 
+def test_evidence_query_changes_with_latest_user_input():
+    state = initial_conv_state("QUERY-CHANGE", {"competition_name": "공모전"}, {"title": "민원 도우미"})
+    state["current_user_input"] = "고령자 접근성을 검토해 주세요"
+    first = _topic_query(state, "planning_expert")
+    state["current_user_input"] = "개인정보 보호 위험을 검토해 주세요"
+    second = _topic_query(state, "planning_expert")
+
+    assert "고령자 접근성" in first
+    assert "개인정보 보호 위험" in second
+    assert first != second
+
+
+def test_criteria_zero_result_triggers_one_corrected_retrieval():
+    calls: list[str] = []
+
+    def lookup(_persona_id, query, **_kwargs):
+        calls.append(query)
+        if len(calls) == 1:
+            return [
+                {
+                    "chunk_id": "TARGET-1",
+                    "document_id": "TARGET-DOC",
+                    "document_role": "target",
+                    "text": "현재 아이디어의 기능",
+                    "score": 0.8,
+                }
+            ]
+        return [
+            {
+                "chunk_id": "CRITERIA-1",
+                "document_id": "CRITERIA-DOC",
+                "document_role": "criteria",
+                "text": "공모 목적과 평가 기준",
+                "score": 0.9,
+            }
+        ]
+
+    lookup.criteria_chunk_count = 12
+    lookup.trace_project_id = "P1"
+    state = initial_conv_state("RETRY", {"competition_name": "공모전"}, {"title": "민원 도우미"})
+    state["current_user_input"] = "사용자 효과를 검토해 주세요"
+
+    evidence, retry_query, retry_count = _retrieve_with_criteria_retry(
+        evidence_lookup=lookup,
+        persona_id="planning_expert",
+        query=_topic_query(state, "planning_expert"),
+        state=state,
+        runtime_scope={"session_id": "RETRY", "phase": "discussion"},
+    )
+
+    assert len(calls) == 2
+    assert retry_count == 1
+    assert retry_query
+    assert any(item["document_role"] == "criteria" for item in evidence)
+    assert sum(item["document_role"] == "target" for item in evidence) <= 1
+
+
+def test_evidence_funnel_keeps_target_out_of_document_evidence_counts():
+    evidence = [
+        {"ref": "E1", "chunk_id": "C1", "document_role": "criteria"},
+        {"ref": "E2", "chunk_id": "T1", "document_role": "target"},
+    ]
+    raw = {
+        "claims": [
+            {
+                "claim_id": "fact",
+                "claim_type": "document_fact",
+                "evidence_refs": ["E1"],
+            },
+            {
+                "claim_id": "target",
+                "claim_type": "user_provided_fact",
+                "evidence_refs": ["E2"],
+            },
+        ]
+    }
+    grounding = {
+        "claims": raw["claims"],
+        "claim_evidence_links": [
+            {"claim_id": "fact", "evidence_refs": ["E1"], "chunk_ids": ["C1"]},
+            {"claim_id": "target", "evidence_refs": ["E2"], "chunk_ids": ["T1"]},
+        ],
+        "unsupported_claims": [],
+        "linked_evidence_refs": ["C1", "T1"],
+        "expert_judgment_count": 0,
+    }
+    buckets = {
+        "linked_criteria_refs": ["C1"],
+        "linked_external_evidence_refs": [],
+        "reviewed_target_refs": ["T1"],
+    }
+
+    funnel = _build_evidence_funnel(
+        raw=raw,
+        grounding=grounding,
+        evidence_pool=evidence,
+        evidence_buckets=buckets,
+        query="질의",
+        retry_query=None,
+        retry_count=0,
+        criteria_chunk_count=12,
+    )
+
+    assert funnel["counts"]["criteria"] == {
+        "retrieved": 1,
+        "cited": 1,
+        "grounded": 1,
+        "displayed": 1,
+    }
+    assert funnel["counts"]["target"]["displayed"] == 1
+    assert funnel["linked_criteria_refs"] == ["C1"]
+    assert funnel["reviewed_target_refs"] == ["T1"]
+
+
 def _run_idea_validation(
     payload: dict,
     *,
@@ -893,6 +1145,30 @@ def test_idea_validation_stores_structured_results_and_four_ordered_messages():
     assert _route_after_idea_validation(update) == "confirm"
 
 
+def test_idea_validation_warns_when_criteria_retrieval_is_empty(monkeypatch):
+    """용준/Claude(2026-07-30, 요청 §8·14 — preflight) — notice_and_criteria가 채워진
+    세션에서 evidence_lookup이 criteria 역할 청크를 하나도 못 찾으면, 조용히 target/전문가
+    판단만으로 넘어가지 않고 trace에 criteria_retrieval_empty 경고를 남겨야 한다."""
+    import graph.ideation_conv_problem as problem_module
+
+    events: list[dict] = []
+
+    def fake_trace_event(event, **fields):
+        events.append({"event": event, **fields})
+
+    monkeypatch.setattr(problem_module, "trace_event", fake_trace_event)
+
+    def evidence_lookup(_persona_id, _query, **_kwargs):
+        return [{"chunk_id": "T1", "document_role": "target", "text": "target only"}]
+
+    _run_idea_validation(_validation_payload(), evidence_lookup=evidence_lookup)
+
+    warning_events = [e for e in events if e["event"] == "IDEATION_CRITERIA_RETRIEVAL_EMPTY"]
+    assert len(warning_events) == 2  # planning_validation + technical_validation
+    assert {e["node"] for e in warning_events} == {"planning_validation", "technical_validation"}
+    assert all(e["criteria_retrieval_empty"] is True for e in warning_events)
+
+
 def test_idea_validation_uses_role_specific_external_evidence():
     calls = []
 
@@ -936,6 +1212,27 @@ def test_idea_validation_uses_role_specific_external_evidence():
     assert {item["title"] for item in update["messages"][2]["evidence"]} == {"개발 기술 뉴스"}
     assert len(update["external_evidence"]) == 2
     assert update["external_evidence_meta"]["used_public_api_search"] is True
+
+
+def test_idea_validation_retrieval_persona_matches_grounding_persona():
+    """용준/Claude(2026-07-29, 요청: persona_id 불일치 버그 수정) — 실측(웹 UI): 기획위원
+    검증 턴인데 RAG 검색(evidence_lookup)이 "dev_expert" role로 호출되고 있었다(바로 아래
+    ground_claims는 "planning_expert"로 호출돼 서로 어긋남) — make_technical_validation_node
+    코드를 복붙하면서 planning 쪽 persona_id를 안 고친 버그. 검색 role이 실제 화자와
+    일치해야 criteria/target 쿼터(ai/rag/orchestration/ideation_evidence_service.py::
+    _DOCUMENT_ROLE_QUOTAS)가 그 위원에게 맞게 적용된다."""
+    calls: list[str] = []
+
+    def evidence_lookup(persona_id: str, query: str, **_kwargs) -> list[dict]:
+        calls.append(persona_id)
+        return []
+
+    _run_idea_validation(_validation_payload(), evidence_lookup=evidence_lookup)
+
+    assert calls == ["planning_expert", "dev_expert"], (
+        "기획 검증 노드는 planning_expert로, 개발 검증 노드는 dev_expert로 순서대로 "
+        f"검색을 호출해야 하는데 실제로는 {calls}였습니다"
+    )
 
 
 def test_idea_validation_links_claims_to_retrieved_evidence_when_ground_claims_provided():
@@ -992,6 +1289,281 @@ def test_idea_validation_links_claims_to_retrieved_evidence_when_ground_claims_p
     assert technical_message["speaker_id"] == "dev_expert"
     assert technical_message["linked_evidence_refs"] == []
     assert technical_message["claims"][0]["claim_type"] == "expert_judgment"
+
+
+def test_validation_retries_generation_when_relevant_criteria_was_not_cited():
+    from ai.rag.evidence_linking.claim_grounding import ground_claims as _ground_claims_impl
+
+    class EvidenceFirstValidationLLM:
+        def __init__(self):
+            self.correction_calls = 0
+
+        def __call__(self, prompt):
+            role = "technical" if _DEV_ROLE_MARKER in prompt else "planning"
+            payload = _validation_payload()[role]
+            if "[근거 우선 검증 보정]" in prompt:
+                self.correction_calls += 1
+                payload["message"] = (
+                    "공고문은 행정 정보 접근성 개선을 우대합니다. "
+                    "따라서 현재 아이디어는 접근성 개선 효과를 측정하고 구체화해야 합니다."
+                )
+                payload["claims"] = [
+                        {
+                            "claim_id": "claim_1",
+                            "text": "행정 정보 접근성을 개선하는 서비스를 우대한다.",
+                        "claim_type": "document_fact",
+                        "evidence_refs": ["E1"],
+                    },
+                    {
+                        "claim_id": "claim_2",
+                        "text": "현재 아이디어는 접근성 개선 효과를 측정해야 한다.",
+                        "claim_type": "expert_judgment",
+                        "evidence_refs": [],
+                    },
+                ]
+            else:
+                payload["claims"] = [
+                    {
+                        "claim_id": "claim_1",
+                        "text": "접근성 개선 효과를 측정해야 한다.",
+                        "claim_type": "expert_judgment",
+                        "evidence_refs": [],
+                    }
+                ]
+            return json.dumps(payload, ensure_ascii=False)
+
+    def evidence_lookup(_persona_id, _query, **_kwargs):
+        return [
+            {
+                "chunk_id": "CRITERIA-ACCESS",
+                "document_id": "NOTICE",
+                "document_role": "criteria",
+                "source_type": "criteria",
+                "document_name": "공모전 공고문",
+                "section": "평가 기준",
+                "text": "행정 정보 접근성을 개선하는 서비스를 우대한다.",
+                "score": 0.9,
+            }
+        ]
+
+    evidence_lookup.criteria_chunk_count = 8
+
+    def grounder(_persona_id, claims, evidence):
+        return _ground_claims_impl(claims, evidence)
+
+    llm = EvidenceFirstValidationLLM()
+    state = _validation_state()
+    state = _apply_node_update(
+        state,
+        make_planning_validation_node(
+            llm,
+            evidence_lookup,
+            ground_claims=grounder,
+        )(state),
+    )
+    state = _apply_node_update(
+        state,
+        make_technical_validation_node(
+            llm,
+            evidence_lookup,
+            ground_claims=grounder,
+        )(state),
+    )
+
+    assert llm.correction_calls == 2
+    for message in (state["messages"][1], state["messages"][2]):
+        assert message["linked_criteria_refs"] == ["CRITERIA-ACCESS"]
+        assert message["claims"][0]["text"] in message["content"]
+        assert message["evidence_funnel"]["counts"]["criteria"] == {
+            "retrieved": 1,
+            "cited": 1,
+            "grounded": 1,
+            "displayed": 1,
+        }
+
+
+def test_idea_validation_never_exposes_user_session_answer_as_grounded_evidence():
+    """용준/Claude(2026-07-30, 요청: "사용자 답변은 문서 기반 grounded evidence로 사용하지
+    마세요") — evidence_lookup이 사용자 채팅 답변 청크(ideation_source_type=
+    user_session_answer, document_role=target)를 검색 상위에 반환해도, call_evidence_lookup
+    단계에서 제외되어 message.evidence/claims/evidence_buckets 어디에도 등장하지 않아야
+    한다. 선택 아이디어(target, ideation_source_type=ideation_candidate에 준하는 실제
+    criteria 근거)는 그대로 인용 가능해야 한다(회귀 없음)."""
+    from ai.rag.evidence_linking.claim_grounding import ground_claims as _ground_claims_impl
+
+    def _ground_claims(persona_id, claims, retrieved):
+        return _ground_claims_impl(claims, retrieved)
+
+    def _evidence_lookup(_persona_id, _query):
+        return [
+            {
+                "chunk_id": "CHUNK-ANSWER",
+                "document_id": "ideation-answer::P1::S1::MSG-1",
+                "ideation_source_type": "user_session_answer",
+                "document_name": "[사용자 추가 답변] 회의 답변",
+                "text": "사용자가 회의 중 직접 말한 답변 원문입니다.",
+            },
+            {
+                "chunk_id": "CHUNK-CRITERIA",
+                "document_id": "DOC-CRITERIA",
+                # source_type만 명시한다(document_role은 비워 둔다) — claim_grounding.py의
+                # criteria_scope_overreach 검사는 document_role만 보고, 화면 버킷 분류
+                # (_classify_linked_evidence_buckets)는 source_type을 우선 본다. 이 테스트가
+                # 확인하려는 건 그 overreach 휴리스틱이 아니라 user_session_answer 배제이므로
+                # document_role은 굳이 채우지 않는다.
+                "source_type": "criteria",
+                "document_name": "행정 서비스 안내 공모전 공고문",
+                "section": "평가 기준",
+                "text": "행정 정보 접근성을 개선하는 서비스를 우대한다.",
+            },
+        ]
+
+    payload = _validation_payload()
+    payload["planning"]["claims"] = [
+        {
+            "claim_id": "claim_1",
+            "text": "공고문은 행정 정보 접근성을 개선하는 서비스를 우대한다고 명시한다.",
+            "claim_type": "document_fact",
+            # 검색 순서상 사용자 답변이 필터링되지 않았다면 "E1"이었을 자리 — 필터링 후에는
+            # criteria 청크가 "E1"이 된다.
+            "evidence_refs": ["E1"],
+        }
+    ]
+    payload["technical"]["claims"] = [
+        {"claim_id": "claim_1", "text": "구현은 가능해 보인다.", "claim_type": "expert_judgment", "evidence_refs": []}
+    ]
+
+    update, _llm = _run_idea_validation(
+        payload,
+        evidence_lookup=_evidence_lookup,
+        ground_claims=_ground_claims,
+    )
+
+    planning_message = update["messages"][1]
+    evidence_chunk_ids = {item.get("chunk_id") for item in planning_message["evidence"]}
+    assert "CHUNK-ANSWER" not in evidence_chunk_ids
+    assert "CHUNK-CRITERIA" in evidence_chunk_ids
+    assert planning_message["linked_evidence_refs"] == ["CHUNK-CRITERIA"]
+    assert "CHUNK-ANSWER" not in planning_message["reviewed_target_refs"]
+    assert "CHUNK-ANSWER" not in planning_message["linked_criteria_refs"]
+    assert "CHUNK-ANSWER" not in planning_message["linked_external_evidence_refs"]
+    assert planning_message["linked_criteria_refs"] == ["CHUNK-CRITERIA"]
+
+
+def test_idea_validation_links_rag007_external_evidence_and_excludes_uncited_items():
+    from ai.rag.evidence_linking.claim_grounding import ground_claims as _ground_claims_impl
+
+    def _ground_claims(_persona_id, claims, retrieved):
+        return _ground_claims_impl(claims, retrieved)
+
+    def _external_lookup(persona_id, _query):
+        return {
+            "external_evidence": [
+                {
+                    "chunk_id": f"EXT-{persona_id}-1",
+                    "document_id": f"EXT-{persona_id}",
+                    "title": "공공부문 AI 안전성 가이드",
+                    "publisher": "공식기관",
+                    "source_url": "https://example.go.kr/ai-guide",
+                    "reference_date": "2026-07-01",
+                    "quote": "공공부문 AI 서비스는 개인정보 보호와 안전성 점검 절차를 마련해야 한다.",
+                    "source_type": "official_report",
+                    "allow_grounded_claim": True,
+                },
+                {
+                    "chunk_id": f"UNUSED-{persona_id}-2",
+                    "document_id": f"UNUSED-{persona_id}",
+                    "title": "관련 없는 외부 자료",
+                    "publisher": "공식기관",
+                    "source_url": "https://example.go.kr/unrelated",
+                    "reference_date": "2026-07-01",
+                    "quote": "이 자료는 다른 주제를 다룬다.",
+                    "source_type": "official_report",
+                    "allow_grounded_claim": True,
+                },
+            ],
+            "used_dataset_search": True,
+            "used_public_api_search": False,
+            "warnings": [],
+        }
+
+    payload = _validation_payload()
+    payload["planning"]["claims"] = [
+        {
+            "claim_id": "claim_1",
+            "text": "공공부문 AI 서비스에는 개인정보 보호와 안전성 점검 절차가 필요하다.",
+            "claim_type": "document_fact",
+            "evidence_refs": ["E1"],
+        }
+    ]
+    payload["technical"]["claims"] = [
+        {
+            "claim_id": "claim_1",
+            "text": "구현 범위는 단계적으로 좁힐 필요가 있다.",
+            "claim_type": "expert_judgment",
+            "evidence_refs": [],
+        }
+    ]
+
+    update, _llm = _run_idea_validation(
+        payload,
+        external_evidence_lookup=_external_lookup,
+        ground_claims=_ground_claims,
+    )
+
+    planning_message = update["messages"][1]
+    assert planning_message["linked_external_evidence_refs"] == ["EXT-planning_expert-1"]
+    assert planning_message["linked_evidence_refs"] == ["EXT-planning_expert-1"]
+    assert "UNUSED-planning_expert-2" not in planning_message["linked_external_evidence_refs"]
+
+
+def test_idea_validation_does_not_ground_summary_only_external_evidence():
+    from ai.rag.evidence_linking.claim_grounding import ground_claims as _ground_claims_impl
+
+    def _ground_claims(_persona_id, claims, retrieved):
+        return _ground_claims_impl(claims, retrieved)
+
+    def _external_lookup(persona_id, _query):
+        return {
+            "external_evidence": [
+                {
+                    "chunk_id": f"DPG-{persona_id}-1",
+                    "document_id": f"DPG-{persona_id}",
+                    "title": "DPG 소개 페이지",
+                    "publisher": "디지털플랫폼정부위원회",
+                    "source_url": "https://example.go.kr/dpg",
+                    "reference_date": "2026-07-01",
+                    "quote": "공공 AI 서비스의 확산 효과를 소개한다.",
+                    "source_type": "official_page_summary",
+                    "summary_only": True,
+                    "allow_grounded_claim": False,
+                }
+            ],
+            "used_dataset_search": True,
+            "used_public_api_search": False,
+            "warnings": [],
+        }
+
+    payload = _validation_payload()
+    payload["planning"]["claims"] = [
+        {
+            "claim_id": "claim_1",
+            "text": "공공 AI 서비스가 확산 효과를 냈다.",
+            "claim_type": "document_fact",
+            "evidence_refs": ["E1"],
+        }
+    ]
+
+    update, _llm = _run_idea_validation(
+        payload,
+        external_evidence_lookup=_external_lookup,
+        ground_claims=_ground_claims,
+    )
+
+    planning_message = update["messages"][1]
+    assert planning_message["linked_external_evidence_refs"] == []
+    assert planning_message["unsupported_claim_count"] == 1
+    assert planning_message["evidence_status"] == "ungrounded"
 
 
 def test_idea_validation_without_ground_claims_keeps_empty_grounding_backward_compatible():
