@@ -180,7 +180,7 @@ function StreamingCursorStyle() {
       .rb-idea-finalize{ min-width:0; margin-top:24px; }
       .rb-idea-right{
         min-width:0; min-height:0; height:calc(100vh - 64px);
-        display:grid; grid-template-rows:minmax(0, .7fr) minmax(0, 1.3fr);
+        display:grid; grid-template-rows:minmax(0, 1fr) minmax(0, 1fr);
         gap:16px;
       }
       .rb-ideation-side{ position:static; margin:0; min-width:0; min-height:0; display:flex; flex-direction:column; overflow:auto; }
