@@ -120,6 +120,33 @@ class TestBasicFieldConversion:
         items = to_retrieved_evidence(response, persona_id="finance")
         assert items[0]["document_role"] is None
 
+    def test_origin_type_and_file_name_and_source_url_preserved(self):
+        """용준/Claude(2026-07-30, 요청: criteria 근거의 출처(URL 본문/URL 첨부파일/직접
+        업로드) 구분) — 청킹 단계가 채운 chunk 메타데이터의 source_type/source_filename/
+        source_url이 화면까지 흘러가려면 이 어댑터가 먼저 노출해야 한다."""
+        response = _response(
+            [
+                _result(
+                    metadata={
+                        "source_type": "url_attachment",
+                        "source_filename": "공고_별첨.hwp",
+                        "source_url": "https://example.go.kr/notice/attachment.hwp",
+                    }
+                )
+            ]
+        )
+        items = to_retrieved_evidence(response, persona_id="finance")
+        assert items[0]["origin_type"] == "url_attachment"
+        assert items[0]["file_name"] == "공고_별첨.hwp"
+        assert items[0]["source_url"] == "https://example.go.kr/notice/attachment.hwp"
+
+    def test_origin_type_missing_is_none(self):
+        response = _response([_result(metadata={})])
+        items = to_retrieved_evidence(response, persona_id="finance")
+        assert items[0]["origin_type"] is None
+        assert items[0]["file_name"] is None
+        assert items[0]["source_url"] is None
+
 
 class TestScoreConversion:
     # RoleSearchResult.final_score는 필수 필드(float, None 불가)라 이 입력 경로에서는

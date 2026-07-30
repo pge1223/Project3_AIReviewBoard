@@ -180,7 +180,7 @@ function StreamingCursorStyle() {
       .rb-idea-finalize{ min-width:0; margin-top:24px; }
       .rb-idea-right{
         min-width:0; min-height:0; height:calc(100vh - 64px);
-        display:grid; grid-template-rows:minmax(0, 1fr) minmax(0, 1fr);
+        display:grid; grid-template-rows:minmax(0, .7fr) minmax(0, 1.3fr);
         gap:16px;
       }
       .rb-ideation-side{ position:static; margin:0; min-width:0; min-height:0; display:flex; flex-direction:column; overflow:auto; }
@@ -210,9 +210,9 @@ function StreamingCursorStyle() {
           grid-template-columns:minmax(0,1fr);
           min-height:0;
         }
-        .rb-idea-right{ height:auto; grid-template-rows:auto minmax(380px, 560px); }
+        .rb-idea-right{ height:auto; grid-template-rows:auto minmax(520px, 720px); }
         .rb-ideation-side{ overflow:visible; }
-        .rb-ideation-canvas-col{ max-height:560px; }
+        .rb-ideation-canvas-col{ max-height:720px; }
         .rb-idea-chat-panel .rb-idea-chat-scroll{ min-height:420px; }
       }
       .rb-ideation-candidate-card{ transition: transform .18s ease, box-shadow .18s ease; }
@@ -241,37 +241,206 @@ function RespondingToCaption({ message, allMessages = [] }) {
 // 연결·관련성 검증을 통과한 chunk_id만)를 기준으로 필터링한다. injected_evidence_count가
 // 아니라 linked_evidence_count가 성공 기준이라는 요청 취지를 화면에도 그대로 반영한다 —
 // 검증을 통과하지 못한 근거는 여기서 아예 보이지 않는다.
-function EvidenceToggle({ evidence, linkedEvidenceRefs, claims }) {
-  const [open, setOpen] = useState(false)
-  const linkedSet = new Set(linkedEvidenceRefs || [])
-  const items = (evidence || []).filter((e) => e && e.chunk_id && linkedSet.has(e.chunk_id))
-  // document_fact인데 근거 연결에 실패했거나(unsupported), expert_judgment로 남은 주장은
-  // 문서 출처가 있는 것처럼 꾸미지 않고 "전문가 판단" 배지로만 구분해 보여준다.
-  const unlinkedClaims = (claims || []).filter(
-    (c) => c && (c.claim_type === 'expert_judgment' || !linkedSet.size)
+// 용준/Claude(2026-07-29, 요청: target/criteria/외부근거/전문가판단 분리) — 근거 카드에
+// 붙는 작은 배지. "검토 대상"(target)은 사용자가 지금 검토받는 아이디어 원문일 뿐 외부
+// 근거가 아니므로, "외부 근거"와 같은 스타일로 섞여 보이면 안 된다는 것이 이번 변경의
+// 핵심이다 — 색으로도 구분한다(검토 대상은 중립, 공모전 근거/외부 근거는 근거 계열 색).
+const EVIDENCE_BADGE_META = {
+  target: { label: '검토 대상', color: 'var(--text-2)', bg: 'var(--bg-0)' },
+  criteria: { label: '공모전 근거', color: '#5e3ec8', bg: 'rgba(94,62,200,0.08)' },
+  external: { label: '외부 근거', color: '#0f766e', bg: 'rgba(15,118,110,0.08)' },
+}
+
+function EvidenceBadge({ kind }) {
+  const meta = EVIDENCE_BADGE_META[kind]
+  if (!meta) return null
+  return (
+    <span
+      style={{
+        display: 'inline-block', fontSize: 11, fontWeight: 700, color: meta.color,
+        background: meta.bg, borderRadius: 999, padding: '1px 7px', marginBottom: 4,
+      }}
+    >
+      {meta.label}
+    </span>
   )
-  if (items.length === 0 && unlinkedClaims.length === 0) return null
-  if (items.length === 0) {
+}
+
+// source_type(백엔드가 compose_ideation_evidence_pool에서 매긴 값)별로 화면에 보여줄
+// 부가 정보(발행 기관/일자)를 뽑는다 — 값이 없으면 지어내지 않고 그냥 생략한다.
+function externalEvidenceMeta(item) {
+  const organization = item.organization || item.publisher
+  const publishedAt = item.published_at || item.reference_date
+  const parts = [organization, publishedAt].filter(Boolean)
+  return parts.length > 0 ? parts.join(' · ') : null
+}
+
+// 용준/Claude(2026-07-30, 요청: 공고 URL 본문/URL 첨부파일/직접 업로드 구분) —
+// origin_type(ai/rag/chunking/schemas.py::SourceType 값을 그대로 노출한 것)을 사람이 읽는
+// 라벨로 바꾼다. 값이 없거나 매핑에 없으면 아무것도 표시하지 않는다(지어내지 않음).
+const ORIGIN_TYPE_LABEL = {
+  url_webpage: '공고 URL 본문',
+  url_attachment: 'URL 첨부파일',
+  file_upload: '직접 업로드',
+}
+
+function EvidenceCard({ item, kind }) {
+  const title = item.document_title || item.document_name || item.title
+  const page = item.page ?? item.page_number
+  const section = item.section || item.page_or_section
+  const meta = kind === 'external' ? externalEvidenceMeta(item) : null
+  const originLabel = kind === 'criteria' ? ORIGIN_TYPE_LABEL[item.origin_type] : null
+  const fileName = kind === 'criteria' ? item.file_name : null
+  return (
+    <div
+      style={{
+        fontSize: 13, color: 'var(--text-1)', lineHeight: 1.5,
+        background: 'var(--bg-0)', border: '1px solid var(--glass-border)', borderRadius: 8, padding: '6px 8px',
+      }}
+    >
+      <EvidenceBadge kind={kind} />
+      {title && (
+        <div style={{ fontWeight: 600, color: 'var(--text-2)', marginBottom: 2 }}>
+          {title}
+          {page != null && ` / ${page}페이지`}
+        </div>
+      )}
+      {(originLabel || fileName) && (
+        <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 2 }}>
+          {[originLabel, fileName].filter(Boolean).join(' · ')}
+        </div>
+      )}
+      {section && (
+        <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 2 }}>
+          {kind === 'criteria' ? `섹션: ${section}` : section}
+        </div>
+      )}
+      {meta && <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 2 }}>{meta}</div>}
+      {(item.short_summary || item.text || item.quote) && (
+        <div style={{ marginBottom: 2 }}>"{item.short_summary || item.text || item.quote}"</div>
+      )}
+      {item.source_url && (
+        <a href={item.source_url} target="_blank" rel="noreferrer" style={{ fontSize: 13.5, fontWeight: 600, color: '#5e3ec8' }}>
+          원문 보기
+        </a>
+      )}
+    </div>
+  )
+}
+
+function EvidenceToggle({
+  evidence,
+  linkedEvidenceRefs,
+  claims,
+  reviewedTargetRefs,
+  linkedCriteriaRefs,
+  linkedExternalEvidenceRefs,
+  expertJudgmentWithoutExternalEvidence,
+}) {
+  const [open, setOpen] = useState(false)
+  const evidenceByChunkId = new Map((evidence || []).filter((e) => e && e.chunk_id).map((e) => [e.chunk_id, e]))
+  const resolveRefs = (refs) =>
+    (refs || []).map((chunkId) => evidenceByChunkId.get(chunkId)).filter(Boolean)
+
+  // 용준/Claude(2026-07-29) — 4개 신규 필드는 _build_message가 항상 채우지만(빈 리스트
+  // 기본값), 이 배포 이전에 저장된 세션은 필드 자체가 없다(undefined). 그런 레거시
+  // 메시지만 예전 방식(구분 없는 단일 "근거 N건" 목록)으로 폴백한다.
+  const bucketsProvided =
+    reviewedTargetRefs !== undefined ||
+    linkedCriteriaRefs !== undefined ||
+    linkedExternalEvidenceRefs !== undefined ||
+    expertJudgmentWithoutExternalEvidence !== undefined
+
+  if (!bucketsProvided) {
+    const linkedSet = new Set(linkedEvidenceRefs || [])
+    const items = (evidence || []).filter((e) => e && e.chunk_id && linkedSet.has(e.chunk_id))
+    const unlinkedClaims = (claims || []).filter(
+      (c) => c && (c.claim_type === 'expert_judgment' || !linkedSet.size)
+    )
+    if (items.length === 0 && unlinkedClaims.length === 0) return null
+    if (items.length === 0) {
+      return <ExpertJudgmentPill />
+    }
     return (
-      <div
-        style={{
-          marginTop: 4,
-          fontSize: 13,
-          color: 'var(--text-2)',
-          display: 'inline-flex',
-          alignItems: 'center',
-          border: '1px solid var(--glass-border)',
-          borderRadius: 999,
-          padding: '2px 7px',
-        }}
-      >
-        전문가 판단 · 문서 근거 없음
-      </div>
+      <EvidenceListPanel
+        count={items.length}
+        open={open}
+        onToggle={() => setOpen((v) => !v)}
+        renderItems={() => items.map((e, i) => <EvidenceCard key={e.chunk_id || i} item={e} kind="criteria" />)}
+      />
     )
   }
-  const count = items.length
+
+  const targetItems = resolveRefs(reviewedTargetRefs)
+  const criteriaItems = resolveRefs(linkedCriteriaRefs)
+  const externalItems = resolveRefs(linkedExternalEvidenceRefs)
+  // 용준/Claude(2026-07-30, 요청: "검토 대상은 근거가 아니다 — 총 개수에 합산 금지") —
+  // 선택 아이디어(target)는 위원이 검토한 대상일 뿐 공모전/외부 문서 근거가 아니므로
+  // "근거 N건" 합계에서 완전히 분리한다. evidenceCount(criteria+external)==0이면
+  // target이 몇 건이든 "근거"라는 단어를 쓰지 않고 "검토 대상"과 "문서 근거 없음"을
+  // 각각 별도로 보여준다.
+  const evidenceItems = [...criteriaItems, ...externalItems]
+  const evidenceCount = evidenceItems.length
+  const targetCount = targetItems.length
+  const expertJudgmentIds = new Set(
+    (claims || [])
+      .filter((claim) => claim?.claim_type === 'expert_judgment')
+      .map((claim, index) => claim.claim_id || `expert-${index}`)
+  )
+  ;(expertJudgmentWithoutExternalEvidence || []).forEach((claimId) => {
+    if (claimId) expertJudgmentIds.add(claimId)
+  })
+  const expertJudgmentCount = expertJudgmentIds.size
+
+  if (evidenceCount === 0 && targetCount === 0) {
+    if ((expertJudgmentWithoutExternalEvidence || []).length > 0 || (claims || []).length > 0) {
+      return (
+        <div style={{ marginTop: 4 }}>
+          <ExpertJudgmentPill label={`전문가 판단 ${expertJudgmentCount || 1}건 · 확인된 문서 근거 없음`} />
+        </div>
+      )
+    }
+    return null
+  }
+
   return (
-    <div style={{ marginTop: 4 }}>
+    <div style={{ marginTop: 4, display: 'flex', flexDirection: 'column', gap: 4 }}>
+      {evidenceCount > 0 ? (
+        <>
+          <button
+            type="button"
+            onClick={() => setOpen((v) => !v)}
+            style={{
+              background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+              fontSize: 13, color: 'var(--text-2)', display: 'flex', alignItems: 'center', gap: 2,
+            }}
+          >
+            {open ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+            근거 {evidenceCount}건 {open ? '접기' : '보기'}
+          </button>
+          {open && (
+            <div style={{ marginTop: 4, display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {/* 표시 순서: 공모전 근거 -> 외부 근거(둘 다 "증거" 계열). 검토 대상(target)은
+                  근거가 아니므로 이 목록에 섞지 않고 아래 별도 토글로 분리한다. */}
+              {criteriaItems.map((e, i) => <EvidenceCard key={`criteria-${e.chunk_id || i}`} item={e} kind="criteria" />)}
+              {externalItems.map((e, i) => <EvidenceCard key={`external-${e.chunk_id || i}`} item={e} kind="external" />)}
+            </div>
+          )}
+        </>
+      ) : (
+        <ExpertJudgmentPill label={`전문가 판단 ${expertJudgmentCount || 1}건 · 확인된 문서 근거 없음`} />
+      )}
+      {targetCount > 0 && (
+        <TargetReviewToggle items={targetItems} />
+      )}
+    </div>
+  )
+}
+
+function TargetReviewToggle({ items }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div>
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -281,47 +450,51 @@ function EvidenceToggle({ evidence, linkedEvidenceRefs, claims }) {
         }}
       >
         {open ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
-        근거 {count}건 {open ? '접기' : '보기'}
+        검토 대상 {items.length}건 {open ? '접기' : '보기'}
       </button>
       {open && (
         <div style={{ marginTop: 4, display: 'flex', flexDirection: 'column', gap: 6 }}>
-          {items.map((e, i) => (
-            <div
-              key={e.chunk_id || i}
-              style={{
-                fontSize: 13, color: 'var(--text-1)', lineHeight: 1.5,
-                background: 'var(--bg-0)', border: '1px solid var(--glass-border)', borderRadius: 8, padding: '6px 8px',
-              }}
-            >
-              {e.document_name && (
-                <div style={{ fontWeight: 600, color: 'var(--text-2)', marginBottom: 2 }}>
-                  {e.document_name}
-                  {e.page != null && ` / ${e.page}페이지`}
-                </div>
-              )}
-              {e.section && (
-                <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 2 }}>평가항목: {e.section}</div>
-              )}
-              {(e.text || e.quote) && <div style={{ marginBottom: 2 }}>"{e.text || e.quote}"</div>}
-              {e.source_url && (
-                <a href={e.source_url} target="_blank" rel="noreferrer" style={{ fontSize: 13.5, fontWeight: 600, color: '#5e3ec8' }}>
-                  원문 보기
-                </a>
-              )}
-            </div>
-          ))}
-          {items.length === 0 && (
-            <div
-              style={{
-                fontSize: 13, color: 'var(--text-2)', fontStyle: 'italic',
-                background: 'var(--bg-0)', border: '1px solid var(--glass-border)', borderRadius: 8, padding: '6px 8px',
-              }}
-            >
-              현재 문서에서 직접 확인되지 않은 전문가 판단입니다.
-            </div>
-          )}
+          {items.map((e, i) => <EvidenceCard key={`target-${e.chunk_id || i}`} item={e} kind="target" />)}
         </div>
       )}
+    </div>
+  )
+}
+
+function ExpertJudgmentPill({ label = '전문가 판단 · 외부 근거 없음' }) {
+  return (
+    <div
+      style={{
+        marginTop: 4,
+        fontSize: 13,
+        color: 'var(--text-2)',
+        display: 'inline-flex',
+        alignItems: 'center',
+        border: '1px solid var(--glass-border)',
+        borderRadius: 999,
+        padding: '2px 7px',
+      }}
+    >
+      {label}
+    </div>
+  )
+}
+
+function EvidenceListPanel({ count, open, onToggle, renderItems }) {
+  return (
+    <div style={{ marginTop: 4 }}>
+      <button
+        type="button"
+        onClick={onToggle}
+        style={{
+          background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+          fontSize: 13, color: 'var(--text-2)', display: 'flex', alignItems: 'center', gap: 2,
+        }}
+      >
+        {open ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+        근거 {count}건 {open ? '접기' : '보기'}
+      </button>
+      {open && <div style={{ marginTop: 4, display: 'flex', flexDirection: 'column', gap: 6 }}>{renderItems()}</div>}
     </div>
   )
 }
@@ -360,6 +533,17 @@ function FacilitatorSummaryCard({ structured }) {
   )
 }
 
+const REDUNDANT_PROBLEM_DISCOVERY_INTRO =
+  '기획위원과 개발위원의 공고문 검토를 종합해 해결할 문제 후보를 정리했습니다.'
+
+function withoutRedundantFacilitatorIntro(value, message) {
+  const text = String(value || '')
+  if (message?.speaker_id !== 'ideation_facilitator') return text
+  const trimmed = text.trimStart()
+  if (trimmed && REDUNDANT_PROBLEM_DISCOVERY_INTRO.startsWith(trimmed)) return ''
+  return text.replace(REDUNDANT_PROBLEM_DISCOVERY_INTRO, '').trimStart()
+}
+
 function MessageBubble({ message, streaming = false, interrupted = false, allMessages = [], isLatest = false }) {
   const meta = speakerMetaFor(message)
   const isRight = meta.align === 'right'
@@ -367,7 +551,10 @@ function MessageBubble({ message, streaming = false, interrupted = false, allMes
   // content(서버에서 실제로 받은 전체 텍스트)를 그대로 쓰면 델타가 도착하는 순간
   // 문장이 통째로 튀어나와 타이핑 효과가 사라진다. canonical(완료된) 메시지는
   // displayedContent 필드가 없으므로 content를 그대로 쓴다.
-  const rawText = streaming ? message.displayedContent ?? '' : message.content
+  const rawText = withoutRedundantFacilitatorIntro(
+    streaming ? message.displayedContent ?? '' : message.content,
+    message,
+  )
   const text = humanizeExpertIdentifiers(rawText)
   const hasContent = !!text?.trim()
   // done(message_end 수신)이 와도 displayedContent가 content를 따라잡기 전까지는
@@ -453,6 +640,10 @@ function MessageBubble({ message, streaming = false, interrupted = false, allMes
             evidence={message.evidence}
             linkedEvidenceRefs={message.linked_evidence_refs}
             claims={message.claims}
+            reviewedTargetRefs={message.reviewed_target_refs}
+            linkedCriteriaRefs={message.linked_criteria_refs}
+            linkedExternalEvidenceRefs={message.linked_external_evidence_refs}
+            expertJudgmentWithoutExternalEvidence={message.expert_judgment_without_external_evidence}
           />
         )}
         {isFacilitatorSummary && <FacilitatorSummaryCard structured={message.structured} />}
@@ -474,6 +665,18 @@ function isValidationOpinionMessage(message) {
     message?.message_type === 'opinion'
     && !!message?.structured?.validation
     && (message.speaker_id === 'planning_expert' || message.speaker_id === 'dev_expert')
+  )
+}
+
+const LEGACY_SPECIFICATION_SUMMARY_RE = /^(주요 기능|필요한 데이터|기술 구현 방향|MVP 범위|위험 요소와 대응 방안|성공 지표|검증이 필요한 가정)\s*항목을 위원 제안으로 정리했습니다/
+
+function isLegacySpecificationNarration(message) {
+  return (
+    !!message?.structured?.specification_completion
+    || (
+      message?.speaker_id === 'ideation_facilitator'
+      && LEGACY_SPECIFICATION_SUMMARY_RE.test((message?.content || '').trim())
+    )
   )
 }
 
@@ -798,6 +1001,10 @@ function ErrorBanner({ error, onRetry, retrying }) {
 // 세 블록 모두 onSend(message, { actionCode, actionPayload })만 호출하고 API를 직접
 // 부르지 않는다 — 실제 전송은 IdeationScreen의 handleSend가 담당한다.
 
+function withoutExpertJudgmentLabel(value) {
+  return String(value || '').replace(/^\s*전문가\s*판단\s*[:：·-]?\s*/, '')
+}
+
 function SelectableAreaCard({ area, selected, onToggle, disabled }) {
   return (
     <div
@@ -821,22 +1028,32 @@ function SelectableAreaCard({ area, selected, onToggle, disabled }) {
       }}
     >
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8, marginBottom: 4 }}>
-        <div style={{ fontSize: 16.5, fontWeight: 700, color: 'var(--text-0)' }}>{area.title}</div>
+        <div style={{ fontSize: 16.5, fontWeight: 700, color: 'var(--text-0)' }}>{area.problem_title || area.title}</div>
         {selected ? (
           <CheckCircle2 size={18} color="var(--purple)" style={{ flexShrink: 0 }} />
         ) : (
           <Circle size={16} color="var(--glass-border)" style={{ flexShrink: 0 }} />
         )}
       </div>
-      {area.summary && (
+      {(area.problem_description || area.summary) && (
         <div style={{ fontSize: 14.5, color: 'var(--text-1)', lineHeight: 1.6, marginBottom: 4 }}>
           <strong style={{ color: '#514a61', fontWeight: 700 }}>문제 상황 · </strong>
-          {area.summary}
+          {area.problem_description || area.summary}
         </div>
       )}
-      {area.who_is_affected && (
+      {(area.affected_users || area.who_is_affected) && (
         <div style={{ fontSize: 13.5, color: 'var(--text-2)' }}>
-          <strong style={{ fontWeight: 600 }}>영향을 받는 대상 · </strong>{area.who_is_affected}
+          <strong style={{ fontWeight: 600 }}>영향을 받는 대상 · </strong>{area.affected_users || area.who_is_affected}
+        </div>
+      )}
+      {area.planning_view && (
+        <div style={{ fontSize: 13.5, color: 'var(--text-2)', marginTop: 5 }}>
+          <strong style={{ fontWeight: 600 }}>기획 관점 · </strong>{withoutExpertJudgmentLabel(area.planning_view)}
+        </div>
+      )}
+      {area.technical_view && (
+        <div style={{ fontSize: 13.5, color: 'var(--text-2)', marginTop: 3 }}>
+          <strong style={{ fontWeight: 600 }}>개발 관점 · </strong>{withoutExpertJudgmentLabel(area.technical_view)}
         </div>
       )}
     </div>
@@ -1793,6 +2010,8 @@ export function IdeationScreen({
     for (const m of messages) {
       if (!AVATAR_SPEAKER_IDS.has(m.speaker_id) || queuedAvatarIdsRef.current.has(m.message_id)) continue
       queuedAvatarIdsRef.current.add(m.message_id)
+      // 이전 세션에 저장된 필드별 구체화 발언은 화면에서도 숨기므로 아바타도 읽지 않는다.
+      if (isLegacySpecificationNarration(m)) continue
       // 아바타는 안 태우지만(코랩 요청 자체를 안 보냄) 텍스트 채팅에는 그대로 남는다 —
       // canonicalMessages는 이 필터와 무관하게 ideationConv.messages를 그대로 쓴다.
       if ((m.content || '').startsWith(AVATAR_EXCLUDED_CONTENT_PREFIX)) continue
@@ -1915,7 +2134,11 @@ export function IdeationScreen({
   // 뒤에 온 비아바타 메시지 포함) 전부 숨긴다 — 순서를 지키기 위해서다(나중에 온 문구가
   // 아직 재생 안 한 위원 발언보다 먼저 보이면 안 됨). 아바타 대상이 아닌 메시지(고정
   // 문구 중 코랩 제외 대상, 사용자 메시지 등)는 게이팅 없이 즉시 보인다.
-  const rawMessages = ideationConv?.messages || []
+  // 새 회의는 서버가 구체화 결과를 한 번만 요약한다. 이미 저장된 이전 회의도 새로고침하면
+  // 필드별 기획/개발 발언과 진행자 반복 요약을 숨겨 같은 간결한 화면으로 보여준다.
+  const rawMessages = (ideationConv?.messages || []).filter(
+    (message) => !isLegacySpecificationNarration(message),
+  )
   let avatarSeenCount = 0
   // IDEATION_AVATAR_ENABLED=false(개발자용)면 영상 재생을 기다리지 않고 항상 -1(=자르지
   // 않음)로 취급한다 — 아바타 서버가 없어도 회의 메시지가 즉시 전부 보인다.
@@ -2002,6 +2225,10 @@ export function IdeationScreen({
     phase === 'awaiting_user_decision' && latestFacilitatorMessage?.structured?.needs_user_decision
       ? latestFacilitatorMessage.structured.choices || []
       : []
+  const postLockChoiceOnly =
+    !!ideationConv?.idea_locked
+    && phase === 'awaiting_user_decision'
+    && latestFacilitatorChoices.length > 0
   // 용준/Claude(2026-07-22, 요청: "잠시만" 버튼) — 실제로 기획/개발 위원이 발언을
   // 스트리밍하는 동안에만(말풍선이 하나 이상 생겨야) 활성화한다. 이미 취소 확인을 기다리는
   // 중이면(interrupting) 다시 누를 수 없다.
@@ -2180,20 +2407,25 @@ export function IdeationScreen({
     if (!canFinalize) return
     setError(null)
     const currentIdea = ideationConv.idea_canvas || ideationConv.selected_idea || ideationConv.provisional_idea || {}
+    const ideaSpecValue = (field) => {
+      const spec = ideationConv.idea_spec?.[field]
+      if (!spec || spec.status === 'unknown') return undefined
+      return spec.value || undefined
+    }
     setPreviewProposal({
       idea_name: currentIdea.title || currentIdea.idea_name || ideationConv.selected_idea?.title || '확정 예정 아이디어',
       problem_definition: currentIdea.problem || currentIdea.problem_definition,
       target_user: currentIdea.target_user,
-      core_user_value: currentIdea.core_value || currentIdea.core_user_value,
-      key_features: currentIdea.key_features || currentIdea.features,
-      required_data: currentIdea.required_data,
-      tech_direction: currentIdea.tech_direction || currentIdea.technical_approach,
-      mvp_scope: currentIdea.mvp_scope,
-      differentiation: currentIdea.differentiation,
-      risks_and_mitigations: currentIdea.risks_and_mitigations || currentIdea.risks,
-      success_metrics: currentIdea.success_metrics,
+      core_user_value: ideaSpecValue('core_user_value') || currentIdea.core_value || currentIdea.core_user_value,
+      key_features: ideaSpecValue('main_features') || currentIdea.key_features || currentIdea.features,
+      required_data: ideaSpecValue('required_data') || currentIdea.required_data,
+      tech_direction: ideaSpecValue('technical_approach') || currentIdea.tech_direction || currentIdea.technical_approach,
+      mvp_scope: ideaSpecValue('mvp_scope') || currentIdea.mvp_scope,
+      differentiation: ideaSpecValue('differentiation') || currentIdea.differentiation,
+      risks_and_mitigations: ideaSpecValue('risks_and_mitigations') || currentIdea.risks_and_mitigations || currentIdea.risks,
+      success_metrics: ideaSpecValue('success_metrics') || currentIdea.success_metrics,
       expert_final_opinions: ideationConv.consensus,
-      unverified_assumptions: ideationConv.unresolved_issues,
+      unverified_assumptions: ideaSpecValue('assumptions_to_validate') || ideationConv.unresolved_issues,
       final_recommendation: currentIdea.contest_fit || currentIdea.final_recommendation,
     })
     setShowFinalizedModal(true)
@@ -2615,19 +2847,53 @@ export function IdeationScreen({
               갱신되는데, 그건 왕복 응답이 끝나야 일어난다). sending은 handleSend가 네트워크
               요청 전에 동기적으로 true가 되므로, 클릭 즉시 선택지 묶음 자체를 감춘다. */}
           {latestFacilitatorChoices.length > 0 && !sending && (
-            <div style={{ marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-              {latestFacilitatorChoices.map((choice, i) => (
-                <button
-                  key={choice.id || i}
-                  type="button"
-                  className="btn-ghost"
-                  style={{ padding: '8px 14px', fontSize: 14.5, borderRadius: 999, textAlign: 'left' }}
-                  onClick={() => handleSend(choice.label)}
-                  disabled={!canReplyOrContinue}
-                >
-                  {choice.label}
-                </button>
-              ))}
+            <div
+              role="group"
+              aria-label="검증 방향 선택"
+              style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 8, width: '100%' }}
+            >
+              <p style={{ margin: '0 0 2px', color: 'var(--text-2)', fontSize: 13.5, lineHeight: 1.5 }}>
+                {postLockChoiceOnly
+                  ? '원하는 진행 방식 하나를 선택해 주세요.'
+                  : '아래 선택지는 최종 주제 확정이 아니라, 다음 검증에서 적용할 방향입니다.'}
+              </p>
+              {latestFacilitatorChoices.map((choice, i) => {
+                const detail = typeof choice.detail === 'string' ? choice.detail.trim() : ''
+                return (
+                  <button
+                    key={choice.id || i}
+                    type="button"
+                    className="btn-ghost"
+                    style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'flex-start',
+                      gap: detail && detail !== choice.label ? 5 : 0,
+                      width: '100%',
+                      padding: '11px 14px',
+                      fontSize: 14.5,
+                      borderRadius: 12,
+                      textAlign: 'left',
+                      whiteSpace: 'normal',
+                      overflowWrap: 'anywhere',
+                      lineHeight: 1.5,
+                    }}
+                    onClick={() => (
+                      choice.id === 'finish_refinement'
+                        ? handleFinalize()
+                        : handleSend(choice.label)
+                    )}
+                    disabled={!canReplyOrContinue}
+                  >
+                    <strong>{i + 1}) {choice.label}</strong>
+                    {detail && detail !== choice.label && (
+                      <span style={{ color: 'var(--text-2)', fontSize: 13.5, fontWeight: 400 }}>
+                        {detail}
+                      </span>
+                    )}
+                  </button>
+                )
+              })}
             </div>
           )}
           {/* 용준/Claude(2026-07-27, 요청: discovery 모드 구조화 액션 버튼) — 위
@@ -2675,7 +2941,7 @@ export function IdeationScreen({
           </span>
         </div>
 
-        {ideationConv && phase !== 'finalized' && (
+        {ideationConv && phase !== 'finalized' && !postLockChoiceOnly && (
           <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
             <input
               ref={inputRef}

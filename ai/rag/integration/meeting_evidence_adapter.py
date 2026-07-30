@@ -101,6 +101,9 @@ def to_retrieved_evidence(
                 document_type=metadata.get("document_type"),
                 ideation_source_type=metadata.get("ideation_source_type"),
                 session_id=metadata.get("session_id"),
+                origin_type=metadata.get("source_type"),
+                file_name=metadata.get("source_filename"),
+                source_url=metadata.get("source_url"),
             )
         )
 

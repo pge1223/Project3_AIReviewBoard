@@ -76,6 +76,23 @@ def _assign_evidence_refs(items: list[dict]) -> list[dict]:
     return result
 
 
+def _exclude_user_session_answers(items: list[dict]) -> list[dict]:
+    """용준/Claude(2026-07-30, 요청: "사용자 답변은 문서 기반 grounded evidence로 사용하지
+    마세요") — ideation_target_indexing_service.py::index_user_answer_as_target()가 회의 중
+    사용자 채팅 답변을 document_role="target"으로 색인해 두므로, 검색 자체는 이 청크를 그대로
+    찾아온다(target starvation 대응 등 다른 목적으로는 여전히 필요). 하지만 evidence_lookup의
+    이 최종 반환 지점을 지나면 곧바로 프롬프트의 retrieved_evidence/turn_evidence가 되고 ref가
+    부여돼 LLM이 그대로 인용(evidence_refs)할 수 있게 되므로, 여기서 미리 제외해야 이후
+    ground_claims 검증 대상·claim_evidence_links·reviewed_target_refs 등 근거 인용 파이프라인
+    전체에 이 청크가 등장할 가능성 자체가 차단된다(대화 맥락/session_state 응답은 RAG 청크가
+    아니라 state["messages"]에서 오므로 이 필터와 무관하게 그대로 동작한다)."""
+    return [
+        item
+        for item in items
+        if not (isinstance(item, dict) and item.get("ideation_source_type") == "user_session_answer")
+    ]
+
+
 def call_evidence_lookup(
     evidence_lookup: "EvidenceLookup | None",
     persona_id: str,
@@ -94,16 +111,17 @@ def call_evidence_lookup(
     runtime_scope를 지원하지 않는 콜러블(기존 (persona_id, query) 2-인자 테스트 fake, 배치형
     호출자 등)은 기존과 동일하게 2-인자로만 호출한다 — 완전히 하위 호환이다.
 
-    반환 직전 _assign_evidence_refs로 순번 참조 ID를 부여한다(위 설명 참고) — evidence_lookup이
-    무엇을 반환하든(실제 RAG 검색이든 테스트 fake든) 이 함수를 거치는 모든 호출자가 동일하게
-    안정적인 ref를 받는다."""
+    반환 직전 사용자 세션 답변 청크를 제외하고(_exclude_user_session_answers) _assign_evidence_refs로
+    순번 참조 ID를 부여한다 — evidence_lookup이 무엇을 반환하든(실제 RAG 검색이든 테스트
+    fake든) 이 함수를 거치는 모든 호출자가 동일하게 안정적인 ref를 받고, 사용자 답변은 어떤
+    호출자에게도 인용 가능한 근거로 노출되지 않는다."""
     if evidence_lookup is None:
         return []
     if runtime_scope is not None and _lookup_accepts_runtime_scope(evidence_lookup):
         items = evidence_lookup(persona_id, query, runtime_scope=runtime_scope)
     else:
         items = evidence_lookup(persona_id, query)
-    return _assign_evidence_refs(items)
+    return _assign_evidence_refs(_exclude_user_session_answers(items))
 
 _VALID_STANCES = {"동의", "조건부_동의", "반박", "보완", "대안_제시", "사용자에게_질문"}
 _TURN_LIST_FIELDS = (

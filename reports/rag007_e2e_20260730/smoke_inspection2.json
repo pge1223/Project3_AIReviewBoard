@@ -1,0 +1,13 @@
+{
+  "final_count_by_source": {
+    "NIA-PUBLIC-AI-GUIDE-2026-FULL": 213,
+    "PIPC-GENAI-PRIVACY-GUIDE-2025-FULL": 8,
+    "NIA-DIGITAL-DIVIDE-SURVEY-2024-FULL": 2
+  },
+  "total_chars_by_source": {
+    "NIA-PUBLIC-AI-GUIDE-2026-FULL": 78147,
+    "PIPC-GENAI-PRIVACY-GUIDE-2025-FULL": 4156,
+    "NIA-DIGITAL-DIVIDE-SURVEY-2024-FULL": 695
+  },
+  "duplicate_chunk_id_metadata_within_collection": {}
+}

@@ -17,7 +17,6 @@
 |---|---|---|---|---:|
 | 검색 | Recall@5 | 필요한 정답 문서를 상위 5개 안에서 얼마나 찾았는가 | 지원 | 0.85 이상 |
 | 검색 | Hit@5 | 정답 문서를 하나라도 상위 5개 안에서 찾았는가 | 지원 | 0.90 이상 |
-| 검색 | MRR@5 | 첫 번째 정답 문서가 검색 결과의 몇 위에 나타나는가 | 지원 | 0.80 이상 |
 | 검색 | Context Precision | 검색된 근거 중 실제 질문과 관련 있는 근거의 비율 | 다중 문서 게이트에서 지원 | 0.80 이상 |
 | 검색 | Context Recall | 정답에 필요한 근거를 빠짐없이 검색했는가 | Recall@K로 대체 측정 | 0.85 이상 |
 | 생성 | Faithfulness | 위원 발언의 사실 주장이 검색 근거로 뒷받침되는가 | 지원 | 0.90 이상 |
@@ -52,18 +51,7 @@ Hit@K = 1 if 정답 문서 ∩ 상위 K개 검색 문서가 존재 else 0
 Hit@K는 검색 성공 여부를 빠르게 확인하기 좋지만, 필요한 여러 문서를 모두 찾았는지는
 보여주지 않으므로 Recall@K와 함께 사용한다.
 
-### 3.3 MRR@K
-
-첫 번째 정답 문서가 나타난 순위의 역수를 계산한다. 1위면 `1.0`, 2위면 `0.5`,
-5위면 `0.2`, 상위 K개 안에 없으면 `0`이다. Recall@K가 같더라도 사용하기 좋은 근거가
-앞쪽에 배치되는지를 구분한다.
-
-```text
-Reciprocal Rank = 1 / 첫 번째 정답 문서 순위
-MRR@K = 전체 평가 케이스 Reciprocal Rank의 평균
-```
-
-### 3.4 Context Precision
+### 3.3 Context Precision
 
 검색 또는 Planner가 선택한 근거 중 실제 질문과 직접 관련된 근거의 비율이다.
 
@@ -74,7 +62,7 @@ Context Precision = 관련 근거 수 / 선택된 전체 근거 수
 점수가 낮으면 검색 결과에 공고문 작성 요령, 무관한 신청 양식, 다른 평가 부문의 내용이
 섞이고 있다는 뜻이다.
 
-### 3.5 Faithfulness
+### 3.4 Faithfulness
 
 위원 발언을 사실 주장 단위로 나눈 후 각 주장을 다음 다섯 종류로 판정한다.
 
@@ -92,7 +80,7 @@ Faithfulness =
 
 `non_factual`은 분모에서 제외한다. 검증할 사실 주장이 하나도 없으면 점수를 `N/A`로 둔다.
 
-### 3.6 Hallucination Rate
+### 3.5 Hallucination Rate
 
 검색 근거로 확인되지 않거나 근거와 모순되는 주장의 비율이다.
 
@@ -105,7 +93,7 @@ Hallucination Rate =
 파일명이나 HWP/HWPX 원문이 말풍선에 그대로 출력되는 문제는 환각과 별개다. 이는
 `message`와 `evidence` 분리 여부를 확인하는 회귀 테스트로 따로 관리한다.
 
-### 3.7 Persona Evidence Fit
+### 3.6 Persona Evidence Fit
 
 위원 발언이 역할에 맞는 근거를 사용했는지 LLM Judge가 0~4점으로 평가한다.
 
@@ -116,7 +104,7 @@ Hallucination Rate =
 정규화 점수 = 역할 적합도 점수 / 4
 ```
 
-### 3.8 Answer Relevance
+### 3.7 Answer Relevance
 
 발언이 검색 문서의 내용을 반복하는 데 그치지 않고 사용자의 질문과 현재 회의 쟁점에
 직접 답하는지 평가한다. 현재 자동 리포트의 정식 지표에는 포함되지 않으므로 다음
@@ -213,7 +201,6 @@ python -m ai.rag.evaluation.rag_quality.cli \
 ```text
 Recall@5                  >= 0.85
 Hit@5                     >= 0.90
-MRR@5                     >= 0.80
 Context/Planner Precision >= 0.80
 Faithfulness              >= 0.90
 Hallucination Rate        <= 0.05
@@ -234,3 +221,23 @@ Retrieval Failure Rate    <= 0.05
 - 이전 10건 참고 측정: Recall@5 `1.0000`, Hit@5 `1.0000`
 - 위 수치는 `project_documents_kure_v5`에서 `human_verified=false` 케이스로 측정한 참고
   결과이므로, 현재 `project_documents_kure_v6`의 정식 성능으로 간주하지 않는다.
+
+## 9. Ragas 프레임워크 평가 (별도 환경)
+
+위 1~8절의 지표(Recall@K/Hit@K/MRR/Faithfulness/Hallucination Rate/Persona Evidence Fit)는
+이 프로젝트가 직접 만든 LLM-judge 구현이다. 여기에 더해 Ragas 라이브러리로 계산한
+Faithfulness / Answer Relevancy / Context Precision / Context Recall도 확인할 수 있다.
+
+`ragas` 패키지는 이미 삭제된 `langchain_community.chat_models.vertexai`를 무조건
+import해서(2026-07-29 실측), 이 프로젝트가 쓰는 최신 langchain-core/langchain-community와
+같은 환경에 넣을 수 없다. 그래서 앱 환경(`requirements.txt`, review-board conda 환경)은
+전혀 건드리지 않고, 완전히 분리된 별도 환경에서 실행한다.
+
+- 평가 데이터 내보내기(앱 환경): `ai/rag/evaluation/rag_quality/export_ragas_dataset.py`
+- Ragas 실행(별도 환경): `ai/rag/evaluation/ragas_standalone/run_ragas_eval.py`
+- 실행 방법·환경 생성 명령어: `ai/rag/evaluation/ragas_standalone/README.md`
+
+Context Precision/Context Recall은 Ragas 원래 정의상 사람이 쓴 정답 발언(`reference`)이
+필요하다. 이 프로젝트 평가셋 대부분은 아직 `reference_answer`가 없으므로(선택 필드,
+`RagEvalCase.reference_answer`), 그런 케이스는 두 지표를 계산하지 않고 결과에
+`not_measurable`로 표시한다 — 값을 임의로 채우지 않는다.

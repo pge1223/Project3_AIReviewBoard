@@ -13,6 +13,7 @@ from graph.ideation_conv_nodes import (  # noqa: E402
     _discussion_retry_note,
     _repair_evaluative_expert_judgment_claim,
     _safe_call_structured_json,
+    _sanitize_visible_korean_text,
     make_conv_discussion_node,
 )
 from graph.ideation_conv_state import initial_conv_state  # noqa: E402
@@ -74,6 +75,40 @@ def test_discussion_retry_receives_the_actual_validation_reason():
     assert llm.discards[0][0] == "original prompt"
     assert "실패 코드: spoken_text_issue_drift" in llm.discards[1][0]
     assert "다음 쟁점의 내용은 제외" in llm.discards[1][0]
+
+
+def test_foreign_script_in_visible_speech_is_retried_in_korean():
+    prompts: list[str] = []
+    responses = iter(
+        [
+            '{"spoken_text": "구현이 слож 수 있습니다."}',
+            '{"spoken_text": "구현할 수 있습니다."}',
+        ]
+    )
+
+    def llm(prompt: str) -> str:
+        prompts.append(prompt)
+        return next(responses)
+
+    raw, ok, attempts = _safe_call_structured_json(
+        llm,
+        "위원 발언을 작성하세요.",
+        lambda _value: None,
+        "discussion__dev_expert",
+        retry_note_for=_discussion_retry_note,
+    )
+
+    assert ok is True
+    assert attempts == 2
+    assert raw == {"spoken_text": "구현할 수 있습니다."}
+    assert "한국어 전용 응답 재시도" in prompts[1]
+
+
+def test_final_message_safety_net_removes_foreign_script():
+    content = _sanitize_visible_korean_text("구현이 слож 수 있습니다.")
+
+    assert content == "위원 발언을 한국어로 생성하지 못했습니다. 다시 시도해 주세요."
+    assert "слож" not in content
 
 
 def test_evaluative_conclusion_gets_a_separate_expert_judgment_claim():

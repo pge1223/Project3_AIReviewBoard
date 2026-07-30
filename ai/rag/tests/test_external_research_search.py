@@ -82,6 +82,56 @@ class TestSearchEndToEnd:
         assert len(response.results) == 2
         assert response.total_results == 2
 
+    def test_summary_only_metadata_survives_dataset_search(self, repository):
+        query_text = build_external_research_query(
+            domain="public_service", evaluation_criteria=["시장성"], reviewer_role="marketing"
+        )
+        embedder = FakeEvidenceEmbedder(
+            dimension=_DIM,
+            overrides={query_text: _UNIT_A, "official page summary": _UNIT_A},
+        )
+        document = _doc(
+            content="official page summary",
+            metadata={
+                "source_type": "official_page_summary",
+                "summary_only": True,
+                "allow_grounded_claim": False,
+            },
+        )
+        repository.upsert_evidence_chunk(document, _UNIT_A)
+
+        response = ExternalResearchService(DatasetProvider(repository, embedder)).search(_request())
+        result = response.results[0]
+
+        assert result.source_type == "official_page_summary"
+        assert result.summary_only is True
+        assert result.allow_grounded_claim is False
+
+    def test_missing_page_and_section_is_downgraded_to_not_grounded_claim(self, repository):
+        """용준/Claude(2026-07-30, 요청: RAG-007 검색 후보 품질 게이트) — page/section이
+        모두 없는 청크는 어느 부분을 인용했는지 확인할 방법이 없으므로, 색인 자체에서
+        걸러지지 않은 레코드가 검색에 섞여도 document_fact 근거로 쓰이지 않게 강등된다."""
+        query_text = build_external_research_query(
+            domain="public_service", evaluation_criteria=["시장성"], reviewer_role="marketing"
+        )
+        embedder = FakeEvidenceEmbedder(dimension=_DIM, overrides={query_text: _UNIT_A, "무근거 본문": _UNIT_A})
+        document = _doc(content="무근거 본문", page=None, section=None)
+        repository.upsert_evidence_chunk(document, _UNIT_A)
+
+        response = ExternalResearchService(DatasetProvider(repository, embedder)).search(_request())
+        assert response.results[0].allow_grounded_claim is False
+
+    def test_page_present_without_section_is_not_downgraded(self, repository):
+        query_text = build_external_research_query(
+            domain="public_service", evaluation_criteria=["시장성"], reviewer_role="marketing"
+        )
+        embedder = FakeEvidenceEmbedder(dimension=_DIM, overrides={query_text: _UNIT_A, "페이지 있음": _UNIT_A})
+        document = _doc(content="페이지 있음", page=3, section=None)
+        repository.upsert_evidence_chunk(document, _UNIT_A)
+
+        response = ExternalResearchService(DatasetProvider(repository, embedder)).search(_request())
+        assert response.results[0].allow_grounded_claim is True
+
     def test_min_score_applied(self, repository):
         query_text = build_external_research_query(
             domain="public_service", evaluation_criteria=["시장성"], reviewer_role="marketing"

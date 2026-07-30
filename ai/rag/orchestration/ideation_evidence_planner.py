@@ -180,6 +180,18 @@ _SCORE_ONLY_HEADING_RE = re.compile(
 # 공고문의 행정 안내는 일정·접수 방법을 설명할 뿐 아이디어의 문제·가치·차별성·실현
 # 가능성을 증명하지 않는다. 한 청크에 평가표와 일정이 함께 들어갈 수 있으므로 청크 전체를
 # 단순 키워드로 버리지 않고, 실제로 주입할 quote 후보 단위에서 판정한다.
+#
+# 용준/Claude(2026-07-29, 요청: 실측 버그 — "접근성/보상/MVP/데이터/개인정보 위험을
+# 분석해달라"는 질문에 "< 결격사유 >중복 포상...데이터 활용 불법적으로 사용 불가능하거나...
+# 개인정보 등 법령 위반 소지가 있는 경우" 같은 결격사유·제재 조항이 답변에 그대로
+# 인용됐다) — 이 조항들은 "데이터"·"개인정보"·"실현 가능성" 같은 issue marker 키워드를
+# 우연히 공유해 _quote_issue_focus를 통과하지만("data"/"mvp" 등 대부분의 issue는
+# _ISSUE_QUOTE_FORBIDDEN_MARKERS에 금지어가 없다), 실제로는 "이 아이디어가 신청 자격을
+# 잃는 조건"을 나열할 뿐 아이디어의 데이터 요구사항이나 개인정보 설계에 대한 사실이
+# 아니다. 결격사유/제재 조항 질문 자체(document_fact_query, 예: "결격 사유가 뭔가요")는
+# ai/rag/orchestration/ideation_evidence_service.py의 별도 경로(_search_document_fact_evidence)로
+# 처리되고 이 planner를 거치지 않으므로, 여기서 이 조항을 항상 제외해도 그 질문에는
+# 영향이 없다.
 _ADMINISTRATIVE_CRITERIA_PATTERNS = (
     re.compile(r"(?:심사\s*)?결과.{0,20}(?:발표|안내)"),
     re.compile(r"(?:공식\s*)?홈페이지.{0,20}(?:발표|공지|게시|확인)"),
@@ -188,6 +200,12 @@ _ADMINISTRATIVE_CRITERIA_PATTERNS = (
     re.compile(r"(?:문의|담당자|연락처|이메일)\s*[:：]"),
     re.compile(r"(?:증빙\s*자료|인적\s*사항).{0,20}(?:제출|요청)"),
     re.compile(r"(?:수상|선정).{0,20}(?:취소|무효)"),
+    re.compile(r"결격\s*사유"),
+    re.compile(r"중복\s*포상"),
+    re.compile(r"(?:참여|참가|지원)\s*제한"),
+    re.compile(r"자격\s*(?:상실|박탈|제외)"),
+    re.compile(r"제재\s*사항"),
+    re.compile(r"허위\s*[·,]?\s*부정\s*(?:자료\s*)?제출"),
 )
 
 

@@ -110,6 +110,19 @@ class MeetingRetrievedEvidence(TypedDict):
     ideation_source_type: Optional[str]
     session_id: Optional[str]
 
+    # 용준/Claude(2026-07-30, 요청: criteria 근거의 출처 구분 — 공고 URL 본문/URL 첨부파일/
+    # 직접 업로드) — Chunk.source_type(ai/rag/chunking/schemas.py::SourceType:
+    # file_upload/url_attachment/url_webpage/ideation_generated)을 그대로 노출한다. 이 필드는
+    # ideation_evidence_service.py::compose_ideation_evidence_pool이 별도로 매기는
+    # "source_type"(target/criteria/official_statistics 등 화면 4버킷 분류용)과 이름이
+    # 겹치므로 혼동을 막기 위해 origin_type으로 새로 노출한다 — 기존 document_role/
+    # source_type 필드는 그대로 두고 순수 추가만 한다. 일반 파일 업로드로 만들어진 청크는
+    # source_filename이, URL 수집 청크는 source_url이 채워진다(chunker.py가 이미 채우는 값,
+    # 여기서는 노출만 한다).
+    origin_type: Optional[str]
+    file_name: Optional[str]
+    source_url: Optional[str]
+
 
 class MeetingLinkedEvidenceRef(TypedDict):
     """RAG-004 LinkedEvaluation.evidence[] 1건을 (document_id, chunk_id) 키가

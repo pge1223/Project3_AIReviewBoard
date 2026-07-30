@@ -327,6 +327,48 @@ def test_start_runs_roundtable_immediately_without_interview_question():
     assert dev_prompts, "라운드테이블에서는 사용자 답변을 기다리지 않고 개발 위원도 곧바로 실행돼야 한다"
 
 
+def test_deterministic_final_direction_prefix_overrides_llm_wording_end_to_end():
+    """용준/Claude(2026-07-29, 요청: RAG 품질 개선 3단계 — 정확한 상태값은 코드가 결정적으로
+    출력) — start_ideation_conversation(initial_state_overrides=...)로 "이미 확정된 세션"을
+    재현하면, "최종 확정한 아이디어가 뭔가요" 질문에 대한 위원 발언 맨 앞에 정확한 제목이
+    코드로 결정적으로 붙는다 — ScriptedLLM의 spoken_text 내용과 무관하게(LLM이 다른 말을
+    해도) 항상 붙어야 한다."""
+    llm = ScriptedLLM()
+    state = start_ideation_conversation(
+        session_id="CONV-TEST-FINAL-DIRECTION",
+        notice_and_criteria=NOTICE_AND_CRITERIA,
+        user_idea={"description": "최종 확정한 아이디어가 뭔가요?"},
+        llm_call=llm,
+        max_rounds=1,
+        initial_state_overrides={
+            "idea_locked": True,
+            "selected_idea": {"title": "동네 가게 손님 응대 챗봇"},
+        },
+    )
+    opinion_messages = [m for m in state["messages"] if m["message_type"] == "opinion"]
+    assert opinion_messages, "발언이 하나도 생성되지 않음"
+    for message in opinion_messages:
+        assert message["content"].startswith("사용자가 최종 확정한 아이디어는 '동네 가게 손님 응대 챗봇'입니다.")
+
+
+def test_deterministic_final_direction_prefix_reports_not_confirmed_when_idea_locked_false():
+    """확정 전(idea_locked=False)이면 코드가 후보를 임의로 확정안이라 말하지 않고 "아직
+    없다"고 결정적으로 답한다."""
+    llm = ScriptedLLM()
+    state = start_ideation_conversation(
+        session_id="CONV-TEST-NOT-CONFIRMED",
+        notice_and_criteria=NOTICE_AND_CRITERIA,
+        user_idea={"description": "최종 확정한 아이디어가 뭔가요?"},
+        llm_call=llm,
+        max_rounds=1,
+        initial_state_overrides={"idea_locked": False, "selected_idea": None},
+    )
+    opinion_messages = [m for m in state["messages"] if m["message_type"] == "opinion"]
+    assert opinion_messages, "발언이 하나도 생성되지 않음"
+    for message in opinion_messages:
+        assert message["content"].startswith("아직 최종 확정된 아이디어가 없습니다.")
+
+
 def test_roundtable_updates_idea_canvas_without_changing_meeting_phase():
     """진행자 정리 뒤 캔버스가 갱신되고 기존 회의 종료 phase는 그대로 유지된다."""
     llm = ScriptedLLM()
@@ -475,6 +517,213 @@ def test_max_rounds_completes_discussion_without_empty_user_wait():
     assert state["round"] == 2
     assert len(state["discussion_rounds"]) == 2
     assert state["pending_question"] is None
+
+
+# ---------------------------------------------------------------------------
+# 5-1. 용준/Claude(2026-07-29, 요청: expert_analysis_query 전용 단일 응답 경로) —
+#      "구현 가능성/MVP 위험을 분석해 주세요" 같은 전문가 판단 질문은 회의 라운드 없이
+#      위원 발언 1건 후 곧바로 discussion_complete로 끝나야 한다(document_fact_query/
+#      session_state_query와 같은 단일 응답 경로 재사용, _SINGLE_TURN_REQUEST_TYPES 참고).
+# ---------------------------------------------------------------------------
+
+
+def test_reply_with_expert_analysis_query_stops_after_one_expert_turn():
+    llm = ScriptedLLM()
+    state = _start(llm)
+    assert state["phase"] == "discussion_complete"
+    baseline_message_count = len(state["messages"])
+
+    state = reply_ideation_conversation(
+        previous_state=state,
+        user_message="구현 가능성과 MVP 위험을 분석해 주세요",
+        llm_call=llm,
+    )
+
+    assert state["request_type"] == "expert_analysis_query"
+    # 다회 라운드로 회전하지 않고, 곧바로 완전히 끝난 상태(discussion_complete)로 마무리된다
+    # (document_fact_query/session_state_query와 동일하게 "일시정지"가 아니라 종결).
+    assert state["phase"] == "discussion_complete"
+    new_messages = state["messages"][baseline_message_count:]
+    speakers = [m["speaker_id"] for m in new_messages]
+    # 사용자 메시지 + 위원 발언 1건만 추가되고, 개발 위원/진행자 정리 발언은 없어야 한다
+    # (기존 다회 라운드였다면 planning_expert -> dev_expert -> ideation_facilitator까지
+    # 이어졌을 것).
+    assert speakers[0] == "user"
+    assert speakers[1] in ("planning_expert", "dev_expert")
+    assert len(speakers) == 2, f"위원 발언 1건만 추가돼야 하는데 {speakers}가 추가됨"
+
+
+def test_reply_with_explicit_discussion_request_keeps_multi_turn_flow():
+    """"회의"/"토론"을 명시적으로 요청하면(요청 조건: classify_query_type이
+    expert_analysis_query로 오분류하지 않는 일반 문장) 기존 다회 라운드(위원 -> 위원 ->
+    진행자 정리)가 그대로 유지돼야 한다 — expert_analysis_query 전용 경로 추가가 기존
+    ideation_discussion_request 흐름을 건드리지 않는지 확인."""
+    llm = ScriptedLLM(dev_next_action="await_user_decision")
+    state = _start(llm)
+    assert state["phase"] == "discussion_complete"
+    baseline_message_count = len(state["messages"])
+
+    state = reply_ideation_conversation(
+        previous_state=state,
+        user_message="이 부분에 대해 위원들이 좀 더 토론해 주세요",
+        llm_call=llm,
+    )
+
+    assert state["request_type"] == "ideation_discussion_request"
+    assert state["phase"] == "discussion_complete"
+    new_messages = state["messages"][baseline_message_count:]
+    speakers = [m["speaker_id"] for m in new_messages]
+    assert speakers == ["user", "planning_expert", "dev_expert", "ideation_facilitator"]
+
+
+# ---------------------------------------------------------------------------
+# 5-2. 용준/Claude(2026-07-29, 요청: B05 실제 운영 경로 버그 수정) — session_state_query의
+#      결정론적 제목 답변이 _topic_query(세션 시작 시 user_idea + 현재 쟁점 제목 조합)가
+#      아니라 이번 턴 사용자 원문(current_user_input)을 봐야 한다. 실측 회귀 시나리오를
+#      그대로 재현한다: (1) 기존 회의 세션이 이미 진행 중이고(user_idea는 확정 질문과
+#      무관한 별도 아이디어), (2) idea_locked/selected_idea가 그 세션과 무관하게(별도로)
+#      확정돼 있고, (3) 사용자가 나중에 "최종적으로 확정한 해결 방향은?"이라고 reply로
+#      물어보는 상황 — final_answer_eval.py(질문 문장을 세션 시작 시 user_idea로 주입)와
+#      달리 이 시나리오에서만 버그가 재현됐었다.
+# ---------------------------------------------------------------------------
+
+
+def _start_with_confirmed_idea(llm, *, selected_idea_title="상대적 기준 검토 방식"):
+    """user_idea와 무관한 별도 아이디어가 이미 확정된 세션을 만든다 — B05 실측 조건
+    재현(active_issue_id/현재 쟁점은 확정 질문과 다른 내용이어도 된다는 요청 조건)."""
+    state = _start(llm)
+    assert state["phase"] == "discussion_complete"
+    return {
+        **state,
+        "idea_locked": True,
+        "selected_idea": {"title": selected_idea_title},
+    }
+
+
+def test_reply_session_state_query_uses_current_user_input_not_topic_query():
+    """B05 회귀: 결정론적 제목 답변이 _topic_query가 아니라 current_user_input을 봐야
+    한다. user_idea(원래 아이디어 설명)에는 "확정"/"최종" 같은 단어가 전혀 없으므로,
+    옛 코드(topic_query=_topic_query 결과)라면 정규식이 매칭되지 않아 이 테스트가
+    실패한다."""
+    llm = ScriptedLLM()
+    state = _start_with_confirmed_idea(llm)
+    baseline_message_count = len(state["messages"])
+
+    state = reply_ideation_conversation(
+        previous_state=state,
+        user_message="이 회의에서 사용자가 최종적으로 확정한 해결 방향은 무엇인가요?",
+        llm_call=llm,
+    )
+
+    assert state["request_type"] == "session_state_query"
+    assert state["phase"] == "discussion_complete"
+    new_messages = state["messages"][baseline_message_count:]
+    speakers = [m["speaker_id"] for m in new_messages]
+    # 위원 발언 1건 후 종료(다음 라운드로 회전하지 않음).
+    assert len(speakers) == 2, f"위원 발언 1건만 추가돼야 하는데 {speakers}가 추가됨"
+    committee_message = new_messages[-1]
+    assert committee_message["content"].startswith(
+        "사용자가 최종 확정한 아이디어는 '상대적 기준 검토 방식'입니다."
+    )
+    # 제목 변형·요약 없이 정확한 문자열 그대로 포함(claude 등 LLM 출력과 무관하게 보존).
+    assert "상대적 기준 검토 방식" in committee_message["content"]
+
+
+def test_reply_session_state_query_reports_not_confirmed_when_idea_locked_false():
+    """확정 전(idea_locked=False)이면 후보를 임의로 확정안이라 말하지 않는다 —
+    "후보·확정 오인 0건" 조건."""
+    llm = ScriptedLLM()
+    state = _start(llm)
+    assert state["phase"] == "discussion_complete"
+    state = {**state, "idea_locked": False, "provisional_idea": {"title": "검토 중인 후보"}}
+
+    state = reply_ideation_conversation(
+        previous_state=state,
+        user_message="이 회의에서 사용자가 최종적으로 확정한 해결 방향은 무엇인가요?",
+        llm_call=llm,
+    )
+
+    assert state["request_type"] == "session_state_query"
+    committee_message = next(m for m in reversed(state["messages"]) if m["speaker_id"] != "user")
+    assert committee_message["content"].startswith("아직 최종 확정된 아이디어가 없습니다.")
+    # 잠정 후보 제목("검토 중인 후보")이 확정안으로 둔갑해 나오면 안 된다.
+    assert "검토 중인 후보" not in committee_message["content"].split(".")[0]
+
+
+def test_reply_session_state_query_idea_locked_yes_no_questions():
+    llm = ScriptedLLM()
+    state = _start_with_confirmed_idea(llm)
+
+    state = reply_ideation_conversation(
+        previous_state=state, user_message="현재 아이디어가 확정됐나요?", llm_call=llm
+    )
+    committee_message = next(m for m in reversed(state["messages"]) if m["speaker_id"] != "user")
+    assert committee_message["content"].startswith("아이디어가 최종 확정되어 잠겼습니다.")
+
+
+def test_reply_session_state_query_current_phase_question():
+    llm = ScriptedLLM()
+    state = _start_with_confirmed_idea(llm)
+
+    state = reply_ideation_conversation(
+        previous_state=state, user_message="지금 회의는 어느 단계인가요?", llm_call=llm
+    )
+    committee_message = next(m for m in reversed(state["messages"]) if m["speaker_id"] != "user")
+    assert committee_message["content"].startswith("현재 회의는 '전문가 토론' 단계입니다.")
+
+
+def test_reply_session_state_query_provisional_idea_question():
+    llm = ScriptedLLM()
+    state = _start(llm)
+    state = {**state, "provisional_idea": {"title": "잠정 후보 A"}}
+
+    state = reply_ideation_conversation(
+        previous_state=state, user_message="현재 임시로 선택된 아이디어는 무엇인가요?", llm_call=llm
+    )
+    committee_message = next(m for m in reversed(state["messages"]) if m["speaker_id"] != "user")
+    assert committee_message["content"].startswith("현재 검증 중인 잠정 후보는 '잠정 후보 A'입니다.")
+
+
+def test_reply_session_state_query_validation_result_question():
+    llm = ScriptedLLM()
+    state = _start(llm)
+    state = {
+        **state,
+        "validation_result": {"planning": {"value_worth_solving": "충분"}, "technical": None},
+    }
+
+    state = reply_ideation_conversation(
+        previous_state=state, user_message="검증 결과는 어떻게 나왔나요?", llm_call=llm
+    )
+    committee_message = next(m for m in reversed(state["messages"]) if m["speaker_id"] != "user")
+    assert committee_message["content"].startswith(
+        "기획 검증은 완료되었고, 기술 검증은 아직 진행되지 않았습니다."
+    )
+
+
+def test_discussion_node_falls_back_to_topic_query_when_current_user_input_missing():
+    """current_user_input이 없는 구버전 세션(하위 호환) — reply_ideation_conversation/
+    start_ideation_conversation을 거치지 않고 discussion 노드를 직접 부르는 옛 호출부
+    (예: ai/rag/evaluation/rag_quality/final_answer_eval.py)에서는 이 필드가 없으므로,
+    기존처럼 _topic_query(user_idea 기반) 매칭으로 폴백해야 한다 — 새 필드가 없어도
+    기존 동작이 깨지지 않아야 한다는 요청 조건."""
+    llm = ScriptedLLM()
+    state = dict(
+        initial_conv_state(
+            "CONV-FALLBACK",
+            NOTICE_AND_CRITERIA,
+            {"description": "최종 확정한 아이디어가 뭔가요?"},
+        )
+    )
+    state["idea_locked"] = True
+    state["selected_idea"] = {"title": "상대적 기준 검토 방식"}
+    state["request_type"] = "session_state_query"
+    # current_user_input을 의도적으로 채우지 않는다(하위 호환 시나리오 재현).
+    assert "current_user_input" not in state or state.get("current_user_input") is None
+
+    update = make_conv_discussion_node("planning_expert", llm)(state)
+    message = update["messages"][0]
+    assert message["content"].startswith("사용자가 최종 확정한 아이디어는 '상대적 기준 검토 방식'입니다.")
 
 
 # ---------------------------------------------------------------------------
@@ -1073,6 +1322,51 @@ def test_empty_discussion_response_falls_back_to_safe_expert_judgment():
     assert update.get("phase") != "failed"
     assert update["previous_speaker"] == "planning_expert"
     assert "전문가 판단으로 진행" in update["messages"][0]["content"]
+
+
+def test_discussion_uses_external_cases_before_asking_user_for_missing_data():
+    llm = ScriptedLLM()
+    calls: list[tuple[str, str]] = []
+
+    def external_lookup(persona_id: str, query: str) -> dict:
+        calls.append((persona_id, query))
+        return {
+            "external_evidence": [
+                {
+                    "source_id": "NAVER-CASE-1",
+                    "document_id": "NEWS-1",
+                    "chunk_id": "NEWS-CHUNK-1",
+                    "title": "AI 채용 모델 편향성 조사 사례",
+                    "publisher": "example.com",
+                    "source_url": "https://example.com/ai-bias-case",
+                    "reference_date": "2026-07-20",
+                    "quote": "감사 결과 특정 집단의 오류율 차이가 확인돼 모델을 재검증했다.",
+                    "provider": "naver_api_hub",
+                }
+            ],
+            "used_dataset_search": False,
+            "used_public_api_search": True,
+            "warnings": [],
+        }
+
+    state = initial_conv_state(
+        session_id="CONV-EXTERNAL-CASE",
+        notice_and_criteria=NOTICE_AND_CRITERIA,
+        user_idea={"description": "AI 모델의 편향성을 점검하는 공공 서비스"},
+    )
+    update = make_conv_discussion_node(
+        "planning_expert",
+        llm,
+        external_evidence_lookup=external_lookup,
+    )(state)
+
+    assert calls and calls[0][0] == "planning_expert"
+    assert "구체적 사례 통계 최신 동향" in calls[0][1]
+    discussion_prompt = next(prompt for prompt in llm.captured_prompts if "[의견 규칙]" in prompt)
+    assert "특정 집단의 오류율 차이" in discussion_prompt
+    assert "https://example.com/ai-bias-case" in discussion_prompt
+    assert update["messages"][0]["evidence"][0]["provider"] == "naver_api_hub"
+    assert update["external_evidence_meta"]["used_public_api_search"] is True
 
 
 def test_sufficiency_call_failure_fails_open_and_conversation_still_progresses():
@@ -1729,6 +2023,34 @@ def test_user_answer_to_facilitator_question_is_answer_type():
     )
     user_messages = [m for m in state["messages"] if m["speaker_id"] == "user"]
     assert user_messages[-1]["message_type"] == "answer"
+
+
+def test_user_new_topic_after_facilitator_question_reaches_expert_not_facilitator():
+    """용준/Claude(2026-07-30, 실측 버그: "주요 기능은 뭐가있을까?라고 했는데 왜 그냥 지
+    말만 하냐") — 진행자가 방금 질문을 던져 phase="awaiting_user_decision"이 됐을 때,
+    apply_user_answer()는 무조건 forced_next_speaker="facilitator"를 심어 진행자에게
+    바로 넘긴다("사용자가 방금 질문에 답했다"고 가정하기 때문). 하지만 사용자가 그
+    질문에 답하지 않고 완전히 다른 주제("주요 기능은 뭐가있을까")를 요청하면, 예전에는
+    진행자가 그 요청을 자기 질문에 대한 답변으로 오해해 엉뚱한 요약만 내놓고 실제
+    요청에는 응답하지 않았다. current_user_instruction.interrupt_active_issue가
+    true이면 forced_next_speaker를 지워 일반 전문가 라우팅(planning_expert_discussion)을
+    타야 한다."""
+    llm = _NeedsDecisionScriptedLLM(dev_stance="보완", dev_next_action="await_user_decision")
+    state = _run_to_discussion(llm, max_rounds=3)
+    assert state["phase"] == "awaiting_user_decision"
+
+    state = reply_ideation_conversation(
+        previous_state=state, user_message="주요 기능은 뭐가있을까", llm_call=llm
+    )
+
+    assert state["forced_next_speaker"] is None
+    new_messages = state["messages"][len(state["messages"]) - 1 :]
+    # 방금 턴의 마지막 위원 발언은 진행자가 아니라 실제 전문가(planning_expert)여야 한다 —
+    # 진행자가 "다음 라운드에서 다루겠습니다" 식으로 요청을 흡수해버리지 않는다.
+    expert_speakers = [m["speaker_id"] for m in state["messages"] if m["speaker_id"] in ("planning_expert", "dev_expert")]
+    assert expert_speakers, "새 주제 요청 이후 전문가 발언이 하나도 생성되지 않았습니다"
+    assert state["current_user_instruction"]["interrupt_active_issue"] is True
+    assert state["current_user_instruction"]["requested_outputs"] == ["main_features"]
 
 
 def test_user_interjection_after_discussion_complete_is_recorded_and_referenced():
