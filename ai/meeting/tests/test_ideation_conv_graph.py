@@ -2025,6 +2025,34 @@ def test_user_answer_to_facilitator_question_is_answer_type():
     assert user_messages[-1]["message_type"] == "answer"
 
 
+def test_user_new_topic_after_facilitator_question_reaches_expert_not_facilitator():
+    """용준/Claude(2026-07-30, 실측 버그: "주요 기능은 뭐가있을까?라고 했는데 왜 그냥 지
+    말만 하냐") — 진행자가 방금 질문을 던져 phase="awaiting_user_decision"이 됐을 때,
+    apply_user_answer()는 무조건 forced_next_speaker="facilitator"를 심어 진행자에게
+    바로 넘긴다("사용자가 방금 질문에 답했다"고 가정하기 때문). 하지만 사용자가 그
+    질문에 답하지 않고 완전히 다른 주제("주요 기능은 뭐가있을까")를 요청하면, 예전에는
+    진행자가 그 요청을 자기 질문에 대한 답변으로 오해해 엉뚱한 요약만 내놓고 실제
+    요청에는 응답하지 않았다. current_user_instruction.interrupt_active_issue가
+    true이면 forced_next_speaker를 지워 일반 전문가 라우팅(planning_expert_discussion)을
+    타야 한다."""
+    llm = _NeedsDecisionScriptedLLM(dev_stance="보완", dev_next_action="await_user_decision")
+    state = _run_to_discussion(llm, max_rounds=3)
+    assert state["phase"] == "awaiting_user_decision"
+
+    state = reply_ideation_conversation(
+        previous_state=state, user_message="주요 기능은 뭐가있을까", llm_call=llm
+    )
+
+    assert state["forced_next_speaker"] is None
+    new_messages = state["messages"][len(state["messages"]) - 1 :]
+    # 방금 턴의 마지막 위원 발언은 진행자가 아니라 실제 전문가(planning_expert)여야 한다 —
+    # 진행자가 "다음 라운드에서 다루겠습니다" 식으로 요청을 흡수해버리지 않는다.
+    expert_speakers = [m["speaker_id"] for m in state["messages"] if m["speaker_id"] in ("planning_expert", "dev_expert")]
+    assert expert_speakers, "새 주제 요청 이후 전문가 발언이 하나도 생성되지 않았습니다"
+    assert state["current_user_instruction"]["interrupt_active_issue"] is True
+    assert state["current_user_instruction"]["requested_outputs"] == ["main_features"]
+
+
 def test_user_interjection_after_discussion_complete_is_recorded_and_referenced():
     """요청 6번 — 진행자가 needs_user_decision=False였는데 사용자가 자유롭게 한 마디
     남기면 message_type="interjection"으로 기록되고, 다음 라운드에서 기획/개발 위원 중

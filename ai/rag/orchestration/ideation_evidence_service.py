@@ -53,12 +53,12 @@ def resolve_ideation_role_id(persona_id: str) -> Optional[str]:
 # document_role은 backend/app/models/document.py 기준 "criteria"(공고문·평가기준)와
 # "target"(평가 대상 문서/기획서) 두 값만 실제로 쓰인다("domain"/"similar_case"는 이
 # 색인 파이프라인에 존재하지 않는 값이라 임의로 가정하지 않는다 — 요청 사항 그대로).
-# planning_expert는 공고문·평가기준(criteria)을 우선 참고하고, dev_expert는 사용자가 이미
-# 밝힌 아이디어/자료(target)를 우선 참고하되 criteria의 실현 가능성 관련 항목도 일부
-# 참고한다 — top_k=5 기준 쿼터.
+# 두 위원 모두 공고문·평가기준(criteria)을 먼저 참고하고, 현재 아이디어(target)는 구조
+# 확인용으로 1건만 참고한다. 외부 근거 2건은 compose_ideation_evidence_pool()이 별도
+# 슬롯으로 추가한다.
 _DOCUMENT_ROLE_QUOTAS: dict[str, dict[str, int]] = {
-    "planning_expert": {"criteria": 3, "target": 2},
-    "dev_expert": {"target": 3, "criteria": 2},
+    "planning_expert": {"criteria": 3, "target": 1},
+    "dev_expert": {"criteria": 3, "target": 1},
 }
 # 쿼터 계산을 위해 검색해 둘 후보 풀 크기 배수 — top_k보다 넉넉히 검색해야 role별로
 # 나눠 담을 후보가 부족하지 않다(정확한 candidate_k는 RoleAwareRetrievalService 자체
@@ -448,6 +448,12 @@ def _compose_by_document_role(
             if key not in used_ids:
                 used_ids.add(key)
                 composed.append(item)
+
+    # 위원 발언은 criteria 최대 3건·target 최대 1건이라는 역할별 상한을 그대로 지킨다.
+    # 한 버킷이 부족하다고 다른 버킷으로 빈자리를 채우면 target이 검토 대상 이상의
+    # 영향력을 갖거나 한 문서 역할이 후보 풀을 독점할 수 있다.
+    if persona_id in _DOCUMENT_ROLE_QUOTAS:
+        return composed[: sum(quotas.values())], missing_document_roles
 
     # 쿼터를 채우지 못한 role이 있으면(예: target 후보가 2개뿐이라 3개 쿼터를 못 채움)
     # 다른 role의 남은 후보나 미분류 후보로 top_k까지 채운다 — "관련 없는 공고문으로 전부

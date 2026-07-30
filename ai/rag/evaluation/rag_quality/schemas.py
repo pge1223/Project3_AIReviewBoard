@@ -33,6 +33,22 @@ class RagEvalFilters(BaseModel):
         return v
 
 
+class RagEvalSessionState(BaseModel):
+    """용준/Claude(2026-07-29, 요청: 평가 정합성 — 정답 누출 분리). 실제 세션이라면
+    ai/meeting의 그래프 state(예: state["selected_idea_document_id"])에서 나왔을 정보를
+    담는다. 채점용 정답 필드(gold_document_ids/expected_source_chunk_ids/reference_answer)와
+    이 필드는 반드시 분리한다 — 검색 입력으로는 이 session_state만 쓰고, 채점 필드는
+    검색에 절대 넘기지 않는다(RAG-004 원칙과 동일: 채점 정보와 시스템 입력을 섞지 않는다).
+    이 값들이 채점 필드와 우연히 같은 문서를 가리킬 수는 있다(실제로 그 세션이 그 문서를
+    확정했으니까) — 하지만 "정답을 알아서 넣은 것"이 아니라 "그 세션의 실제 상태를
+    독립적으로 기록한 것"이라는 점에서 근본적으로 다르다."""
+
+    selected_idea_document_id: Optional[str] = None
+    selected_idea_title: Optional[str] = None
+    idea_locked: bool = False
+    current_phase: Optional[str] = None
+
+
 class RagEvalCase(BaseModel):
     """평가 케이스 1건(JSONL 한 줄). human_verified=False가 기본값이다 — Claude가 만든
     gold_document_ids 초안은 사람이 확인하기 전까지 정식 점수에 들어가지 않는다(요청 2번)."""
@@ -47,6 +63,18 @@ class RagEvalCase(BaseModel):
     expect_no_evidence: bool = False
     human_verified: bool = False
     notes: Optional[str] = None
+    reference_answer: Optional[str] = None
+    """사람이 작성한 정답 발언(선택). 별도 Ragas 평가 환경(ai/rag/evaluation/ragas_standalone/)의
+    Context Precision/Context Recall처럼 reference가 있어야 계산되는 지표에만 쓰인다. 없으면
+    해당 지표는 "측정 불가"로 표시된다 — 값을 억지로 만들어 채우지 않는다. 채점 전용 —
+    검색 입력으로 쓰지 않는다."""
+    expected_source_chunk_ids: list[str] = Field(default_factory=list)
+    """reference_answer를 실제로 뒷받침하는 원문 chunk_id(들)(선택). gold_document_ids보다
+    더 정밀한 근거 추적용 — reference_answer가 어느 chunk에서 나왔는지 사람이 다시 검증할 때
+    쓴다. 채점 전용 — 검색 입력으로 쓰지 않는다."""
+    session_state: Optional[RagEvalSessionState] = None
+    """검색 입력으로 쓰는 유일한 상태 정보(선택) — 실제 그래프 state를 흉내낸다. 채점 필드가
+    아니다. generation_eval.py/export_ragas_dataset.py는 evidence_lookup에 이 값만 전달한다."""
 
     @field_validator("id", "query")
     @classmethod
@@ -161,6 +189,22 @@ class PersonaFitResult(BaseModel):
     rationale: str = ""
 
 
+class ExpertJudgmentResult(BaseModel):
+    """용준/Claude(2026-07-29, 요청: 생성 품질 개선 — expert_judgment G-Eval). expert_judgment
+    claim 1건에 대한 역할 적합성/논리성/실행 가능성/사실 충돌 여부 판정."""
+
+    persona_id: PersonaId
+    message_id: str
+    claim_id: Optional[str] = None
+    role_fit: int  # 0~2
+    logic: int  # 0~2
+    actionability: int  # 0~2
+    normalized_score: float  # (role_fit+logic+actionability)/6
+    conflicts_with_grounded_fact: bool = False
+    conflict_detail: str = ""
+    rationale: str = ""
+
+
 class MessageEvalResult(BaseModel):
     """발언(ConvMessage) 1건에 대한 Faithfulness + Persona Evidence Fit 판정."""
 
@@ -178,6 +222,15 @@ class MessageEvalResult(BaseModel):
     forbidden_claim_hits: list[str] = Field(default_factory=list)
     persona_fit: Optional[PersonaFitResult] = None
     judge_error: Optional[str] = None
+    # 용준/Claude(2026-07-29, 요청: 생성 품질 개선 — 발언 유형 분리). 기존 필드는 그대로 두고
+    # 평가 시점에 ai/rag/evaluation/rag_quality/utterance_type.py로 파생한 값을 선택적으로
+    # 채운다 — 새 스키마가 아니라 기존 결과에 라벨 하나만 덧붙이는 것이다.
+    utterance_type: Optional[str] = None  # "facilitator_message" | "final_answer" | "discussion"
+    grounded_claim_count: Optional[int] = None
+    expert_judgment_claim_count: Optional[int] = None
+    grounding_unsupported_claim_count: Optional[int] = None
+    linked_evidence_refs: list[str] = Field(default_factory=list)
+    expert_judgments: list[ExpertJudgmentResult] = Field(default_factory=list)
 
 
 class GenerationCaseResult(BaseModel):

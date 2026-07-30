@@ -87,6 +87,46 @@ class TestExternalEvidenceDocument:
         with pytest.raises(ExternalResearchValidationError):
             _doc(reference_date="2025/12/31")
 
+
+class TestExternalEvidenceDocumentNewQualityFields:
+    """용준/Claude(2026-07-30, 요청: RAG-007 색인 청크 품질 정제) — 신규 필드가 전부
+    Optional/기본값을 가져 기존 호출부(신규 필드를 넘기지 않는 코드)와 하위 호환되는지
+    확인한다."""
+
+    def test_existing_style_call_without_new_fields_still_works(self):
+        doc = _doc()
+        assert doc.file_hash is None
+        assert doc.source_content_hash is None
+        assert doc.chunk_content_hash is None
+        assert doc.normalized_content_hash is None
+        assert doc.page_start is None
+        assert doc.page_end is None
+        assert doc.content_level is None
+        assert doc.url_verified is None
+        assert doc.direct_file_url is None
+        assert doc.allow_grounded_claim is True
+
+    def test_new_fields_can_be_set_explicitly(self):
+        doc = _doc(
+            file_hash="abc123",
+            source_content_hash="abc123",
+            chunk_content_hash="def456",
+            normalized_content_hash="def456",
+            page_start=3,
+            page_end=4,
+            content_level="pdf_attachment",
+            url_verified=True,
+            direct_file_url="https://example.org/file.pdf",
+            allow_grounded_claim=False,
+        )
+        assert doc.file_hash == "abc123"
+        assert doc.page_start == 3
+        assert doc.page_end == 4
+        assert doc.content_level == "pdf_attachment"
+        assert doc.url_verified is True
+        assert doc.direct_file_url == "https://example.org/file.pdf"
+        assert doc.allow_grounded_claim is False
+
     def test_invalid_published_at_format_rejected(self):
         with pytest.raises(ExternalResearchValidationError):
             _doc(published_at="Dec 2025")

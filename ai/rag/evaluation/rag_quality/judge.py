@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from ai.rag.evaluation.rag_quality.cache import JudgeCache
-from ai.rag.evaluation.rag_quality.schemas import ClaimVerdict, PersonaFitResult
+from ai.rag.evaluation.rag_quality.schemas import ClaimVerdict, ExpertJudgmentResult, PersonaFitResult
 
 from ._meeting_path import ensure_meeting_on_path
 
@@ -26,6 +26,7 @@ JudgeLLMCall = Callable[[str], str]
 _PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
 FAITHFULNESS_PROMPT_VERSION = "faithfulness_judge_v1"
 PERSONA_FIT_PROMPT_VERSION = "persona_fit_judge_v1"
+EXPERT_JUDGMENT_PROMPT_VERSION = "expert_judgment_judge_v1"
 
 _VALID_VERDICTS = {"supported", "partially_supported", "unsupported", "contradicted", "non_factual"}
 
@@ -90,6 +91,16 @@ def _validate_persona_fit_response(raw: dict) -> Optional[str]:
     score = raw.get("score")
     if not isinstance(score, int) or not (0 <= score <= 4):
         return "invalid_score"
+    return None
+
+
+def _validate_expert_judgment_response(raw: dict) -> Optional[str]:
+    for field in ("role_fit", "logic", "actionability"):
+        value = raw.get(field)
+        if not isinstance(value, int) or not (0 <= value <= 2):
+            return f"invalid_{field}"
+    if not isinstance(raw.get("conflicts_with_grounded_fact"), bool):
+        return "invalid_conflicts_with_grounded_fact"
     return None
 
 
@@ -180,6 +191,57 @@ def judge_persona_fit(
             evidence_document_ids=[d for d in (raw.get("evidence_document_ids") or []) if isinstance(d, str)],
             role_aligned_points=[p for p in (raw.get("role_aligned_points") or []) if isinstance(p, str)],
             role_mismatch_points=[p for p in (raw.get("role_mismatch_points") or []) if isinstance(p, str)],
+            rationale=raw.get("rationale", ""),
+        ),
+        None,
+    )
+
+
+def judge_expert_judgment(
+    judge_llm_call: JudgeLLMCall,
+    *,
+    model: str,
+    persona_id: str,
+    message_id: str,
+    claim_id: Optional[str],
+    statement_content: str,
+    grounded_claims: list[dict],
+    cache: Optional[JudgeCache] = None,
+) -> tuple[Optional[ExpertJudgmentResult], Optional[str]]:
+    """용준/Claude(2026-07-29, 요청: 생성 품질 개선 — expert_judgment 별도 평가). 반환값
+    (result, error) — judge_persona_fit과 동일한 재시도/캐시 정책을 재사용한다."""
+    template = _read_prompt("expert_judgment_judge.txt")
+    prompt = _render(
+        template,
+        {
+            "<<PERSONA_ID>>": persona_id,
+            "<<STATEMENT_CONTENT>>": statement_content,
+            "<<GROUNDED_CLAIMS_JSON>>": _as_text(grounded_claims),
+        },
+    )
+
+    raw = cache.get(prompt, model, EXPERT_JUDGMENT_PROMPT_VERSION) if cache is not None else None
+    if raw is None:
+        raw, ok, _ = _safe_call_json_retry(judge_llm_call, prompt, _validate_expert_judgment_response)
+        if not ok or raw is None:
+            return None, "expert_judgment_judge_failed_validation"
+        if cache is not None:
+            cache.set(prompt, model, EXPERT_JUDGMENT_PROMPT_VERSION, raw)
+
+    role_fit = int(raw["role_fit"])
+    logic = int(raw["logic"])
+    actionability = int(raw["actionability"])
+    return (
+        ExpertJudgmentResult(
+            persona_id=persona_id,  # type: ignore[arg-type]
+            message_id=message_id,
+            claim_id=claim_id,
+            role_fit=role_fit,
+            logic=logic,
+            actionability=actionability,
+            normalized_score=(role_fit + logic + actionability) / 6.0,
+            conflicts_with_grounded_fact=bool(raw.get("conflicts_with_grounded_fact", False)),
+            conflict_detail=raw.get("conflict_detail", ""),
             rationale=raw.get("rationale", ""),
         ),
         None,

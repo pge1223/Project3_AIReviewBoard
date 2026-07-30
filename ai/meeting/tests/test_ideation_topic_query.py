@@ -13,10 +13,13 @@ MEETING_DIR = Path(__file__).resolve().parents[1]  # ai/meeting
 
 sys.path.insert(0, str(MEETING_DIR))
 
+from graph.ideation_conv_instruction import parse_current_user_instruction  # noqa: E402
 from graph.ideation_conv_nodes import (  # noqa: E402
     _active_issue_title,
+    _answers_requested_outputs,
     _deterministic_final_direction_prefix,
     _deterministic_session_state_answer,
+    _discussion_retry_note,
     _idea_core_summary,
     _topic_query,
     classify_query_type,
@@ -217,6 +220,92 @@ def test_resolve_effective_issue_prefers_current_user_input_over_stale_active_is
     query = _topic_query(state, "planning_expert")
     assert "주요 기능" in query
     assert "성공 지표" not in query
+
+
+def test_parse_current_user_instruction_extracts_excluded_topic_and_override():
+    """실측 사례(회의 화면 스크린샷) 재현 — "다음 논의 주제를 AI 활용 방식으로 잡지말고,
+    나머지 구현되지 못한 기능들에 대해 논의해주세요"."""
+    instruction = parse_current_user_instruction(
+        "다음 논의 주제를 AI 활용 방식으로 잡지말고, 나머지 구현되지 못한 기능들에 대해 논의해주세요"
+    )
+    assert instruction["excluded_topics"] == ["AI 활용 방식"]
+    assert instruction["interrupt_active_issue"] is True
+    assert instruction["instruction_provenance"] == "direct_user_message"
+    assert "AI 활용 방식" not in (instruction["topic_override"] or "")
+
+
+def test_parse_current_user_instruction_extracts_requested_outputs():
+    instruction = parse_current_user_instruction(
+        "AI 활용 방식으로 잡지 말고 주요 기능, 필요한 데이터, 기술 구현 방향과 MVP를 논의해 주세요"
+    )
+    assert instruction["requested_outputs"] == [
+        "main_features",
+        "required_data",
+        "technical_approach",
+        "mvp_scope",
+    ]
+    assert instruction["excluded_topics"] == ["AI 활용 방식"]
+
+
+def test_requested_main_features_must_be_answered_directly():
+    instruction = parse_current_user_instruction(
+        "모르겠고 일단 주요 기능에 대해서 설명해 봐"
+    )
+
+    assert _answers_requested_outputs(
+        "교육 프로그램의 효과를 측정할 명확한 지표가 필요합니다.",
+        instruction,
+    ) is False
+    assert _answers_requested_outputs(
+        "주요 기능은 맞춤형 교육, 질의응답, 진도 관리, 효과 측정입니다.",
+        instruction,
+    ) is True
+
+
+def test_requested_output_retry_note_demands_direct_answer():
+    note = _discussion_retry_note("spoken_text_missing_requested_output")
+
+    assert "사용자가 직접 요청한 항목" in note
+    assert "주요 기능은" in note
+
+
+def test_parse_current_user_instruction_empty_for_plain_continuation():
+    """신호가 없는 일반 응답은 완전히 빈 값을 반환해 기존 동작에 영향을 주지 않는다."""
+    for text in ["네 좋습니다 계속 진행해주세요", "이 아이디어에 대해 어떻게 생각하세요", ""]:
+        instruction = parse_current_user_instruction(text)
+        assert instruction["interrupt_active_issue"] is False
+        assert instruction["excluded_topics"] == []
+        assert instruction["topic_override"] is None
+
+
+def test_resolve_effective_issue_prefers_interrupt_over_active_issue():
+    """G.1/G.2 — request_type이 expert_analysis_query가 아니어도(예: 기본
+    ideation_discussion_request) current_user_instruction.interrupt_active_issue가 true면
+    active_issue_id보다 우선한다."""
+    state = _state_with_issue(issue_id="ai_usage_method", issue_title="AI 활용 방식")
+    state["current_user_input"] = (
+        "다음 논의 주제를 AI 활용 방식으로 잡지말고, 나머지 구현되지 못한 기능들에 대해 논의해주세요"
+    )
+    state["current_user_instruction"] = parse_current_user_instruction(state["current_user_input"])
+
+    issue = resolve_effective_issue(state, "planning_expert")
+
+    assert issue["source"] == "current_user_instruction"
+    assert "AI 활용 방식" not in issue["title"]
+    assert issue["title"] == state["current_user_instruction"]["topic_override"]
+
+
+def test_resolve_effective_issue_ignores_empty_current_user_instruction():
+    """G.7 — 신호 없는 current_user_instruction(빈 값)은 interrupt_active_issue=False라
+    기존 active_issue_id 우선순위 동작에 전혀 영향을 주지 않는다(회귀 없음)."""
+    state = _state_with_issue(issue_id="success_metrics", issue_title="성공 지표")
+    state["current_user_input"] = "네 좋습니다 계속 진행해주세요"
+    state["current_user_instruction"] = parse_current_user_instruction(state["current_user_input"])
+
+    issue = resolve_effective_issue(state, "planning_expert")
+
+    assert issue["source"] == "active_issue_id"
+    assert issue["title"] == "성공 지표"
 
 
 def test_resolve_retrieval_issue_skips_resolved_topics():

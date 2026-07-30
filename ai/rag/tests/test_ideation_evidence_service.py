@@ -53,9 +53,9 @@ def test_planning_expert_prioritizes_criteria_over_target():
     composed, missing = _compose_by_document_role(items, persona_id="planning_expert", top_k=5)
     roles = [item["document_role"] for item in composed]
     assert roles.count("criteria") == 3
-    assert roles.count("target") == 2
+    assert roles.count("target") == 1
     assert missing == []
-    assert len(composed) == 5
+    assert len(composed) == 4
 
 
 def _item_with_document(chunk_id: str, document_id: str, document_role: str | None, score: float = 0.9) -> dict:
@@ -87,7 +87,7 @@ def test_criteria_quota_diversifies_across_documents_before_repeating():
     assert "C1" in criteria_ids
 
 
-def test_dev_expert_prioritizes_target_over_criteria():
+def test_dev_expert_prioritizes_criteria_and_limits_target_to_review_only():
     items = [
         _item("C1", "criteria", 0.95),
         _item("C2", "criteria", 0.9),
@@ -98,8 +98,8 @@ def test_dev_expert_prioritizes_target_over_criteria():
     ]
     composed, missing = _compose_by_document_role(items, persona_id="dev_expert", top_k=5)
     roles = [item["document_role"] for item in composed]
-    assert roles.count("target") == 3
-    assert roles.count("criteria") == 2
+    assert roles.count("target") == 1
+    assert roles.count("criteria") == 3
     assert missing == []
 
 
@@ -118,7 +118,7 @@ def test_pre_target_phase_uses_criteria_only_without_false_missing_target():
     assert missing == []
 
 
-def test_post_selection_phase_restores_persona_target_quota():
+def test_post_selection_phase_limits_target_to_one_review_item():
     items = [
         _item("C1", "criteria", 0.95),
         _item("C2", "criteria", 0.9),
@@ -132,7 +132,8 @@ def test_post_selection_phase_restores_persona_target_quota():
         top_k=5,
         phase="idea_validation",
     )
-    assert [item["document_role"] for item in composed].count("target") == 3
+    assert [item["document_role"] for item in composed].count("target") == 1
+    assert [item["document_role"] for item in composed].count("criteria") == 2
     assert missing == []
 
 
@@ -168,11 +169,11 @@ def test_missing_document_role_is_reported_not_backfilled_with_wrong_label():
     composed, missing = _compose_by_document_role(items, persona_id="dev_expert", top_k=5)
     assert missing == ["target"]
     assert all(item["document_role"] == "criteria" for item in composed)
-    assert len(composed) == 4  # 실제로 검색된 후보(4개)보다 더 채워 넣지 않는다.
+    assert len(composed) == 3  # criteria 상한 3건을 넘겨 억지로 채우지 않는다.
 
 
-def test_unclassified_documents_only_used_as_last_resort_fill():
-    """document_role 메타데이터가 없는(구버전 색인) 후보는 쿼터를 못 채운 나머지만 채운다."""
+def test_unclassified_documents_do_not_fill_evidence_first_quota():
+    """역할이 불명확한 구버전 후보로 evidence-first 쿼터를 억지로 채우지 않는다."""
     items = [
         _item("C1", "criteria", 0.95),
         _item("U1", None, 0.99),  # 구버전 색인(역할 미분류) — 점수는 가장 높다.
@@ -181,7 +182,7 @@ def test_unclassified_documents_only_used_as_last_resort_fill():
     assert missing == ["target"]
     roles = [item["document_role"] for item in composed]
     assert roles.count("criteria") == 1
-    assert None in roles  # 부족분을 미분류 후보로 보충했다.
+    assert None not in roles
 
 
 def test_no_quota_configured_for_unknown_persona_returns_items_unchanged():

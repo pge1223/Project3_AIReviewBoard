@@ -19,6 +19,7 @@ from prompts import build_ideation_conv_form_draft_prompt
 from .application_form_draft import apply_application_form_draft_patch, remaining_content_fields
 from .ideation_conv_build import _ENTRY_NODES, assemble_ideation_conversation_graph
 from .ideation_conv_discovery import MAX_CANDIDATE_REGENERATIONS, is_regenerate_request
+from .ideation_conv_instruction import parse_current_user_instruction
 from .ideation_conv_problem import _select_areas_by_action_payload
 from .ideation_conv_nodes import (
     PHASE_TO_PENDING_PERSONA,
@@ -657,7 +658,13 @@ def start_ideation_conversation(
     # 원문을 current_user_input에도 그대로 저장한다. 결정론적 session_state 답변
     # (_deterministic_session_state_answer)이 _topic_query(user_idea+active_issue 조합)
     # 대신 "이번 턴 사용자가 실제로 물은 문장"을 보게 하기 위함이다.
-    state = {**state, "request_type": request_type, "current_user_input": initial_user_input}
+    current_user_instruction = parse_current_user_instruction(initial_user_input)
+    state = {
+        **state,
+        "request_type": request_type,
+        "current_user_input": initial_user_input,
+        "current_user_instruction": current_user_instruction,
+    }
     baseline_message_count = len(state["messages"])
     single_turn = request_type in _SINGLE_TURN_REQUEST_TYPES
     result_state = _drive_graph(graph, state, on_progress, on_snapshot, stop_after_expert_turn=single_turn)
@@ -1259,7 +1266,26 @@ def reply_ideation_conversation(
     request_type = classify_query_type(user_message)
     # 용준/Claude(2026-07-29, 요청: B05 실제 운영 경로 버그 수정) — start와 동일하게
     # current_user_input을 함께 갱신한다(이전 턴 값을 누적하지 않고 매 턴 덮어씀).
-    state = {**state, "request_type": request_type, "current_user_input": user_message}
+    current_user_instruction = parse_current_user_instruction(user_message)
+    state = {
+        **state,
+        "request_type": request_type,
+        "current_user_input": user_message,
+        "current_user_instruction": current_user_instruction,
+    }
+    # 용준/Claude(2026-07-30, 요청: "주요 기능은 뭐가있을까?라고 했는데 왜 그냥 지 말만
+    # 하냐" 실측 버그) — apply_user_answer()는 previous_state["phase"]만 보고
+    # forced_next_speaker="facilitator"를 심는다(awaiting_user_decision이었다면 "사용자가
+    # 진행자 질문에 답했다"고 가정) — 이 판단은 current_user_instruction을 전혀 모르는
+    # 시점(apply_user_answer 호출은 이 블록보다 위에서 이미 끝남)에 내려진 것이다. 사용자가
+    # 실제로는 진행자 질문에 답한 게 아니라 새 주제를 지정/전환했다면(interrupt_active_issue),
+    # 이 강제 진입을 그대로 두면 discussion_facilitator가 그 새 요청을 자기 질문에 대한
+    # "답변"으로 오해해 엉뚱한 요약만 내놓고 실제 요청(예: "주요 기능")에는 응답하지 않는다.
+    # forced_next_speaker를 지워 일반 진입 경로(_ENTRY_NODES["expert_discussion"] ==
+    # "planning_expert_discussion")를 타게 하면, resolve_effective_issue의 interrupt
+    # 분기가 이번 턴 쟁점을 사용자가 지정한 주제로 정확히 잡는다.
+    if state.get("forced_next_speaker") == "facilitator" and current_user_instruction.get("interrupt_active_issue"):
+        state = {**state, "forced_next_speaker": None}
     single_turn = request_type in _SINGLE_TURN_REQUEST_TYPES
     effective_stop_after_expert_turn = stop_after_expert_turn or single_turn
     graph = assemble_ideation_conversation_graph(

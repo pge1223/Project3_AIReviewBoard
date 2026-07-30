@@ -72,6 +72,45 @@ def test_schedule_items_are_structured_and_weekdays_are_recomputed():
     ]
 
 
+def test_schedule_items_preserve_presentation_review_and_month_only_awards():
+    facts = _build_official_facts(
+        {
+            "schedule_items": [
+                {
+                    "event_label": "발표 심사",
+                    "start_date": "2026-09-28",
+                    "end_date": "2026-09-30",
+                    "method": "공식 홈페이지 또는 빈 문자열",
+                    "source_text": "발표 심사: 2026. 9. 28. ~ 9. 30.",
+                },
+                {
+                    "event_label": "시상식",
+                    "start_date": "2026-10-01",
+                    "end_date": "2026-10-31",
+                    "method": "빈 문자열",
+                    "source_text": "개별(10월) 시상식 개최",
+                },
+                {
+                    "event_label": "시상식",
+                    "start_date": "2026-12-01",
+                    "end_date": "2026-12-31",
+                    "method": "",
+                    "source_text": "통합(12월) 시상식 개최",
+                },
+            ]
+        }
+    )
+
+    assert [
+        (item.event_label, item.start_date, item.end_date, item.method)
+        for item in facts.schedule_items
+    ] == [
+        ("발표 심사", "2026-09-28", "2026-09-30", "공식 홈페이지"),
+        ("개별 시상식", "2026-10", "", ""),
+        ("통합 시상식", "2026-12", "", ""),
+    ]
+
+
 def test_missing_schedule_and_pdf_details_trigger_audit():
     source = """
     [출처 문서: 공고문.pdf]

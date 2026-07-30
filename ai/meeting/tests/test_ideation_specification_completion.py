@@ -11,6 +11,7 @@ from pathlib import Path
 MEETING_DIR = Path(__file__).resolve().parents[1]  # ai/meeting
 sys.path.insert(0, str(MEETING_DIR))
 
+from graph.ideation_conv_nodes import _merge_idea_spec_into_proposal  # noqa: E402
 from graph.ideation_conv_problem import (  # noqa: E402
     _SPEC_FIELD_ORDER,
     _SPEC_REQUIRED_FIELDS,
@@ -72,8 +73,10 @@ def test_main_features_becomes_proposed_after_one_turn():
     spec = result["idea_spec"]["main_features"]
     assert spec["status"] == "proposed"
     assert spec["value"] == ["직무별 AI 활용 사례 추천", "단계별 교육 콘텐츠 제공", "실무 적용 피드백 수집"]
-    assert spec["source_turn_ids"]
+    # 세부 항목마다 말풍선을 만들지 않고 마지막에 진행자 요약만 표시한다.
+    assert spec["source_turn_ids"] == []
     assert result["phase"] == "specification_completion"  # 아직 다른 unknown 필드가 남아있음
+    assert result["messages"] == []
 
 
 def test_required_data_without_pair_structure_is_rejected_and_retried():
@@ -282,6 +285,59 @@ def _compliant_stub_response(prompt: str) -> str:
     return _value_response("초안 항목 1", "초안 항목 2", "초안 항목 3")
 
 
+def test_merge_idea_spec_into_proposal_maps_field_names_for_frontend():
+    """용준/Claude(2026-07-30, 요청: 웹 런타임 추적 — idea_spec이 채워져도 프론트
+    PROPOSAL_ROWS(IdeationConversationScreen.jsx)가 읽는 키 이름과 다르면 여전히 "아직
+    확정되지 않음"으로 보인다. make_conv_synthesis_node가 호출하는
+    _merge_idea_spec_into_proposal()이 실제로 프론트 키(key_features/tech_direction/
+    unverified_assumptions 등)로 정확히 매핑하는지 이 지점에서 직접 확인한다 — 여기까지
+    통과하면 idea_spec -> idea_proposal 병합 자체는 원인이 아니라는 뜻이다."""
+    idea_spec = {
+        "core_user_value": {"value": "핵심 가치", "status": "proposed"},
+        "main_features": {"value": ["기능1", "기능2"], "status": "proposed"},
+        "required_data": {"value": ["데이터1"], "status": "proposed"},
+        "technical_approach": {"value": ["기술1"], "status": "proposed"},
+        "mvp_scope": {"value": ["MVP1"], "status": "proposed"},
+        "differentiation": {"value": "차별점", "status": "proposed"},
+        "risks_and_mitigations": {"value": ["위험1"], "status": "proposed"},
+        "success_metrics": {"value": ["지표1"], "status": "proposed"},
+        "assumptions_to_validate": {"value": ["가정1"], "status": "proposed"},
+    }
+    merged = _merge_idea_spec_into_proposal({"idea_name": "테스트"}, idea_spec)
+
+    # 프론트 PROPOSAL_ROWS가 읽는 정확한 키 이름과 값이 나와야 한다.
+    assert merged["key_features"] == ["기능1", "기능2"]
+    assert merged["required_data"] == ["데이터1"]
+    assert merged["tech_direction"] == ["기술1"]
+    assert merged["mvp_scope"] == ["MVP1"]
+    assert merged["risks_and_mitigations"] == ["위험1"]
+    assert merged["success_metrics"] == ["지표1"]
+    assert merged["unverified_assumptions"] == ["가정1"]
+    # main_features/technical_approach/assumptions_to_validate라는 idea_spec 쪽 이름으로는
+    # 남지 않는다 — 프론트는 이 이름들을 전혀 읽지 않으므로 남아있으면 오히려 혼란을 준다.
+    assert "main_features" not in merged
+    assert "technical_approach" not in merged
+    assert "assumptions_to_validate" not in merged
+
+
+def test_merge_idea_spec_into_proposal_skips_unknown_status_fields():
+    """아직 unknown인 필드는 synthesis LLM이 만든 값을 덮어쓰지 않는다(요청: "값이 있는
+    필드만 코드로 강제한다" — 완전히 안 채워진 필드까지 빈 값으로 덮어쓰면 LLM이 대화
+    맥락에서 그나마 추론한 값이 사라질 수 있다)."""
+    idea_spec = {
+        "main_features": {"value": None, "status": "unknown"},
+    }
+    raw = {"key_features": ["LLM이 만든 값"]}
+    merged = _merge_idea_spec_into_proposal(raw, idea_spec)
+    assert merged["key_features"] == ["LLM이 만든 값"]
+
+
+def test_merge_idea_spec_into_proposal_with_none_idea_spec_is_noop():
+    """구버전 세션(idea_spec 필드 자체가 없음)에서도 synthesis가 그대로 동작해야 한다."""
+    raw = {"key_features": ["기존 값"]}
+    assert _merge_idea_spec_into_proposal(raw, None) == raw
+
+
 def test_all_seven_fields_reach_proposed_across_repeated_turns():
     """요청: 필수 E2E 성공 조건 — 7개 필드 모두 최소 proposed 이상, value가 비어있지 않음."""
 
@@ -307,3 +363,16 @@ def test_all_seven_fields_reach_proposed_across_repeated_turns():
         assert spec["value"], field
         assert spec["source_turn_ids"], field
     assert spec_gate_passed(state["idea_spec"]) is True
+    assert [message["speaker_id"] for message in result["messages"]] == [
+        "planning_expert",
+        "dev_expert",
+        "ideation_facilitator",
+    ]
+    assert result["messages"][0]["content"] == "주요 기능과 MVP 범위를 사용자 가치 중심으로 정리했습니다."
+    assert result["messages"][1]["content"] == (
+        "필요한 데이터와 기술 구현 방향, 위험 대응을 구현 가능한 수준으로 정리했습니다."
+    )
+    assert result["messages"][2]["content"] == (
+        "핵심 기능, 데이터, 기술 방향, MVP 범위와 위험 대응을 빠르게 검토했습니다."
+    )
+    assert all("…" not in message["content"] and "..." not in message["content"] for message in result["messages"])

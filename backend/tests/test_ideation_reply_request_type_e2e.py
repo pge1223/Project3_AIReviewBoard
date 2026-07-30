@@ -139,7 +139,7 @@ def test_reply_stream_ndjson_contract_per_request_type(client, request_type, use
         assert speakers == ["user", "planning_expert", "dev_expert", "ideation_facilitator"]
 
     # 메시지 중복 없음: id 기준으로 유니크해야 한다.
-    message_ids = [m["id"] for m in final_state["messages"] if "id" in m]
+    message_ids = [m["message_id"] for m in final_state["messages"] if "message_id" in m]
     assert len(message_ids) == len(set(message_ids))
 
 

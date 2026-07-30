@@ -428,6 +428,8 @@ class ConvMessage(TypedDict):
     linked_criteria_refs: list[str]
     linked_external_evidence_refs: list[str]
     expert_judgment_without_external_evidence: list[str]
+    # 개발 모드에서 검색→인용→grounding→표시 퍼널을 확인하기 위한 턴별 진단값.
+    evidence_funnel: dict | None
 
 
 class IdeationConvState(TypedDict):
@@ -651,6 +653,15 @@ class IdeationConvState(TypedDict):
     # 쪽은 항상 `.get("current_user_input")`로 접근한다(하위 호환 — 없으면 기존처럼
     # _topic_query 기반 판정으로 폴백).
     current_user_input: str | None
+
+    # 용준/Claude(2026-07-30, 요청: "최신 직접 사용자 지시와 대화 문맥 분리" — 출처 기반
+    # 설계) — current_user_input과 정확히 같은 지점·같은 생명주기(매 턴 새로 덮어씀, 누적
+    # 안 함)에서 ideation_conv_instruction.py::parse_current_user_instruction()이 채우는
+    # 파생 값이다. current_user_input(원문 문자열)과 달리 이건 "이번 턴 사용자가 다루지
+    # 말라고 한 주제/다뤄달라고 한 항목"을 구조화한 것 — resolve_effective_issue()가
+    # active_issue_id보다 우선해서 참조한다. 선택 필드: 구버전 저장 세션에는 이 키가
+    # 없으므로 읽는 쪽은 항상 `.get("current_user_instruction")`로 접근한다.
+    current_user_instruction: dict | None
 
     # 용준/Claude(2026-07-27, 후속 요청 4번: "2차 프론트에서는 action code를 함께 보낼
     # 예정 — 백엔드는 action code를 우선 사용하고 자연어 키워드 판정은 하위 호환용

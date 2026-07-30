@@ -382,10 +382,23 @@ function EvidenceToggle({
   const evidenceItems = [...criteriaItems, ...externalItems]
   const evidenceCount = evidenceItems.length
   const targetCount = targetItems.length
+  const expertJudgmentIds = new Set(
+    (claims || [])
+      .filter((claim) => claim?.claim_type === 'expert_judgment')
+      .map((claim, index) => claim.claim_id || `expert-${index}`)
+  )
+  ;(expertJudgmentWithoutExternalEvidence || []).forEach((claimId) => {
+    if (claimId) expertJudgmentIds.add(claimId)
+  })
+  const expertJudgmentCount = expertJudgmentIds.size
 
   if (evidenceCount === 0 && targetCount === 0) {
     if ((expertJudgmentWithoutExternalEvidence || []).length > 0 || (claims || []).length > 0) {
-      return <ExpertJudgmentPill />
+      return (
+        <div style={{ marginTop: 4 }}>
+          <ExpertJudgmentPill label={`전문가 판단 ${expertJudgmentCount || 1}건 · 확인된 문서 근거 없음`} />
+        </div>
+      )
     }
     return null
   }
@@ -415,7 +428,7 @@ function EvidenceToggle({
           )}
         </>
       ) : (
-        <ExpertJudgmentPill label="전문가 판단 · 문서 근거 없음" />
+        <ExpertJudgmentPill label={`전문가 판단 ${expertJudgmentCount || 1}건 · 확인된 문서 근거 없음`} />
       )}
       {targetCount > 0 && (
         <TargetReviewToggle items={targetItems} />
@@ -520,6 +533,17 @@ function FacilitatorSummaryCard({ structured }) {
   )
 }
 
+const REDUNDANT_PROBLEM_DISCOVERY_INTRO =
+  '기획위원과 개발위원의 공고문 검토를 종합해 해결할 문제 후보를 정리했습니다.'
+
+function withoutRedundantFacilitatorIntro(value, message) {
+  const text = String(value || '')
+  if (message?.speaker_id !== 'ideation_facilitator') return text
+  const trimmed = text.trimStart()
+  if (trimmed && REDUNDANT_PROBLEM_DISCOVERY_INTRO.startsWith(trimmed)) return ''
+  return text.replace(REDUNDANT_PROBLEM_DISCOVERY_INTRO, '').trimStart()
+}
+
 function MessageBubble({ message, streaming = false, interrupted = false, allMessages = [], isLatest = false }) {
   const meta = speakerMetaFor(message)
   const isRight = meta.align === 'right'
@@ -527,7 +551,10 @@ function MessageBubble({ message, streaming = false, interrupted = false, allMes
   // content(서버에서 실제로 받은 전체 텍스트)를 그대로 쓰면 델타가 도착하는 순간
   // 문장이 통째로 튀어나와 타이핑 효과가 사라진다. canonical(완료된) 메시지는
   // displayedContent 필드가 없으므로 content를 그대로 쓴다.
-  const rawText = streaming ? message.displayedContent ?? '' : message.content
+  const rawText = withoutRedundantFacilitatorIntro(
+    streaming ? message.displayedContent ?? '' : message.content,
+    message,
+  )
   const text = humanizeExpertIdentifiers(rawText)
   const hasContent = !!text?.trim()
   // done(message_end 수신)이 와도 displayedContent가 content를 따라잡기 전까지는
@@ -638,6 +665,18 @@ function isValidationOpinionMessage(message) {
     message?.message_type === 'opinion'
     && !!message?.structured?.validation
     && (message.speaker_id === 'planning_expert' || message.speaker_id === 'dev_expert')
+  )
+}
+
+const LEGACY_SPECIFICATION_SUMMARY_RE = /^(주요 기능|필요한 데이터|기술 구현 방향|MVP 범위|위험 요소와 대응 방안|성공 지표|검증이 필요한 가정)\s*항목을 위원 제안으로 정리했습니다/
+
+function isLegacySpecificationNarration(message) {
+  return (
+    !!message?.structured?.specification_completion
+    || (
+      message?.speaker_id === 'ideation_facilitator'
+      && LEGACY_SPECIFICATION_SUMMARY_RE.test((message?.content || '').trim())
+    )
   )
 }
 
@@ -962,6 +1001,10 @@ function ErrorBanner({ error, onRetry, retrying }) {
 // 세 블록 모두 onSend(message, { actionCode, actionPayload })만 호출하고 API를 직접
 // 부르지 않는다 — 실제 전송은 IdeationScreen의 handleSend가 담당한다.
 
+function withoutExpertJudgmentLabel(value) {
+  return String(value || '').replace(/^\s*전문가\s*판단\s*[:：·-]?\s*/, '')
+}
+
 function SelectableAreaCard({ area, selected, onToggle, disabled }) {
   return (
     <div
@@ -1005,12 +1048,12 @@ function SelectableAreaCard({ area, selected, onToggle, disabled }) {
       )}
       {area.planning_view && (
         <div style={{ fontSize: 13.5, color: 'var(--text-2)', marginTop: 5 }}>
-          <strong style={{ fontWeight: 600 }}>기획 관점 · </strong>{area.planning_view}
+          <strong style={{ fontWeight: 600 }}>기획 관점 · </strong>{withoutExpertJudgmentLabel(area.planning_view)}
         </div>
       )}
       {area.technical_view && (
         <div style={{ fontSize: 13.5, color: 'var(--text-2)', marginTop: 3 }}>
-          <strong style={{ fontWeight: 600 }}>개발 관점 · </strong>{area.technical_view}
+          <strong style={{ fontWeight: 600 }}>개발 관점 · </strong>{withoutExpertJudgmentLabel(area.technical_view)}
         </div>
       )}
     </div>
@@ -1967,6 +2010,8 @@ export function IdeationScreen({
     for (const m of messages) {
       if (!AVATAR_SPEAKER_IDS.has(m.speaker_id) || queuedAvatarIdsRef.current.has(m.message_id)) continue
       queuedAvatarIdsRef.current.add(m.message_id)
+      // 이전 세션에 저장된 필드별 구체화 발언은 화면에서도 숨기므로 아바타도 읽지 않는다.
+      if (isLegacySpecificationNarration(m)) continue
       // 아바타는 안 태우지만(코랩 요청 자체를 안 보냄) 텍스트 채팅에는 그대로 남는다 —
       // canonicalMessages는 이 필터와 무관하게 ideationConv.messages를 그대로 쓴다.
       if ((m.content || '').startsWith(AVATAR_EXCLUDED_CONTENT_PREFIX)) continue
@@ -2089,7 +2134,11 @@ export function IdeationScreen({
   // 뒤에 온 비아바타 메시지 포함) 전부 숨긴다 — 순서를 지키기 위해서다(나중에 온 문구가
   // 아직 재생 안 한 위원 발언보다 먼저 보이면 안 됨). 아바타 대상이 아닌 메시지(고정
   // 문구 중 코랩 제외 대상, 사용자 메시지 등)는 게이팅 없이 즉시 보인다.
-  const rawMessages = ideationConv?.messages || []
+  // 새 회의는 서버가 구체화 결과를 한 번만 요약한다. 이미 저장된 이전 회의도 새로고침하면
+  // 필드별 기획/개발 발언과 진행자 반복 요약을 숨겨 같은 간결한 화면으로 보여준다.
+  const rawMessages = (ideationConv?.messages || []).filter(
+    (message) => !isLegacySpecificationNarration(message),
+  )
   let avatarSeenCount = 0
   // IDEATION_AVATAR_ENABLED=false(개발자용)면 영상 재생을 기다리지 않고 항상 -1(=자르지
   // 않음)로 취급한다 — 아바타 서버가 없어도 회의 메시지가 즉시 전부 보인다.
@@ -2176,6 +2225,10 @@ export function IdeationScreen({
     phase === 'awaiting_user_decision' && latestFacilitatorMessage?.structured?.needs_user_decision
       ? latestFacilitatorMessage.structured.choices || []
       : []
+  const postLockChoiceOnly =
+    !!ideationConv?.idea_locked
+    && phase === 'awaiting_user_decision'
+    && latestFacilitatorChoices.length > 0
   // 용준/Claude(2026-07-22, 요청: "잠시만" 버튼) — 실제로 기획/개발 위원이 발언을
   // 스트리밍하는 동안에만(말풍선이 하나 이상 생겨야) 활성화한다. 이미 취소 확인을 기다리는
   // 중이면(interrupting) 다시 누를 수 없다.
@@ -2354,20 +2407,25 @@ export function IdeationScreen({
     if (!canFinalize) return
     setError(null)
     const currentIdea = ideationConv.idea_canvas || ideationConv.selected_idea || ideationConv.provisional_idea || {}
+    const ideaSpecValue = (field) => {
+      const spec = ideationConv.idea_spec?.[field]
+      if (!spec || spec.status === 'unknown') return undefined
+      return spec.value || undefined
+    }
     setPreviewProposal({
       idea_name: currentIdea.title || currentIdea.idea_name || ideationConv.selected_idea?.title || '확정 예정 아이디어',
       problem_definition: currentIdea.problem || currentIdea.problem_definition,
       target_user: currentIdea.target_user,
-      core_user_value: currentIdea.core_value || currentIdea.core_user_value,
-      key_features: currentIdea.key_features || currentIdea.features,
-      required_data: currentIdea.required_data,
-      tech_direction: currentIdea.tech_direction || currentIdea.technical_approach,
-      mvp_scope: currentIdea.mvp_scope,
-      differentiation: currentIdea.differentiation,
-      risks_and_mitigations: currentIdea.risks_and_mitigations || currentIdea.risks,
-      success_metrics: currentIdea.success_metrics,
+      core_user_value: ideaSpecValue('core_user_value') || currentIdea.core_value || currentIdea.core_user_value,
+      key_features: ideaSpecValue('main_features') || currentIdea.key_features || currentIdea.features,
+      required_data: ideaSpecValue('required_data') || currentIdea.required_data,
+      tech_direction: ideaSpecValue('technical_approach') || currentIdea.tech_direction || currentIdea.technical_approach,
+      mvp_scope: ideaSpecValue('mvp_scope') || currentIdea.mvp_scope,
+      differentiation: ideaSpecValue('differentiation') || currentIdea.differentiation,
+      risks_and_mitigations: ideaSpecValue('risks_and_mitigations') || currentIdea.risks_and_mitigations || currentIdea.risks,
+      success_metrics: ideaSpecValue('success_metrics') || currentIdea.success_metrics,
       expert_final_opinions: ideationConv.consensus,
-      unverified_assumptions: ideationConv.unresolved_issues,
+      unverified_assumptions: ideaSpecValue('assumptions_to_validate') || ideationConv.unresolved_issues,
       final_recommendation: currentIdea.contest_fit || currentIdea.final_recommendation,
     })
     setShowFinalizedModal(true)
@@ -2795,7 +2853,9 @@ export function IdeationScreen({
               style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 8, width: '100%' }}
             >
               <p style={{ margin: '0 0 2px', color: 'var(--text-2)', fontSize: 13.5, lineHeight: 1.5 }}>
-                아래 선택지는 최종 주제 확정이 아니라, 다음 검증에서 적용할 방향입니다.
+                {postLockChoiceOnly
+                  ? '원하는 진행 방식 하나를 선택해 주세요.'
+                  : '아래 선택지는 최종 주제 확정이 아니라, 다음 검증에서 적용할 방향입니다.'}
               </p>
               {latestFacilitatorChoices.map((choice, i) => {
                 const detail = typeof choice.detail === 'string' ? choice.detail.trim() : ''
@@ -2818,10 +2878,14 @@ export function IdeationScreen({
                       overflowWrap: 'anywhere',
                       lineHeight: 1.5,
                     }}
-                    onClick={() => handleSend(choice.label)}
+                    onClick={() => (
+                      choice.id === 'finish_refinement'
+                        ? handleFinalize()
+                        : handleSend(choice.label)
+                    )}
                     disabled={!canReplyOrContinue}
                   >
-                    <strong>{choice.label}</strong>
+                    <strong>{i + 1}) {choice.label}</strong>
                     {detail && detail !== choice.label && (
                       <span style={{ color: 'var(--text-2)', fontSize: 13.5, fontWeight: 400 }}>
                         {detail}
@@ -2877,7 +2941,7 @@ export function IdeationScreen({
           </span>
         </div>
 
-        {ideationConv && phase !== 'finalized' && (
+        {ideationConv && phase !== 'finalized' && !postLockChoiceOnly && (
           <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
             <input
               ref={inputRef}

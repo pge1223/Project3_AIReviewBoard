@@ -47,6 +47,8 @@ structured 안에 있음, planning_position/development_review 중 needs_user_in
    않습니다 — "정리하면" 관점에서 다시 씁니다.
 2. agreements(합의 사항)와 disagreements(의견이 다른 사항)를 명확히 구분합니다. 실제로 갈리는
    지점이 없다면 disagreements는 빈 배열로 둡니다(억지로 만들어내지 않습니다).
+   agreements는 최대 4개이며, 각 항목은 결론 하나만 담은 80자 이내 한 문장으로 씁니다.
+   배경 설명, 사례, 근거 원문, 여러 문단을 한 항목에 이어 붙이지 않습니다.
 3. planning_position과 development_review, revised_proposal이 이미 같은 내용을 반복하고
    있다면(새로운 근거 없이 같은 결론만 되풀이) 그 사실을 그대로 정리에 반영하고, 불필요하게
    같은 논의를 더 끌지 않습니다.

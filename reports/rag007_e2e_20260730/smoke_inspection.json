@@ -1,0 +1,231 @@
+{
+  "total": 223,
+  "allow_grounded_claim_false": [
+    {
+      "id": "NIA-PUBLIC-AI-GUIDE-2026-FULL::NIA-PUBLIC-AI-GUIDE-2026-FULL:b2620e74f975cc14::chk_2f8a8e0926429b58",
+      "page": null,
+      "section": null,
+      "len": 694,
+      "content": "- 260526_공공부문_AI_도입·활용_가이드_개발시스템_매뉴얼.pdf260526_공공부문_AI_도입·활용_가이드_개발시스템_매뉴얼.pdf-다운로드260526_공공부문_AI_도입·활용_가이드_개발시스템_매뉴얼.pdf-미리보기\n- 260529_공공부문_AI_도입_활용_가이드.pdf260529_공공부문_AI_도입_활용_가이드.pdf-다운로드260529_공공부"
+    },
+    {
+      "id": "NIA-DIGITAL-DIVIDE-SURVEY-2024-FULL::NIA-DIGITAL-DIVIDE-SURVEY-2024-FULL:4a161e7741abb77b::chk_ba8e7af8f6d719a3",
+      "page": null,
+      "section": null,
+      "len": 138,
+      "content": "- (한국지능정보사회진흥원)_2024_디지털정보격차_실태조사_보고서_최종.pdf(한국지능정보사회진흥원)_2024_디지털정보격차_실태조사_보고서_최종.pdf-다운로드(한국지능정보사회진흥원)_2024_디지털정보격차_실태조사_보고서_최종.pdf-미리보기"
+    }
+  ],
+  "merged": [
+    {
+      "id": "NIA-PUBLIC-AI-GUIDE-2026-FULL::NIA-PUBLIC-AI-GUIDE-2026-FULL:83883b63500ee2fb::chk_81ba9099f7777193",
+      "merged_from": "[\"chk_6eb8c96577f7d021\"]",
+      "page_start": 1,
+      "page_end": 2,
+      "section": null,
+      "content_preview": "2 개발시스템 매뉴얼 행정안전부 NIA 한국지능정보회진홍원 NATIONAL INFORMATION SOCIETY AGENCY\nⅠ. 개발시스템 주요 기능"
+    },
+    {
+      "id": "NIA-PUBLIC-AI-GUIDE-2026-FULL::NIA-PUBLIC-AI-GUIDE-2026-FULL:83883b63500ee2fb::chk_df0e48a32e4bca31",
+      "merged_from": "[\"chk_5fb7f11965ebb05c\"]",
+      "page_start": 6,
+      "page_end": 6,
+      "section": "데이터 공유 메뉴 활용 권한 관리",
+      "content_preview": "1) 데이터 공유 메뉴 활용 권한 관리\n\n○ 학습데이터는 행정망 내 공유할 수 있는 문서를 기반으로 구축되었으므로, 데이터 유출 방지를 위해 인터넷망에서의 활용은 제한된다.\n데이터 종류 공통 기반 관리자 플랫폼 운영자 정보시스템 담당자 정보시스템 개발자 원시 데이터 허용 허용 허용 허용 원천 데이터 허용 허용 허용 허용 가공데이터 지시 학습용 데이터 허용 "
+    },
+    {
+      "id": "NIA-PUBLIC-AI-GUIDE-2026-FULL::NIA-PUBLIC-AI-GUIDE-2026-FULL:1e28806b2a124468::chk_1bfeeab943c374f5",
+      "merged_from": "[\"chk_ee7ec0c857812303\"]",
+      "page_start": 1,
+      "page_end": 2,
+      "section": null,
+      "content_preview": "e 공공부문 AI 도입 활용 가이드 행정안전부 NIA 한국지능정사회진흉원 NATIONAL INFORMATION SOCIETY AGENCY\nCONTENTS Ⅰ. AI 이해"
+    },
+    {
+      "id": "NIA-PUBLIC-AI-GUIDE-2026-FULL::NIA-PUBLIC-AI-GUIDE-2026-FULL:1e28806b2a124468::chk_7d4efd7e24abbe8c",
+      "merged_from": "[\"chk_85592e6ad9f195a5\"]",
+      "page_start": 3,
+      "page_end": 4,
+      "section": null,
+      "content_preview": "[FAQ] 자주 묻는 질문 [부록1] 공통기반 서빙 모델 [부록2] 상세 요구사항 예시 [부록3] AI 서비스 유형별 대표사례 [부록4] 공공 AI 서비스 개발 가이드북 42 45 46 48 51\n1 1 AI 이해"
+    },
+    {
+      "id": "NIA-PUBLIC-AI-GUIDE-2026-FULL::NIA-PUBLIC-AI-GUIDE-2026-FULL:1e28806b2a124468::chk_c4459e9c30a766d1",
+      "merged_from": "[\"chk_324f03073b146f5e\"]",
+      "page_start": 6,
+      "page_end": 6,
+      "section": "국내외 기술 동향",
+      "content_preview": "3. 국내외 기술 동향\n■ 국내외 기술 동향\n\n○ 생성형 AI는 실험 단계를 넘어 공공 및 민간 부문 전반에서 상시 활용되는 운영 단계로 전환되고 있으며, 도입 기준 또한 운영 안정성, 비용 효율성, 품질 관리 중심으로 변화하고 있다.\n\n○ 글로벌 시장에서도 AI가 업무 프로세스에 상시 적용되는 단계에 진입함에 따라, 투자 영역이 단순 모델 도입에서 운영 "
+    },
+    {
+      "id": "NIA-PUBLIC-AI-GUIDE-2026-FULL::NIA-PUBLIC-AI-GUIDE-2026-FULL:1e28806b2a124468::chk_bf92891af4afa837",
+      "merged_from": "[\"chk_0a8f9a37f57a4ccd\"]",
+      "page_start": 15,
+      "page_end": 16,
+      "section": null,
+      "content_preview": "12\n\n○ AI 서비스를 효율적으로 활용하기 위해서는 데이터를 지속해서 관리할 조직과 이를 위한 거버넌스적 체계 마련\n\n- 내부적으로는 언어 모델의 규모 및 비용 대비 성능 최적화를 위해 운영 중 발생하는 신규 데이터(사용자 로그, 질의응답, 오류 이력 등)를 체계적으로 수집·분석하여 모델 개선에 반영한다.\n\n- 외부적으로도 AI 서비스 활용 과정에서 발생"
+    },
+    {
+      "id": "NIA-PUBLIC-AI-GUIDE-2026-FULL::NIA-PUBLIC-AI-GUIDE-2026-FULL:1e28806b2a124468::chk_7ba5b0ce209a9d2a",
+      "merged_from": "[\"chk_cf2e3c10fcd6eca0\"]",
+      "page_start": 19,
+      "page_end": 20,
+      "section": null,
+      "content_preview": "16 ◈ 참고: 공통기반 AI 플랫폼을 활용한 AI 서비스 개발 프로세스 구현 단계 단계별 To-Do LLM 모델 선택 지시문 작성 기반지식(RAG) 생성 플러그인 선택 테스트 ❶ LLM 모델 선택 ❷ 시스템 지시문 작성 ❸ 기반지식 (RAG) 선택 ❹ 플러그인 선택 ❺ 테스트 및 배포 ・\tAI 플랫폼에서 제공하는 LLM 모델 선택 ・\t답변 수준 위한 설정"
+    },
+    {
+      "id": "NIA-PUBLIC-AI-GUIDE-2026-FULL::NIA-PUBLIC-AI-GUIDE-2026-FULL:1e28806b2a124468::chk_ab12f0e52ca8a49d",
+      "merged_from": "[\"chk_1068bdd50ddfd089\", \"chk_1068bdd50ddfd089\", \"chk_1068bdd50ddfd089\", \"chk_1068bdd50ddfd089\"]",
+      "page_start": 39,
+      "page_end": 39,
+      "section": "(조회)",
+      "content_preview": "○ (조회)\n○ (조회)\n\n정보시스템 담당자\n○ (조회)\n○ (조회)\n○ (조회)"
+    },
+    {
+      "id": "NIA-PUBLIC-AI-GUIDE-2026-FULL::NIA-PUBLIC-AI-GUIDE-2026-FULL:1e28806b2a124468::chk_e2f0bc8706b12f06",
+      "merged_from": "[\"chk_ad0ff7aaf9141198\"]",
+      "page_start": 39,
+      "page_end": 39,
+      "section": "(생성/수정/삭제)",
+      "content_preview": "○ (생성/수정/삭제)\n○ (생성/수정/삭제)\n\n정보시스템 개발자"
+    },
+    {
+      "id": "NIA-PUBLIC-AI-GUIDE-2026-FULL::NIA-PUBLIC-AI-GUIDE-2026-FULL:1e28806b2a124468::chk_1068bdd50ddfd089",
+      "merged_from": "[\"chk_1068bdd50ddfd089\"]",
+      "page_start": 39,
+      "page_end": 39,
+      "section": "(조회)",
+      "content_preview": "○ (조회)\n○ (조회)"
+    },
+    {
+      "id": "NIA-PUBLIC-AI-GUIDE-2026-FULL::NIA-PUBLIC-AI-GUIDE-2026-FULL:1e28806b2a124468::chk_46803c4cf84be5ff",
+      "merged_from": "[\"chk_becd5ef3748d68fa\"]",
+      "page_start": 42,
+      "page_end": 43,
+      "section": null,
+      "content_preview": "* RPM/TPM: API 사용 속도 및 사용량을 제한하기 위한 지표이다. 분당 호출 횟수와 토큰 사용량을 수치로 지정하며, 1분이 경과하면 초기화 (Reset)된다.\n\n◎ 사용자 매뉴얼의 11.3 Open API 사용하기 참고 Fabrix Store Assets 기관별 Knowledge 기관별 서비스 개발자 행안부 \"단자 Agent Open API 과기부"
+    },
+    {
+      "id": "NIA-PUBLIC-AI-GUIDE-2026-FULL::NIA-PUBLIC-AI-GUIDE-2026-FULL:1e28806b2a124468::chk_ce5923f08e0ae9bb",
+      "merged_from": "[\"chk_61374cf87e878f4d\"]",
+      "page_start": 50,
+      "page_end": 51,
+      "section": null,
+      "content_preview": "○ 공통기반과의 연계는 민관협력형 클라우드 또는 보안망 내 클라우드 통신 정책을 준수하며, 모든 통신 구간에 대한 암호화 및 접근 제어 정책 적용\n\n○ 연계된 공통기반 서비스의 호출 이력, 응답 결과, 장애 발생 이력 등은 통합 로그로 관리하고, 장애 발생 시 재처리 및 알림 기능 포함\n\n○ 공통기반 서비스의 SLA(가용성, 응답 시간 등) 기준에 따라 서"
+    },
+    {
+      "id": "PIPC-GENAI-PRIVACY-GUIDE-2025-FULL::PIPC-GENAI-PRIVACY-GUIDE-2025-FULL:8e19b60b2df41e1a::chk_72df439f9de1d3ed",
+      "merged_from": "[\"chk_119b0fe670afc914\"]",
+      "page_start": null,
+      "page_end": null,
+      "section": "-",
+      "content_preview": "-\n\n- 위원회 소식\n- 정책 · 법령\n- 국정과제\n- 심의 · 의결\n- 정보공개\n- 국민참여\n- 기업참여\n- 위원회 소개\n\n- 국정성과\n제목 | [현재 안내서]\r\n\t    \r\n\t    \r\n         \r\n        생성형 인공지능(AI) 개발·활용을 위한 개인정보 처리 안내서(2025.8.)\n작성부서 | 개인정보보호정책과 | 작성자 | 김지영\n작성"
+    }
+  ],
+  "pipc_menu_like": [
+    {
+      "id": "PIPC-GENAI-PRIVACY-GUIDE-2025-FULL::PIPC-GENAI-PRIVACY-GUIDE-2025-FULL:8e19b60b2df41e1a::chk_b9267b66e1687e57",
+      "content": "- 위원회 소식위원회 소식새소식공지사항채용공시송달결과의 공표보도‧해명보도자료해명자료정책홍보사진뉴스카드뉴스정보그림(인포그래픽)동영상뉴스개인정보 보호 캠페인내정보지킴이 캠페인정책 · 법령정책 · 법령법령정보법령훈령‧예규‧고시안내서국민정책개인정보 열람 등 요구정책전송요구권(마이데이터 제도)개인정보 분쟁조정제도개인정보 유출신고제도개인정보 침해신고제도국민정책 자료실기업정책가명처리‧가명정보 결합제도인증제도(ISMS-P)기술 R&D · 표준화 로드맵(’26~’30)기업정책 자료실공공정책기본계획‧시행계획개인정보 영향평가제도개인정보 침해요인 평가제",
+      "page": null,
+      "section": "개인정보 보호위원회"
+    },
+    {
+      "id": "PIPC-GENAI-PRIVACY-GUIDE-2025-FULL::PIPC-GENAI-PRIVACY-GUIDE-2025-FULL:8e19b60b2df41e1a::chk_95464a0f748942db",
+      "content": "현장영상민원마당온라인 민원국민행복제안정책참여적극행정개인정보 분야 국민제안센터규제혁신규제합리화 과제현황심사중인 규제법안규제법령 정보규제건의규제정보포털규제입증 요청신고센터공익신고부패행위신고청탁금지법위반 채용·비리 신고행동강령위반 신고보조금 부조리 신고센터공공재정 부정청구 등 신청예산낭비 신고센터안전신문고기업참여기업참여혁신지원 원스톱 서비스혁신지원 원스톱 서비스사전적정성 검토제사전적정성 검토제 개요신청 대상 및 신청 방법개인정보 지식센터개인정보 지식센터위원회 소개위원회 소개개인정보보호위원회기관소개국정과제위원장부위원장위원오시는 길조직구성조",
+      "page": null,
+      "section": "개인정보 보호위원회"
+    },
+    {
+      "id": "PIPC-GENAI-PRIVACY-GUIDE-2025-FULL::PIPC-GENAI-PRIVACY-GUIDE-2025-FULL:8e19b60b2df41e1a::chk_8b69dc153a127d2d",
+      "content": "- 새소식공지사항채용공시송달결과의 공표\n- 보도‧해명보도자료해명자료\n- 정책홍보사진뉴스카드뉴스정보그림(인포그래픽)동영상뉴스\n- 개인정보 보호 캠페인내정보지킴이 캠페인\n\n- 공지사항\n- 채용\n- 공시송달\n- 결과의 공표\n\n- 보도자료\n- 해명자료\n\n- 사진뉴스\n- 카드뉴스\n- 정보그림(인포그래픽)\n- 동영상뉴스\n\n- 내정보지킴이 캠페인\n\n- 법령정보법령훈령‧예규‧고시안내서\n- 국민정책개인정보 열람 등 요구정책전송요구권(마이데이터 제도)개인정보 분쟁조정제도개인정보 유출신고제도개인정보 침해신고제도국민정책 자료실\n- 기업정책가명처리‧가명정",
+      "page": null,
+      "section": "개인정보 보호위원회"
+    },
+    {
+      "id": "PIPC-GENAI-PRIVACY-GUIDE-2025-FULL::PIPC-GENAI-PRIVACY-GUIDE-2025-FULL:8e19b60b2df41e1a::chk_9d5dd9f117804a00",
+      "content": "- 해외 개인정보 감독기구 · 협의체\n- 해외 개인정보 자료실\n- 동등성 인정 침해신고\n\n- 결정문‧사례집\n- 연차보고서\n- 통계정보\n- 세미나자료\n- 연구보고서\n\n- 업무계획\n- 국회 관련 정보\n\n- 국정성과전체 목록대표성과\n\n- 전체 목록\n- 대표성과\n\n- 심의‧의결 안내신청대상 및 방법심의‧의결 절차방청안내\n- 위원회 일정보호위원회제1소위원회제2소위원회구 위원회\n- 위원회 결정위원회 결정문구 위원회\n\n- 신청대상 및 방법\n- 심의‧의결 절차\n- 방청안내\n\n- 보호위원회\n- 제1소위원회\n- 제2소위원회\n- 구 위원회\n\n- 위원회",
+      "page": null,
+      "section": "개인정보 보호위원회"
+    },
+    {
+      "id": "PIPC-GENAI-PRIVACY-GUIDE-2025-FULL::PIPC-GENAI-PRIVACY-GUIDE-2025-FULL:8e19b60b2df41e1a::chk_37bd958f4bf79274",
+      "content": "- 민원마당온라인 민원국민행복제안정책참여적극행정개인정보 분야 국민제안센터\n- 규제혁신규제합리화 과제현황심사중인 규제법안규제법령 정보규제건의규제정보포털규제입증 요청\n- 신고센터공익신고부패행위신고청탁금지법위반 채용·비리 신고행동강령위반 신고보조금 부조리 신고센터공공재정 부정청구 등 신청예산낭비 신고센터안전신문고\n\n- 미래포럼 소개\n- 2026 미래포럼 위원 소개\n- 2026 미래포럼 활동계획\n- 2021-2025 미래포럼 주요활동\n- 2026 미래포럼 주요활동\n- 미래포럼 현장영상\n\n- 온라인 민원\n- 국민행복제안\n- 정책참여\n- 적극",
+      "page": null,
+      "section": "개인정보 보호위원회"
+    },
+    {
+      "id": "PIPC-GENAI-PRIVACY-GUIDE-2025-FULL::PIPC-GENAI-PRIVACY-GUIDE-2025-FULL:8e19b60b2df41e1a::chk_72df439f9de1d3ed",
+      "content": "-\n\n- 위원회 소식\n- 정책 · 법령\n- 국정과제\n- 심의 · 의결\n- 정보공개\n- 국민참여\n- 기업참여\n- 위원회 소개\n\n- 국정성과\n제목 | [현재 안내서]\r\n\t    \r\n\t    \r\n         \r\n        생성형 인공지능(AI) 개발·활용을 위한 개인정보 처리 안내서(2025.8.)\n작성부서 | 개인정보보호정책과 | 작성자 | 김지영\n작성일 | 2025-08-22 | 조회수 | 29343\n첨부파일 목록 | 생성형 인공지능(AI) 개발·활용을 위한 개인정보 처리 안내서(2025.8.).pdf다운로드\no 본 안내서는 ",
+      "page": null,
+      "section": "-"
+    },
+    {
+      "id": "PIPC-GENAI-PRIVACY-GUIDE-2025-FULL::PIPC-GENAI-PRIVACY-GUIDE-2025-FULL:8e19b60b2df41e1a::chk_62b436252d4af9b4",
+      "content": "- 이전글개인정보 안내서 전체 목록('26.3.31. 기준)\n- 다음글개인정보 영향평가 수행안내서(2025.10. 개정)\n\n해당 페이지의 만족도와 소중한 의견 남겨주세요.\n\n- 매우만족\n- 만족\n- 보통\n- 불만족\n- 매우불만족",
+      "page": null,
+      "section": "-"
+    },
+    {
+      "id": "PIPC-GENAI-PRIVACY-GUIDE-2025-FULL::PIPC-GENAI-PRIVACY-GUIDE-2025-FULL:8e19b60b2df41e1a::chk_8e42555913a41837",
+      "content": "개인정보보호위원회 정보서비스\n\n- 개인정보 포털\n- 한국인터넷진흥원\n- 개인정보분쟁조정위원회\n- 개인정보침해신고센터\n- 가명정보지원플랫폼\n- 온마이데이터\n\n개인정보 포털\n\n한국인터넷진흥원\n\n개인정보분쟁조정위원회\n\n개인정보침해신고센터\n\n가명정보지원플랫폼\n\n온마이데이터",
+      "page": null,
+      "section": "개인정보보호위원회 정보서비스"
+    }
+  ],
+  "under_100_chars_preserved": [
+    {
+      "id": "NIA-PUBLIC-AI-GUIDE-2026-FULL::NIA-PUBLIC-AI-GUIDE-2026-FULL:83883b63500ee2fb::chk_81ba9099f7777193",
+      "content": "2 개발시스템 매뉴얼 행정안전부 NIA 한국지능정보회진홍원 NATIONAL INFORMATION SOCIETY AGENCY\nⅠ. 개발시스템 주요 기능",
+      "page": 2,
+      "section": null
+    },
+    {
+      "id": "NIA-PUBLIC-AI-GUIDE-2026-FULL::NIA-PUBLIC-AI-GUIDE-2026-FULL:1e28806b2a124468::chk_1bfeeab943c374f5",
+      "content": "e 공공부문 AI 도입 활용 가이드 행정안전부 NIA 한국지능정사회진흉원 NATIONAL INFORMATION SOCIETY AGENCY\nCONTENTS Ⅰ. AI 이해",
+      "page": 2,
+      "section": null
+    },
+    {
+      "id": "NIA-PUBLIC-AI-GUIDE-2026-FULL::NIA-PUBLIC-AI-GUIDE-2026-FULL:1e28806b2a124468::chk_b606dae116fbd085",
+      "content": "③ 학습데이터\n\n- 공동 활용 가능한 고품질 학습 데이터를 공통기반 개발 시스템에서 제공\n\n•\t지시 학습용 126,000 건 / 공통 서비스 학습용 8,000 건 데이터셋 포함",
+      "page": 17,
+      "section": "학습데이터"
+    },
+    {
+      "id": "NIA-PUBLIC-AI-GUIDE-2026-FULL::NIA-PUBLIC-AI-GUIDE-2026-FULL:1e28806b2a124468::chk_a59b8ff82d0e3ecf",
+      "content": "20 지시유형 대분류(7개)\n\n세부 지시유형(40개)",
+      "page": 23,
+      "section": null
+    },
+    {
+      "id": "NIA-PUBLIC-AI-GUIDE-2026-FULL::NIA-PUBLIC-AI-GUIDE-2026-FULL:1e28806b2a124468::chk_551ac3d836067a44",
+      "content": "4.4. 문서 기반 질의응답\n\n지시유형 대분류(7개)\n\n세부 지시유형(40개)",
+      "page": 23,
+      "section": "4. 문서 기반 질의응답"
+    },
+    {
+      "id": "NIA-PUBLIC-AI-GUIDE-2026-FULL::NIA-PUBLIC-AI-GUIDE-2026-FULL:1e28806b2a124468::chk_b70704ff361ad3ab",
+      "content": "7.7. 프롬프트 공격 대응\n\n[그림 8] 40개의 지시유형",
+      "page": 23,
+      "section": "7. 프롬프트 공격 대응"
+    },
+    {
+      "id": "NIA-PUBLIC-AI-GUIDE-2026-FULL::NIA-PUBLIC-AI-GUIDE-2026-FULL:1e28806b2a124468::chk_ab12f0e52ca8a49d",
+      "content": "○ (조회)\n○ (조회)\n\n정보시스템 담당자\n○ (조회)\n○ (조회)\n○ (조회)",
+      "page": 39,
+      "section": "(조회)"
+    },
+    {
+      "id": "NIA-PUBLIC-AI-GUIDE-2026-FULL::NIA-PUBLIC-AI-GUIDE-2026-FULL:1e28806b2a124468::chk_e2f0bc8706b12f06",
+      "content": "○ (생성/수정/삭제)\n○ (생성/수정/삭제)\n\n정보시스템 개발자",
+      "page": 39,
+      "section": "(생성/수정/삭제)"
+    },
+    {
+      "id": "NIA-PUBLIC-AI-GUIDE-2026-FULL::NIA-PUBLIC-AI-GUIDE-2026-FULL:1e28806b2a124468::chk_1068bdd50ddfd089",
+      "content": "○ (조회)\n○ (조회)",
+      "page": 39,
+      "section": "(조회)"
+    }
+  ]
+}

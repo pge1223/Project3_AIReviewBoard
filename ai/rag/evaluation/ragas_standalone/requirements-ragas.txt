@@ -1,0 +1,10 @@
+# 이 파일은 앱 requirements.txt와 완전히 분리된, Ragas 평가 전용 의존성이다.
+# 앱 환경(review-board conda env)에는 절대 설치하지 마라 — ragas가 이미 삭제된
+# langchain_community.chat_models.vertexai를 무조건 import해서, 앱이 쓰는 최신
+# langchain-core/langchain-community(langchain-huggingface/langchain-chroma가 물고 옴)와
+# 같이 두면 import 시점에 ModuleNotFoundError가 난다(2026-07-29 실측, 용준/Claude).
+# python=3.11 기준으로 확인했다(environment-ragas.yml 참고).
+
+ragas==0.2.15
+langchain-community<0.4
+langchain-openai
